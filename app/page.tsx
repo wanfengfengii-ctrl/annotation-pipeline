@@ -1,0 +1,1248 @@
+'use client';
+import { useEffect, useState, useCallback, type ReactNode } from 'react';
+import {
+  Workflow,
+  Plus,
+  Layers,
+  ClipboardCheck,
+  PackageCheck,
+  Clock3,
+  ShieldCheck,
+  FolderPlus,
+  Download,
+  ArrowUpRight,
+  RefreshCw,
+  Terminal,
+  Play,
+  CheckCircle2,
+  ChevronRight,
+  GitBranch,
+  AlertCircle,
+  Search,
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog';
+import {
+  Sheet,
+  SheetContent,
+  SheetTitle,
+  SheetDescription,
+} from '@/components/ui/sheet';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Table,
+  TableHeader,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableCell,
+} from '@/components/ui/table';
+import {
+  categories,
+  difficulties,
+  dimensions,
+  counted,
+  pending,
+  issues,
+  status,
+  deadline,
+  type Task,
+  type Turn,
+  type Review,
+} from '@/lib/pipeline';
+type RecordTask = Task & { revision: number };
+const fmt = (s: string) =>
+  new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(s));
+function Picker({
+  value,
+  onChange,
+  options,
+  label,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: readonly string[];
+  label: string;
+}) {
+  return (
+    <Select value={value} onValueChange={(v) => v && onChange(v)}>
+      <SelectTrigger aria-label={label} style={{ width: '100%', height: 40 }}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {options.map((v) => (
+          <SelectItem value={v} key={v}>
+            {v}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+function Field({
+  label,
+  children,
+  wide = false,
+}: {
+  label: string;
+  children: ReactNode;
+  wide?: boolean;
+}) {
+  return (
+    <label className={'field ' + (wide ? 'wide' : '')}>
+      {label}
+      {children}
+    </label>
+  );
+}
+function Badge({ value }: { value: string }) {
+  const color = value.includes('异常')
+    ? 'red'
+    : value.includes('评分')
+      ? 'amber'
+      : value.includes('执行') || value.includes('排队')
+        ? 'blue'
+        : value.includes('结束')
+          ? 'gray'
+          : '';
+  return <span className={'tag ' + color}>{value}</span>;
+}
+async function request(url: string, body?: unknown, method = 'POST') {
+  const res = await fetch(
+    url,
+    body
+      ? {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }
+      : { cache: 'no-store' },
+  );
+  const data: any = await res.json();
+  if (!res.ok) throw new Error(data.error || '请求失败');
+  return data;
+}
+const emptyTask = {
+  title: '',
+  repoPath: '',
+  stack: '',
+  category: 'Feature 迭代',
+  difficulty: '中等',
+  reproducibility: '无外部依赖',
+};
+export default function Home() {
+  const [local, setLocal] = useState(false);
+  const [tasks, setTasks] = useState<RecordTask[]>([]),
+    [runner, setRunner] = useState<any>(null),
+    [error, setError] = useState(''),
+    [loading, setLoading] = useState(true),
+    [busy, setBusy] = useState(false),
+    [open, setOpen] = useState(false),
+    [draft, setDraft] = useState(emptyTask),
+    [selected, setSelected] = useState<string | null>(null),
+    [page, setPage] = useState('tasks'),
+    [query, setQuery] = useState(''),
+    [filter, setFilter] = useState('全部状态');
+  const reload = useCallback(async () => {
+    try {
+      const d = await request('/api/tasks');
+      setTasks(d.tasks);
+      setRunner(d.runner);
+      setError('');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    setLocal(['localhost', '127.0.0.1'].includes(window.location.hostname));
+    void reload();
+    const id = setInterval(reload, 5000);
+    return () => clearInterval(id);
+  }, [reload]);
+  useEffect(() => {
+    const context = (document as any).modelContext;
+    if (!context?.registerTool) return;
+    const lifecycle = new AbortController();
+    void Promise.resolve(
+      context.registerTool(
+        {
+          name: 'open_task_creation',
+          title: '打开新建标注任务表单',
+          description: '打开任务创建表单，不创建任务、不执行模型。',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+          annotations: { readOnlyHint: false },
+          execute(input: unknown) {
+            if (
+              !input ||
+              typeof input !== 'object' ||
+              Object.keys(input).length
+            )
+              throw new Error('输入必须是空对象');
+            setOpen(true);
+            return { opened: true };
+          },
+        },
+        { signal: lifecycle.signal },
+      ),
+    ).catch(() => {});
+    return () => lifecycle.abort();
+  }, []);
+  const active = tasks.find((t) => t.id === selected),
+    turns = tasks.flatMap((t) => t.turns.map((r) => ({ t, r }))),
+    ready = turns.filter(
+      ({ t, r }) => r.status === 'review' && !issues(t, r).length,
+    ),
+    review = turns.filter(({ r }) => r.status === 'review' && !r.excluded),
+    awaiting = turns.filter(({ r }) => !r.excluded && r.status !== 'submitted'),
+    online =
+      runner && Date.now() - new Date(runner.heartbeat).getTime() < 30000;
+  const mutate = async (t: RecordTask, body: object) => {
+    await request(
+      '/api/tasks/' + t.id,
+      { ...body, revision: t.revision },
+      'PATCH',
+    );
+    await reload();
+  };
+  async function create(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const d = await request('/api/tasks', draft);
+      setOpen(false);
+      setDraft(emptyTask);
+      await reload();
+      setSelected(d.task.id);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const filtered = tasks.filter(
+    (t) =>
+      (!query ||
+        `${t.title} ${t.stack} ${t.repoPath}`
+          .toLowerCase()
+          .includes(query.toLowerCase())) &&
+      (filter === '全部状态' || status(t) === filter),
+  );
+  return (
+    <>
+      <header className="topbar">
+        <div className="brand">
+          <Workflow className="brand-mark" size={40} />
+          标注流水线 <span className="tag">WORKSPACE</span>
+        </div>
+        <div className="actions">
+          <span className="top-note">Claude CLI · 沿用已配置模型</span>
+          <span className={'tag ' + (online ? '' : 'gray')}>
+            {online ? '● 执行器在线' : '○ 执行器离线'}
+          </span>
+        </div>
+      </header>
+      <main className="shell">
+        <div className="pagehead">
+          <div>
+            <p className="eyebrow">ANNOTATION OPERATIONS / 2026.09</p>
+            <h1>作业工作台</h1>
+            <p className="sub">从真实工程任务，到可追溯的逐轮交付。</p>
+          </div>
+          <div className="actions">
+            <a href="/api/export">
+              <Button
+                variant="outline"
+                disabled={!turns.some(({ t, r }) => !issues(t, r).length)}
+              >
+                <Download />
+                导出合格轮次
+              </Button>
+            </a>
+            <Button onClick={() => setOpen(true)}>
+              <Plus />
+              新建任务
+            </Button>
+          </div>
+        </div>
+        {!local && (
+          <div className="issue">
+            云端独立工作台 · 尚未连接本机执行器。使用已配置的 Claude CLI，请打开{' '}
+            <a href="http://localhost:3000/" className="row-title">
+              本机工作台 ↗
+            </a>
+            。两端数据分别保存。
+          </div>
+        )}
+        {error && (
+          <div role="alert" className="error-banner">
+            {error}
+            <Button variant="ghost" onClick={reload}>
+              重新加载
+            </Button>
+          </div>
+        )}
+        <div className="stats">
+          {[
+            {
+              label: '任务总数',
+              num: tasks.length,
+              note: `${tasks.filter(pending).length} 个任务排队或执行中`,
+              icon: Layers,
+            },
+            {
+              label: '待人工评分',
+              num: review.filter(({ t, r }) => issues(t, r).length).length,
+              note: '每轮五个维度，独立评价',
+              icon: ClipboardCheck,
+            },
+            {
+              label: '可导出轮次',
+              num: ready.length,
+              note: '字段完整，等待实际提交',
+              icon: PackageCheck,
+            },
+            {
+              label: '待提交轮次',
+              num: awaiting.length,
+              note: `${awaiting.filter(({ r }) => Date.now() > new Date(deadline(r.createdAt)).getTime()).length} 轮已过截止时间`,
+              icon: Clock3,
+            },
+          ].map(({ label, num, note, icon: Icon }) => (
+            <div className="stat" key={label}>
+              <div className="label">
+                {label}
+                <Icon size={18} />
+              </div>
+              <div className="num">{num.toString().padStart(2, '0')}</div>
+              <p className="sub">{note}</p>
+            </div>
+          ))}
+        </div>
+        <div className="flow">
+          {[
+            ['任务准备', '题型 · 难度 · 环境'],
+            ['环境快照', '首轮前锁定 Commit'],
+            ['CLI 执行', '每个会话最多 10 轮'],
+            ['人工评分', '五个维度独立评价'],
+            ['校验与交付', '导出后登记实际提交'],
+          ].map(([title, desc], i) => (
+            <div className="flow-step" key={title}>
+              <span className="flow-num">0{i + 1} /</span>
+              <strong>{title}</strong>
+              <p className="sub">{desc}</p>
+            </div>
+          ))}
+        </div>
+        <Tabs value={page} onValueChange={(v) => setPage(String(v))}>
+          <TabsList variant="line" className="tabbar">
+            <TabsTrigger value="tasks">任务工作台</TabsTrigger>
+            <TabsTrigger value="delivery">
+              交付队列 <span className="tag gray">{ready.length}</span>
+            </TabsTrigger>
+            <TabsTrigger value="rules">流程与规则</TabsTrigger>
+          </TabsList>
+          <TabsContent value="tasks">
+            <section className="panel">
+              <div className="panelhead">
+                <h2>
+                  作业队列{' '}
+                  <span className="tag gray">{tasks.length} 个任务</span>
+                </h2>
+                <div className="actions">
+                  <label className="field">
+                    <span className="sr-only">搜索任务</span>
+                    <input
+                      placeholder="搜索任务 / 技术栈"
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                    />
+                  </label>
+                  <div style={{ minWidth: 130 }}>
+                    <Picker
+                      value={filter}
+                      onChange={setFilter}
+                      label="任务状态"
+                      options={[
+                        '全部状态',
+                        '待开始',
+                        '排队中',
+                        '执行中',
+                        '待人工评分',
+                        '待提交',
+                        '执行异常',
+                        '可继续交互',
+                        '已结束',
+                      ]}
+                    />
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="刷新"
+                    onClick={reload}
+                  >
+                    <RefreshCw size={16} />
+                  </Button>
+                </div>
+              </div>
+              {loading ? (
+                <div className="blank" role="status">
+                  正在读取任务…
+                </div>
+              ) : !filtered.length ? (
+                <div className="blank">
+                  <div className="blank-icon">
+                    <FolderPlus size={30} />
+                  </div>
+                  <h2>
+                    {tasks.length ? '没有匹配的任务' : '创建第一个标注任务'}
+                  </h2>
+                  <p className="sub">
+                    {tasks.length
+                      ? '调整搜索或状态筛选。'
+                      : '填写本机 Git 仓库路径和任务信息，然后提交首轮 Prompt。执行器会自动记录快照与交互结果。'}
+                  </p>
+                  {!tasks.length && (
+                    <Button onClick={() => setOpen(true)}>
+                      新建任务
+                      <ArrowUpRight />
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <Table className="data-table">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>任务 / 技术栈</TableHead>
+                      <TableHead>当前状态</TableHead>
+                      <TableHead>轮次</TableHead>
+                      <TableHead>初始快照</TableHead>
+                      <TableHead>创建时间</TableHead>
+                      <TableHead>操作</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filtered.map((t) => (
+                      <TableRow key={t.id}>
+                        <TableCell>
+                          <button
+                            className="row-title"
+                            onClick={() => setSelected(t.id)}
+                          >
+                            {t.title}
+                          </button>
+                          <div className="sub">
+                            {t.category} · {t.stack} · {t.difficulty}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge value={status(t)} />
+                        </TableCell>
+                        <TableCell>
+                          <div style={{ width: 100 }}>
+                            <div className="sub">{counted(t)} / 10</div>
+                            <div className="progress-bars">
+                              {Array.from({ length: 10 }, (_, i) => (
+                                <span
+                                  key={i}
+                                  className={i < counted(t) ? 'done' : ''}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          {t.snapshot ? (
+                            <a
+                              href={t.snapshot}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="tag"
+                            >
+                              <GitBranch
+                                size={12}
+                                style={{ display: 'inline' }}
+                              />{' '}
+                              {t.snapshot.slice(-40, -32)}
+                            </a>
+                          ) : (
+                            <span className="sub">首轮执行前采集</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="sub">
+                          {fmt(t.createdAt)}
+                        </TableCell>
+                        <TableCell>
+                          <Button
+                            variant="ghost"
+                            onClick={() => setSelected(t.id)}
+                          >
+                            打开
+                            <ChevronRight />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </section>
+          </TabsContent>
+          <TabsContent value="delivery">
+            <section className="panel">
+              <div className="panelhead">
+                <h2>逐轮交付</h2>
+                <span className="sub">导出不会自动标记提交 · 北京时间</span>
+              </div>
+              {!turns.length ? (
+                <div className="blank">
+                  <PackageCheck className="blank-icon" size={54} />
+                  <h2>交互完成后，在这里核对交付</h2>
+                </div>
+              ) : (
+                <Table className="data-table">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>任务 / 轮次</TableHead>
+                      <TableHead>形式校验</TableHead>
+                      <TableHead>截止时间</TableHead>
+                      <TableHead>提交状态</TableHead>
+                      <TableHead>操作</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {turns.map(({ t, r }) => (
+                      <TableRow key={r.id}>
+                        <TableCell>
+                          <span className="row-title">{t.title}</span>
+                          <div className="sub">
+                            第 {t.turns.indexOf(r) + 1} 次交互 · {r.category}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge
+                            value={
+                              r.excluded
+                                ? '工程故障已排除'
+                                : issues(t, r).length
+                                  ? `待补充 ${issues(t, r).length} 项`
+                                  : '形式校验通过'
+                            }
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <span
+                            className={
+                              Date.now() >
+                                new Date(deadline(r.createdAt)).getTime() &&
+                              r.status !== 'submitted'
+                                ? 'tag red'
+                                : 'sub'
+                            }
+                          >
+                            {fmt(deadline(r.createdAt))}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          {r.status === 'submitted' ? (
+                            <span className="tag">已登记提交</span>
+                          ) : (
+                            <span className="sub">未提交</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <Button
+                            variant="ghost"
+                            onClick={() => setSelected(t.id)}
+                          >
+                            核对
+                            <ChevronRight />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </section>
+          </TabsContent>
+          <TabsContent value="rules">
+            <div className="rules">
+              <div className="rulebox">
+                <h2>执行方式</h2>
+                <p>
+                  本机执行器调用 Claude
+                  CLI，不指定模型，沿用用户及项目配置。首轮从已推送的干净 Git
+                  提交创建独立工作区；后续轮次恢复同一会话。
+                </p>
+                <p>
+                  执行器：{online ? '在线' : '离线'} ·{' '}
+                  {runner?.version || '尚未连接'}
+                </p>
+                <p>
+                  本机启动：<code>npm run runner</code>
+                  。云端页面需要另行连接可认证的执行器；不会从浏览器直接执行本机命令。
+                </p>
+              </div>
+              <div className="rulebox">
+                <h2>逐轮验收</h2>
+                <ul>
+                  <li>
+                    每个有效 Prompt-response pair 为一条数据；最多 10 轮。
+                  </li>
+                  <li>“继续”计入轮次，评价原始任务目标。</li>
+                  <li>仅工程故障、网络波动导致无反馈价值的轮次可人工排除。</li>
+                  <li>五项评分与依据均必填；形式校验不代表项目质检通过。</li>
+                </ul>
+              </div>
+              <div className="rulebox">
+                <h2>题目与每日分布</h2>
+                <p>
+                  首轮不允许简单题。0–1 代码生成 / Feature 迭代 / Bug 修复 ＞
+                  代码理解 ≈ 代码重构 ＞ 其他。文档未规定各类别的精确比例。
+                </p>
+                {categories.map((c) => (
+                  <p key={c}>
+                    {c}：
+                    {
+                      turns.filter(
+                        ({ r }) =>
+                          !r.excluded &&
+                          r.category === c &&
+                          fmt(r.createdAt).slice(0, 5) ===
+                            fmt(new Date().toISOString()).slice(0, 5),
+                      ).length
+                    }{' '}
+                    轮（今日）
+                  </p>
+                ))}
+                <p>
+                  雷同题、经典小游戏、Todo 和常见 CRUD
+                  模板需人工检查；系统不通过关键词代替语义查重。
+                </p>
+              </div>
+              <div className="rulebox">
+                <h2>提交约束</h2>
+                <ul>
+                  <li>20:00 前产生的数据当天提交，之后的次日 14:00 前提交。</li>
+                  <li>初始快照使用完整 SHA；远端访问权限需人工确认。</li>
+                  <li>禁止 AI 分析产物和轨迹、代写评分反馈。</li>
+                  <li>已提交轮次锁定，保留外部提交记录；不提供返修入口。</li>
+                </ul>
+                <a
+                  className="row-title"
+                  href="https://docs.qq.com/document/DVWVQemZTRm5jZnRJ"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  查看原始作业规范 ↗
+                </a>
+              </div>
+            </div>
+          </TabsContent>
+        </Tabs>
+        <p className="footer-note">
+          <ShieldCheck size={18} />
+          自动化负责记录和形式校验；评分与产物、轨迹分析由人工完成。
+        </p>
+      </main>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="modal" style={{ maxWidth: 640 }}>
+          <DialogTitle>新建标注任务</DialogTitle>
+          <DialogDescription>
+            一个任务对应一个会话。执行前请确认仓库提交已推送，且评测团队可以访问。
+          </DialogDescription>
+          <form onSubmit={create} className="formgrid">
+            <Field label="任务名称" wide>
+              <input
+                required
+                maxLength={200}
+                placeholder="例如：为现有解析器补充增量解析能力"
+                value={draft.title}
+                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+              />
+            </Field>
+            <Field label="本机 Git 仓库绝对路径" wide>
+              <input
+                required
+                placeholder="/Users/你的用户名/projects/repository"
+                value={draft.repoPath}
+                onChange={(e) =>
+                  setDraft({ ...draft, repoPath: e.target.value })
+                }
+              />
+            </Field>
+            <Field label="首轮任务类型">
+              <Picker
+                label="首轮任务类型"
+                value={draft.category}
+                options={categories}
+                onChange={(v) => setDraft({ ...draft, category: v })}
+              />
+            </Field>
+            <Field label="首轮难度">
+              <Picker
+                label="首轮难度"
+                value={draft.difficulty}
+                options={difficulties.filter((d) => d !== '简单')}
+                onChange={(v) => setDraft({ ...draft, difficulty: v })}
+              />
+            </Field>
+            <Field label="语言 / 框架">
+              <input
+                required
+                placeholder="Go, PostgreSQL"
+                value={draft.stack}
+                onChange={(e) => setDraft({ ...draft, stack: e.target.value })}
+              />
+            </Field>
+            <Field label="环境可复现等级">
+              <Picker
+                label="环境可复现等级"
+                value={draft.reproducibility}
+                options={['无外部依赖', '有外部依赖，未容器化', '已容器化']}
+                onChange={(v) => setDraft({ ...draft, reproducibility: v })}
+              />
+            </Field>
+            <div className="wide sub">
+              执行器会创建独立工作区，不自动提交或推送模型生成的代码。外部依赖请在工作区准备好后运行后续轮次。
+            </div>
+            <div className="wide actions">
+              <Button type="submit" disabled={busy}>
+                {busy ? '正在创建…' : '创建任务'}
+              </Button>
+              {error && (
+                <span role="alert" className="sub">
+                  {error}
+                </span>
+              )}
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Sheet
+        open={Boolean(active)}
+        onOpenChange={(v) => !v && setSelected(null)}
+      >
+        <SheetContent
+          style={{ width: 'min(100%, 920px)', maxWidth: 920, overflow: 'auto' }}
+        >
+          {active && (
+            <TaskDetail
+              key={active.id}
+              task={active}
+              online={online}
+              mutate={mutate}
+            />
+          )}
+        </SheetContent>
+      </Sheet>
+    </>
+  );
+}
+function TaskDetail({
+  task: t,
+  online,
+  mutate,
+}: {
+  task: RecordTask;
+  online: boolean;
+  mutate: (t: RecordTask, b: object) => Promise<void>;
+}) {
+  const [prompt, setPrompt] = useState(''),
+    [category, setCategory] = useState(t.category),
+    [difficulty, setDifficulty] = useState(t.difficulty),
+    [error, setError] = useState(''),
+    [busy, setBusy] = useState(false),
+    [tab, setTab] = useState('turns');
+  async function run(body: object) {
+    setBusy(true);
+    setError('');
+    try {
+      await mutate(t, body);
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="detail">
+      <p className="eyebrow">TASK / {t.id.slice(0, 8)}</p>
+      <SheetTitle style={{ fontSize: 24, marginTop: 12, marginRight: 30 }}>
+        {t.title}
+      </SheetTitle>
+      <SheetDescription className="sub">
+        {t.stack} · {t.category} · {t.difficulty}
+      </SheetDescription>
+      <div className="actions" style={{ margin: '16px 0' }}>
+        <Badge value={status(t)} />
+        <span className="tag gray">{counted(t)} / 10 轮</span>
+        <span className="sub">{t.model || '模型沿用 Claude CLI 配置'}</span>
+      </div>
+      {error && (
+        <div role="alert" className="error-banner">
+          {error}
+        </div>
+      )}
+      <Tabs value={tab} onValueChange={(v) => setTab(String(v))}>
+        <TabsList>
+          <TabsTrigger value="turns">交互与评分</TabsTrigger>
+          <TabsTrigger value="environment">环境与快照</TabsTrigger>
+        </TabsList>
+        <TabsContent value="turns">
+          {!t.turns.length && (
+            <div className="section">
+              <h3>输入首轮任务</h3>
+              <p className="sub">
+                明确需求、约束和验收方式。任务原文将完整保存，不进行改写。
+              </p>
+            </div>
+          )}
+          {t.turns.map((r, i) => (
+            <TurnPanel
+              key={r.id}
+              task={t}
+              turn={r}
+              index={i}
+              run={run}
+              busy={busy}
+            />
+          ))}
+          {!t.closed && counted(t) < 10 && !pending(t) && (
+            <form
+              className="section formgrid"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (
+                  await run({ action: 'enqueue', prompt, category, difficulty })
+                ) {
+                  setPrompt('');
+                }
+              }}
+            >
+              <h3 className="wide">
+                {t.turns.length ? '追加下一轮交互' : '首轮 Prompt'}
+              </h3>
+              <Field label="本轮任务类型">
+                <Picker
+                  label="本轮任务类型"
+                  value={category}
+                  options={categories}
+                  onChange={setCategory}
+                />
+              </Field>
+              <Field label="本轮难度">
+                <Picker
+                  label="本轮难度"
+                  value={difficulty}
+                  options={
+                    counted(t)
+                      ? difficulties
+                      : difficulties.filter((d) => d !== '简单')
+                  }
+                  onChange={setDifficulty}
+                />
+              </Field>
+              <Field label="原始 Prompt" wide>
+                <textarea
+                  required
+                  maxLength={80000}
+                  style={{ minHeight: 140 }}
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="完整填写交给 Claude 的任务。输入“继续”时，仍需根据上一轮原始需求选择题型与难度。"
+                />
+              </Field>
+              {!online && (
+                <p className="wide issue">
+                  本机执行器尚未在线。任务可以排队，连接后会按顺序执行。
+                </p>
+              )}
+              <div className="wide">
+                <Button disabled={busy} type="submit">
+                  <Play />
+                  {online ? '加入队列并执行' : '加入等待队列'}
+                </Button>
+              </div>
+            </form>
+          )}
+          {pending(t) && (
+            <div className="issue" style={{ marginTop: 20 }}>
+              任务已进入执行队列，状态每 5
+              秒刷新。进程结束后保留原始输出，是否完成需求由人工判断。
+            </div>
+          )}
+          {counted(t) >= 10 && (
+            <div className="issue">
+              已达到 10 轮上限。完成本会话的逐轮评分后，请新建任务。
+            </div>
+          )}
+          {!t.closed && !pending(t) && (
+            <Button
+              style={{ marginTop: 20 }}
+              variant="outline"
+              disabled={busy}
+              onClick={() => run({ action: 'close' })}
+            >
+              结束此会话
+            </Button>
+          )}
+        </TabsContent>
+        <TabsContent value="environment">
+          <div className="section">
+            <h3>初始快照</h3>
+            {t.snapshot ? (
+              <a
+                href={t.snapshot}
+                target="_blank"
+                rel="noreferrer"
+                className="sub mono"
+              >
+                {t.snapshot}
+              </a>
+            ) : (
+              <p className="sub">
+                首轮执行前，由执行器校验并记录已发布的 GitHub Commit。
+              </p>
+            )}
+          </div>
+          {[
+            ['原始仓库', t.repoPath],
+            ['独立工作区', t.workDir || '尚未创建'],
+            ['Harness', t.harnessVersion || '首轮运行后记录'],
+            ['实际模型', t.model || '运行后从 CLI 初始化事件读取'],
+            ['操作系统', t.os || '执行后记录'],
+            ['环境可复现等级', t.reproducibility],
+            ['SessionID', t.sessionId || '尚未开始'],
+          ].map(([label, value]) => (
+            <div className="section" key={label}>
+              <h3>{label}</h3>
+              <p className="sub mono">{value}</p>
+            </div>
+          ))}
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+function TurnPanel({
+  task: t,
+  turn: r,
+  index,
+  run,
+  busy,
+}: {
+  task: RecordTask;
+  turn: Turn;
+  index: number;
+  run: (body: object) => Promise<boolean>;
+  busy: boolean;
+}) {
+  const blank: Review = {
+    scores: [0, 0, 0, 0, 0],
+    descriptions: ['', '', '', '', ''],
+    reviewer: '',
+    attested: false,
+    other: '',
+  };
+  const [review, setReview] = useState<Review>(r.review || blank),
+    [receipt, setReceipt] = useState(''),
+    [reason, setReason] = useState(''),
+    [promptId, setPromptId] = useState(r.promptId || ''),
+    [tracePath, setTracePath] = useState(r.tracePath || '');
+  const labels = {
+    queued: '排队中',
+    running: '执行中',
+    review: '待人工评分',
+    failed: '执行异常',
+    submitted: '已提交',
+  };
+  return (
+    <section className="section">
+      <div
+        className="actions"
+        style={{ justifyContent: 'space-between', marginBottom: 12 }}
+      >
+        <h3>
+          第 {index + 1} 次交互{' '}
+          <span className="tag gray">
+            {r.category} · {r.difficulty}
+          </span>
+        </h3>
+        <Badge value={r.excluded ? '工程故障已排除' : labels[r.status]} />
+      </div>
+      <p className="sub">
+        {fmt(r.createdAt)} · 截止 {fmt(deadline(r.createdAt))}
+      </p>
+      <details style={{ marginTop: 12 }}>
+        <summary className="row-title">原始 Prompt</summary>
+        <pre className="sub" style={{ whiteSpace: 'pre-wrap', marginTop: 10 }}>
+          {r.prompt}
+        </pre>
+      </details>
+      {r.output && (
+        <details style={{ marginTop: 12 }}>
+          <summary className="row-title">模型原始回复</summary>
+          <pre
+            className="sub"
+            style={{
+              whiteSpace: 'pre-wrap',
+              marginTop: 10,
+              maxHeight: 400,
+              overflow: 'auto',
+            }}
+          >
+            {r.output}
+          </pre>
+        </details>
+      )}
+      {r.error && (
+        <p className="issue" style={{ marginTop: 12 }}>
+          {r.error}
+        </p>
+      )}
+      {r.status === 'failed' && !r.excluded && (
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => run({ action: 'assess', turnId: r.id })}
+        >
+          本轮仍有反馈价值，进入人工评分
+        </Button>
+      )}
+      {r.excluded ? (
+        <p className="sub">排除原因：{r.excludeReason}</p>
+      ) : (
+        <>
+          {r.status === 'review' && (
+            <details style={{ marginTop: 18 }} open={!r.review}>
+              <summary className="row-title">人工评分与反馈</summary>
+              <p className="sub" style={{ margin: '12px 0' }}>
+                每项 1–5
+                分。写清具体步骤、行为、证据与影响；同时核对过程和产物。
+              </p>
+              <div className="reviewgrid">
+                {dimensions.map((d, i) => (
+                  <div className="scorebox" key={d}>
+                    <Field label={d}>
+                      <Picker
+                        label={d + '评分'}
+                        value={
+                          review.scores[i] ? String(review.scores[i]) : '未评分'
+                        }
+                        options={['未评分', '1', '2', '3', '4', '5']}
+                        onChange={(v) =>
+                          setReview({
+                            ...review,
+                            scores: review.scores.map((s, j) =>
+                              j === i ? Number(v) || 0 : s,
+                            ),
+                          })
+                        }
+                      />
+                      <textarea
+                        style={{ marginTop: 10 }}
+                        placeholder="人工填写具体依据"
+                        value={review.descriptions[i]}
+                        onChange={(e) =>
+                          setReview({
+                            ...review,
+                            descriptions: review.descriptions.map((s, j) =>
+                              j === i ? e.target.value : s,
+                            ),
+                          })
+                        }
+                      />
+                    </Field>
+                  </div>
+                ))}
+              </div>
+              <div className="formgrid" style={{ marginTop: 16 }}>
+                <Field label="评分人">
+                  <input
+                    value={review.reviewer}
+                    onChange={(e) =>
+                      setReview({ ...review, reviewer: e.target.value })
+                    }
+                  />
+                </Field>
+                <Field label="其他问题">
+                  <input
+                    value={review.other}
+                    onChange={(e) =>
+                      setReview({ ...review, other: e.target.value })
+                    }
+                  />
+                </Field>
+                <label className="wide actions sub">
+                  <Checkbox
+                    checked={review.attested}
+                    onCheckedChange={(v) =>
+                      setReview({ ...review, attested: Boolean(v) })
+                    }
+                  />
+                  我已人工检查过程和产物，并独立填写评分与依据。
+                </label>
+                <div className="wide">
+                  <Button
+                    disabled={busy}
+                    onClick={() =>
+                      run({ action: 'review', turnId: r.id, review })
+                    }
+                  >
+                    保存人工评分
+                  </Button>
+                </div>
+              </div>
+            </details>
+          )}
+          {['review', 'failed', 'submitted'].includes(r.status) && (
+            <details style={{ marginTop: 16 }}>
+              <summary className="row-title">
+                轨迹与校验{' '}
+                {r.status === 'review' && `· ${issues(t, r).length} 项待完善`}
+              </summary>
+              <p className="sub mono">SessionID：{r.sessionId || '未捕获'}</p>
+              <p className="sub mono">
+                PromptID：{r.promptId || '未捕获，请从原始轨迹核对补录'}
+              </p>
+              <p className="sub mono">轨迹文件：{r.tracePath || '未记录'}</p>
+              {issues(t, r).map((e) => (
+                <p className="sub" key={e}>
+                  • {e}
+                </p>
+              ))}
+              {r.status !== 'submitted' && (
+                <div className="formgrid" style={{ marginTop: 12 }}>
+                  <Field label="原始用户消息 PromptID">
+                    <input
+                      value={promptId}
+                      onChange={(e) => setPromptId(e.target.value)}
+                    />
+                  </Field>
+                  <Field label="原始轨迹文件位置">
+                    <input
+                      value={tracePath}
+                      onChange={(e) => setTracePath(e.target.value)}
+                    />
+                  </Field>
+                  <div className="wide">
+                    <Button
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() =>
+                        run({
+                          action: 'trace',
+                          turnId: r.id,
+                          promptId,
+                          tracePath,
+                        })
+                      }
+                    >
+                      保存人工核对的定位信息
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </details>
+          )}
+          {r.status === 'review' && !issues(t, r).length && (
+            <div style={{ marginTop: 18 }}>
+              <p className="tag">字段形式校验通过</p>
+              <div className="formgrid" style={{ marginTop: 12 }}>
+                <Field label="实际提交记录 / 外部回执" wide>
+                  <input
+                    value={receipt}
+                    onChange={(e) => setReceipt(e.target.value)}
+                    placeholder="已提交表格链接、行号或回执编号"
+                  />
+                </Field>
+                <div className="wide">
+                  <Button
+                    disabled={busy || !receipt.trim()}
+                    onClick={() =>
+                      run({ action: 'submit', turnId: r.id, receipt })
+                    }
+                  >
+                    <CheckCircle2 />
+                    登记已提交并锁定
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+          {r.status === 'submitted' && (
+            <div className="sub" style={{ marginTop: 12 }}>
+              已提交并锁定 · {fmt(r.submittedAt!)}
+              <p className="mono">{r.receipt}</p>
+              <details>
+                <summary>查看已提交评分</summary>
+                {dimensions.map((d, i) => (
+                  <p key={d}>
+                    {d}：{r.review?.scores[i]} 分 — {r.review?.descriptions[i]}
+                  </p>
+                ))}
+              </details>
+            </div>
+          )}
+          {['review', 'failed'].includes(r.status) && (
+            <details style={{ marginTop: 16 }}>
+              <summary className="sub">工程故障导致无反馈价值？</summary>
+              <p className="sub">
+                仅限网络或工程问题。模型能力问题仍需提交，不应排除。
+              </p>
+              <div className="actions">
+                <label className="field" style={{ flex: 1 }}>
+                  <span className="sr-only">工程故障说明</span>
+                  <input
+                    placeholder="人工填写具体工程故障原因"
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                  />
+                </label>
+                <Button
+                  variant="outline"
+                  disabled={busy || !reason.trim()}
+                  onClick={() =>
+                    run({ action: 'exclude', turnId: r.id, reason })
+                  }
+                >
+                  排除该轮
+                </Button>
+              </div>
+            </details>
+          )}
+        </>
+      )}
+    </section>
+  );
+}

@@ -1,0 +1,183 @@
+export const categories = [
+  '0-1 代码生成',
+  'Feature 迭代',
+  'Bug 修复',
+  '代码理解',
+  '代码重构',
+  '工程化',
+  '代码测试',
+] as const;
+export const difficulties = ['简单', '中等', '困难', '地狱'] as const;
+export const dimensions = [
+  '交付完整性',
+  '指令遵循',
+  '任务规划',
+  '推理能力',
+  '执行能力',
+] as const;
+export type Review = {
+  scores: number[];
+  descriptions: string[];
+  reviewer: string;
+  attested: boolean;
+  other: string;
+};
+export type Turn = {
+  id: string;
+  prompt: string;
+  category: string;
+  difficulty: string;
+  status: 'queued' | 'running' | 'review' | 'failed' | 'submitted';
+  createdAt: string;
+  finishedAt?: string;
+  sessionId?: string;
+  promptId?: string;
+  output?: string;
+  tracePath?: string;
+  error?: string;
+  review?: Review;
+  submittedAt?: string;
+  receipt?: string;
+  excluded?: boolean;
+  excludeReason?: string;
+  jobToken?: string;
+};
+export type Task = {
+  id: string;
+  title: string;
+  repoPath: string;
+  stack: string;
+  category: string;
+  difficulty: string;
+  reproducibility: string;
+  snapshot: string;
+  sessionId?: string;
+  workDir?: string;
+  harnessVersion?: string;
+  os?: string;
+  model?: string;
+  createdAt: string;
+  closed: boolean;
+  turns: Turn[];
+};
+export function counted(t: Task) {
+  return t.turns.filter((x) => !x.excluded).length;
+}
+export function pending(t: Task) {
+  return t.turns.some((x) => ['queued', 'running'].includes(x.status));
+}
+export function validSnapshot(s: string) {
+  return /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/commit\/[0-9a-f]{40}$/i.test(
+    s,
+  );
+}
+export function deadline(createdAt: string) {
+  const date = new Date(new Date(createdAt).getTime() + 8 * 3600000);
+  const after = date.getUTCHours() >= 20;
+  date.setUTCDate(date.getUTCDate() + (after ? 1 : 0));
+  date.setUTCHours(
+    after ? 14 : 23,
+    after ? 0 : 59,
+    after ? 0 : 59,
+    after ? 0 : 999,
+  );
+  return new Date(date.getTime() - 8 * 3600000).toISOString();
+}
+export function issues(t: Task, r: Turn) {
+  const e: string[] = [];
+  if (r.excluded) return ['该轮已按工程故障排除'];
+  if (!['review', 'submitted'].includes(r.status)) e.push('该轮尚未完成执行');
+  if (!validSnapshot(t.snapshot))
+    e.push('缺少完整 40 位 SHA 的 GitHub 快照链接');
+  if (!t.harnessVersion || !t.os) e.push('缺少客户端版本或操作系统');
+  if (!r.sessionId || !r.promptId)
+    e.push('缺少 SessionID 或原始用户消息 PromptID');
+  if (!r.tracePath) e.push('缺少轨迹文件位置');
+  if (!r.review?.reviewer.trim()) e.push('未填写评分人');
+  if (!r.review?.attested) e.push('未确认人工检查过程和产物');
+  dimensions.forEach((d, i) => {
+    if (
+      !Number.isInteger(r.review?.scores[i]) ||
+      r.review!.scores[i] < 1 ||
+      r.review!.scores[i] > 5
+    )
+      e.push(`${d}：需填写 1–5 分`);
+    if (!r.review?.descriptions[i]?.trim()) e.push(`${d}：需填写具体依据`);
+  });
+  return e;
+}
+export function status(t: Task) {
+  if (pending(t))
+    return t.turns.some((x) => x.status === 'running') ? '执行中' : '排队中';
+  if (t.closed) return '已结束';
+  if (t.turns.some((x) => x.status === 'failed' && !x.excluded))
+    return '执行异常';
+  if (
+    t.turns.some(
+      (x) => x.status === 'review' && !x.excluded && issues(t, x).length,
+    )
+  )
+    return '待人工评分';
+  if (t.turns.some((x) => x.status === 'review' && !x.excluded))
+    return '待提交';
+  return t.turns.length ? '可继续交互' : '待开始';
+}
+export function csv(tasks: Task[]) {
+  const headers = [
+    '任务名称',
+    '任务类型',
+    '任务难度',
+    '语言/框架',
+    'Harness',
+    'Harness 版本',
+    '操作系统',
+    '环境可复现等级',
+    '初始环境快照',
+    'User Prompt',
+    'SessionID',
+    'TurnID/PromptID',
+    '轨迹文件',
+    ...dimensions.flatMap((d) => [d, d + ' - 描述']),
+    '其他问题',
+    '评分人',
+    '产生时间',
+    '提交截止时间',
+  ];
+  const rows = tasks.flatMap((t) =>
+    t.turns
+      .filter((r) => !r.excluded && !issues(t, r).length)
+      .map((r) => [
+        t.title,
+        r.category,
+        r.difficulty,
+        t.stack,
+        'Claude Code',
+        t.harnessVersion,
+        t.os,
+        t.reproducibility,
+        t.snapshot,
+        r.prompt,
+        r.sessionId,
+        r.promptId,
+        r.tracePath,
+        ...dimensions.flatMap((_, i) => [
+          r.review!.scores[i],
+          r.review!.descriptions[i],
+        ]),
+        r.review!.other,
+        r.review!.reviewer,
+        r.createdAt,
+        deadline(r.createdAt),
+      ]),
+  );
+  const cell = (x: unknown) =>
+    '"' +
+    String(x ?? '')
+      .replace(/^[=+@\-\t\r]/, (m) => "'" + m)
+      .replace(/"/g, '""') +
+    '"';
+  return (
+    '\ufeff' +
+    [headers, ...rows].map((row) => row.map(cell).join(',')).join('\r\n')
+  );
+}
