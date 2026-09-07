@@ -16,6 +16,7 @@ export const dimensions = [
   '执行能力',
 ] as const;
 export type Review = {
+  source?: 'human' | 'codex';
   scores: number[];
   descriptions: string[];
   reviewer: string;
@@ -42,6 +43,16 @@ export type Turn = {
   excluded?: boolean;
   excludeReason?: string;
   jobToken?: string;
+  completedJobToken?: string;
+  stage?: string;
+  requestedPrompt?: string;
+  automation?: {
+    preparation?: any;
+    snapshot?: any;
+    score?: any;
+    delivery?: any;
+    bundlePath?: string;
+  };
 };
 export type Task = {
   id: string;
@@ -60,6 +71,7 @@ export type Task = {
   createdAt: string;
   closed: boolean;
   turns: Turn[];
+  automationMode?: 'codex';
 };
 export function counted(t: Task) {
   return t.turns.filter((x) => !x.excluded).length;
@@ -103,7 +115,10 @@ export function issues(t: Task, r: Turn) {
     e.push('缺少 SessionID 或原始用户消息 PromptID');
   if (!r.tracePath) e.push('缺少轨迹文件位置');
   if (!r.review?.reviewer.trim()) e.push('未填写评分人');
-  if (!r.review?.attested) e.push('未确认人工检查过程和产物');
+  if (r.review?.source === 'codex') {
+    if (!r.automation?.delivery?.value?.passed || !r.automation?.bundlePath)
+      e.push('Codex 校验或交付包尚未完成');
+  } else if (!r.review?.attested) e.push('未确认人工检查过程和产物');
   dimensions.forEach((d, i) => {
     if (
       !Number.isInteger(r.review?.scores[i]) ||
@@ -126,7 +141,7 @@ export function status(t: Task) {
       (x) => x.status === 'review' && !x.excluded && issues(t, x).length,
     )
   )
-    return '待人工评分';
+    return '待评分或校验';
   if (t.turns.some((x) => x.status === 'review' && !x.excluded))
     return '待提交';
   return t.turns.length ? '可继续交互' : '待开始';
@@ -149,6 +164,8 @@ export function csv(tasks: Task[]) {
     ...dimensions.flatMap((d) => [d, d + ' - 描述']),
     '其他问题',
     '评分人',
+    '评分来源',
+    '数据用途',
     '产生时间',
     '提交截止时间',
   ];
@@ -175,6 +192,10 @@ export function csv(tasks: Task[]) {
         ]),
         r.review!.other,
         r.review!.reviewer,
+        r.review!.source === 'codex' ? 'AI / Codex CLI' : '人工',
+        r.review!.source === 'codex'
+          ? 'AI评测数据（不作为原项目人工标注）'
+          : '人工标注',
         producedAt(r),
         deadline(producedAt(r)),
       ]),

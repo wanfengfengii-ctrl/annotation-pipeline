@@ -37,9 +37,17 @@ export async function PATCH(
         status: 'queued',
         createdAt: new Date().toISOString(),
       });
+    } else if (b.action === 'retry') {
+      const r = t.turns.find((r) => r.id === b.turnId);
+      if (!r || r.status !== 'failed' || pending(t) || t.closed)
+        throw new Error('此轮不能重试');
+      r.status = 'queued';
+      r.error = '';
     } else if (b.action === 'review') {
       const r = t.turns.find((r) => r.id === b.turnId);
       if (!r || r.status !== 'review') throw new Error('此轮当前不可评分');
+      if (r.review?.source === 'codex')
+        throw new Error('Codex 评分保留机器来源，不可改为人工评分');
       const v = b.review;
       if (
         !v ||
@@ -60,6 +68,7 @@ export async function PATCH(
       )
         throw new Error('评分或描述无效');
       r.review = {
+        source: 'human',
         scores: v.scores,
         descriptions: v.descriptions,
         reviewer:

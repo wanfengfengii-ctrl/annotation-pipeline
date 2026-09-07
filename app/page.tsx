@@ -238,7 +238,7 @@ export default function Home() {
     e.preventDefault();
     setBusy(true);
     try {
-      const d = await request('/api/tasks', draft);
+      const d = await request('/api/tasks', { ...draft, autoStart: true });
       setOpen(false);
       setDraft(emptyTask);
       await reload();
@@ -265,7 +265,7 @@ export default function Home() {
           标注流水线 <span className="tag">WORKSPACE</span>
         </div>
         <div className="actions">
-          <span className="top-note">Claude CLI · 沿用已配置模型</span>
+          <span className="top-note">Codex 编排 · Claude 执行</span>
           <span className={'tag ' + (online ? '' : 'gray')}>
             {online ? '● 执行器在线' : '○ 执行器离线'}
           </span>
@@ -320,7 +320,7 @@ export default function Home() {
               icon: Layers,
             },
             {
-              label: '待人工评分',
+              label: '待评分或校验',
               num: review.filter(({ t, r }) => issues(t, r).length).length,
               note: '每轮五个维度，独立评价',
               icon: ClipboardCheck,
@@ -350,11 +350,11 @@ export default function Home() {
         </div>
         <div className="flow">
           {[
-            ['任务准备', '题型 · 难度 · 环境'],
-            ['环境快照', '首轮前锁定 Commit'],
+            ['任务准备 · Codex', '目标转为任务与验收条件'],
+            ['环境快照 · Codex', '检查环境并锁定 Commit'],
             ['CLI 执行', '每个会话最多 10 轮'],
-            ['人工评分', '五个维度独立评价'],
-            ['校验与交付', '导出后登记实际提交'],
+            ['自动评分 · Codex', '依据轨迹与产物评分'],
+            ['校验与交付 · Codex', '生成带 AI 来源的交付包'],
           ].map(([title, desc], i) => (
             <div className="flow-step" key={title}>
               <span className="flow-num">0{i + 1} /</span>
@@ -397,7 +397,7 @@ export default function Home() {
                         '待开始',
                         '排队中',
                         '执行中',
-                        '待人工评分',
+                        '待评分或校验',
                         '待提交',
                         '执行异常',
                         '可继续交互',
@@ -430,7 +430,7 @@ export default function Home() {
                   <p className="sub">
                     {tasks.length
                       ? '调整搜索或状态筛选。'
-                      : '填写本机 Git 仓库路径和任务信息，然后提交首轮 Prompt。执行器会自动记录快照与交互结果。'}
+                      : '填写仓库路径和任务目标，Codex 准备任务并检查环境，Claude 执行后由 Codex 评分和打包。'}
                   </p>
                   {!tasks.length && (
                     <Button onClick={() => setOpen(true)}>
@@ -622,7 +622,10 @@ export default function Home() {
                   </li>
                   <li>“继续”计入轮次，评价原始任务目标。</li>
                   <li>仅工程故障、网络波动导致无反馈价值的轮次可人工排除。</li>
-                  <li>五项评分与依据均必填；形式校验不代表项目质检通过。</li>
+                  <li>
+                    Codex
+                    自动填写五项评分及证据；内部校验通过不等于原项目人工质检通过。
+                  </li>
                 </ul>
               </div>
               <div className="rulebox">
@@ -657,7 +660,10 @@ export default function Home() {
                 <ul>
                   <li>20:00 前产生的数据当天提交，之后的次日 14:00 前提交。</li>
                   <li>初始快照使用完整 SHA；远端访问权限需人工确认。</li>
-                  <li>禁止 AI 分析产物和轨迹、代写评分反馈。</li>
+                  <li>
+                    当前为 AI 评测模式，不符合原文档的人工标注要求，导出明确标记
+                    AI 来源。
+                  </li>
                   <li>已提交轮次锁定，保留外部提交记录；不提供返修入口。</li>
                 </ul>
                 <a
@@ -674,7 +680,8 @@ export default function Home() {
         </Tabs>
         <p className="footer-note">
           <ShieldCheck size={18} />
-          自动化负责记录和形式校验；评分与产物、轨迹分析由人工完成。
+          AI 自动评测：Codex 负责准备、快照检查、评分和交付；Claude
+          负责执行。导出保留 AI 来源。
         </p>
       </main>
       <Dialog open={open} onOpenChange={setOpen}>
@@ -703,44 +710,17 @@ export default function Home() {
                 }
               />
             </Field>
-            <Field label="首轮任务类型">
-              <Picker
-                label="首轮任务类型"
-                value={draft.category}
-                options={categories}
-                onChange={(v) => setDraft({ ...draft, category: v })}
-              />
-            </Field>
-            <Field label="首轮难度">
-              <Picker
-                label="首轮难度"
-                value={draft.difficulty}
-                options={difficulties.filter((d) => d !== '简单')}
-                onChange={(v) => setDraft({ ...draft, difficulty: v })}
-              />
-            </Field>
-            <Field label="语言 / 框架">
-              <input
-                required
-                placeholder="Go, PostgreSQL"
-                value={draft.stack}
-                onChange={(e) => setDraft({ ...draft, stack: e.target.value })}
-              />
-            </Field>
-            <Field label="环境可复现等级">
-              <Picker
-                label="环境可复现等级"
-                value={draft.reproducibility}
-                options={['无外部依赖', '有外部依赖，未容器化', '已容器化']}
-                onChange={(v) => setDraft({ ...draft, reproducibility: v })}
-              />
-            </Field>
+            <div className="wide sub">
+              题型、难度、技术栈和验收条件由 Codex
+              自动准备。创建后会立即排队，分别调用本机配置的 Codex CLI 和 Claude
+              CLI。
+            </div>
             <div className="wide sub">
               执行器会创建独立工作区，不自动提交或推送模型生成的代码。外部依赖请在工作区准备好后运行后续轮次。
             </div>
             <div className="wide actions">
               <Button type="submit" disabled={busy}>
-                {busy ? '正在创建…' : '创建任务'}
+                {busy ? '正在创建…' : '创建并启动流水线'}
               </Button>
               {error && (
                 <span role="alert" className="sub">
@@ -820,15 +800,15 @@ function TaskDetail({
       )}
       <Tabs value={tab} onValueChange={(v) => setTab(String(v))}>
         <TabsList>
-          <TabsTrigger value="turns">交互与评分</TabsTrigger>
+          <TabsTrigger value="turns">交互与自动评分</TabsTrigger>
           <TabsTrigger value="environment">环境与快照</TabsTrigger>
         </TabsList>
         <TabsContent value="turns">
           {!t.turns.length && (
             <div className="section">
-              <h3>输入首轮任务</h3>
+              <h3>输入任务目标</h3>
               <p className="sub">
-                明确需求、约束和验收方式。任务原文将完整保存，不进行改写。
+                填写目标和约束，原始目标与 Codex 生成的执行 Prompt 分别保存。
               </p>
             </div>
           )}
@@ -855,7 +835,7 @@ function TaskDetail({
               }}
             >
               <h3 className="wide">
-                {t.turns.length ? '追加下一轮交互' : '首轮 Prompt'}
+                {t.turns.length ? '追加下一轮交互' : '本轮任务目标'}
               </h3>
               <Field label="本轮任务类型">
                 <Picker
@@ -877,7 +857,7 @@ function TaskDetail({
                   onChange={setDifficulty}
                 />
               </Field>
-              <Field label="原始 Prompt" wide>
+              <Field label="执行 Prompt" wide>
                 <textarea
                   required
                   maxLength={80000}
@@ -902,8 +882,8 @@ function TaskDetail({
           )}
           {pending(t) && (
             <div className="issue" style={{ marginTop: 20 }}>
-              任务已进入执行队列，状态每 5
-              秒刷新。进程结束后保留原始输出，是否完成需求由人工判断。
+              任务已进入执行队列，状态每 5 秒刷新。Claude 完成后自动进入 Codex
+              评分与交付校验。
             </div>
           )}
           {counted(t) >= 10 && (
@@ -987,7 +967,7 @@ function TurnPanel({
   const labels = {
     queued: '排队中',
     running: '执行中',
-    review: '待人工评分',
+    review: '待评分或校验',
     failed: '执行异常',
     submitted: '已提交',
   };
@@ -1009,7 +989,7 @@ function TurnPanel({
         {fmt(producedAt(r))} · 截止 {fmt(deadline(producedAt(r)))}
       </p>
       <details style={{ marginTop: 12 }}>
-        <summary className="row-title">原始 Prompt</summary>
+        <summary className="row-title">执行 Prompt</summary>
         <pre className="sub" style={{ whiteSpace: 'pre-wrap', marginTop: 10 }}>
           {r.prompt}
         </pre>
@@ -1030,6 +1010,60 @@ function TurnPanel({
           </pre>
         </details>
       )}
+      {t.automationMode && (
+        <section className="section">
+          <h3>
+            当前阶段：
+            {(
+              {
+                prepare: 'Codex 任务准备',
+                snapshot: 'Codex 环境快照',
+                claude: 'Claude 执行',
+                score: 'Codex 五维评分',
+                delivery: 'Codex 校验与交付',
+              } as Record<string, string>
+            )[r.stage || 'prepare'] || r.stage}
+          </h3>
+          {r.requestedPrompt && (
+            <details>
+              <summary>原始任务目标</summary>
+              <p className="sub">{r.requestedPrompt}</p>
+            </details>
+          )}
+          {r.automation &&
+            Object.entries(r.automation)
+              .filter(([k]) => k !== 'bundlePath')
+              .map(([k, v]) => (
+                <details key={k}>
+                  <summary className="sub">{k} · Codex 阶段记录</summary>
+                  <pre className="sub mono" style={{ whiteSpace: 'pre-wrap' }}>
+                    {JSON.stringify(v, null, 2)}
+                  </pre>
+                </details>
+              ))}
+          {r.automation?.bundlePath && (
+            <p className="sub mono">本机交付包：{r.automation.bundlePath}</p>
+          )}
+        </section>
+      )}
+      {r.review?.source === 'codex' && (
+        <section className="section">
+          <h3>
+            Codex 自动评分 <span className="tag blue">AI 生成</span>
+          </h3>
+          <div className="reviewgrid">
+            {dimensions.map((d, i) => (
+              <div className="scorebox" key={d}>
+                <h3>
+                  {d} · {r.review!.scores[i]} / 5
+                </h3>
+                <p className="sub">{r.review!.descriptions[i]}</p>
+              </div>
+            ))}
+          </div>
+          <p className="sub">{r.review.other}</p>
+        </section>
+      )}
       {r.error && (
         <p className="issue" style={{ marginTop: 12 }}>
           {r.error}
@@ -1039,97 +1073,101 @@ function TurnPanel({
         <Button
           variant="outline"
           disabled={busy}
-          onClick={() => run({ action: 'assess', turnId: r.id })}
+          onClick={() => run({ action: 'retry', turnId: r.id })}
         >
-          本轮仍有反馈价值，进入人工评分
+          重试失败阶段
         </Button>
       )}
       {r.excluded ? (
         <p className="sub">排除原因：{r.excludeReason}</p>
       ) : (
         <>
-          {r.status === 'review' && (
-            <details style={{ marginTop: 18 }} open={!r.review}>
-              <summary className="row-title">人工评分与反馈</summary>
-              <p className="sub" style={{ margin: '12px 0' }}>
-                每项 1–5
-                分。写清具体步骤、行为、证据与影响；同时核对过程和产物。
-              </p>
-              <div className="reviewgrid">
-                {dimensions.map((d, i) => (
-                  <div className="scorebox" key={d}>
-                    <Field label={d}>
-                      <Picker
-                        label={d + '评分'}
-                        value={
-                          review.scores[i] ? String(review.scores[i]) : '未评分'
-                        }
-                        options={['未评分', '1', '2', '3', '4', '5']}
-                        onChange={(v) =>
-                          setReview({
-                            ...review,
-                            scores: review.scores.map((s, j) =>
-                              j === i ? Number(v) || 0 : s,
-                            ),
-                          })
-                        }
-                      />
-                      <textarea
-                        style={{ marginTop: 10 }}
-                        placeholder="人工填写具体依据"
-                        value={review.descriptions[i]}
-                        onChange={(e) =>
-                          setReview({
-                            ...review,
-                            descriptions: review.descriptions.map((s, j) =>
-                              j === i ? e.target.value : s,
-                            ),
-                          })
-                        }
-                      />
-                    </Field>
-                  </div>
-                ))}
-              </div>
-              <div className="formgrid" style={{ marginTop: 16 }}>
-                <Field label="评分人">
-                  <input
-                    value={review.reviewer}
-                    onChange={(e) =>
-                      setReview({ ...review, reviewer: e.target.value })
-                    }
-                  />
-                </Field>
-                <Field label="其他问题">
-                  <input
-                    value={review.other}
-                    onChange={(e) =>
-                      setReview({ ...review, other: e.target.value })
-                    }
-                  />
-                </Field>
-                <label className="wide actions sub">
-                  <Checkbox
-                    checked={review.attested}
-                    onCheckedChange={(v) =>
-                      setReview({ ...review, attested: Boolean(v) })
-                    }
-                  />
-                  我已人工检查过程和产物，并独立填写评分与依据。
-                </label>
-                <div className="wide">
-                  <Button
-                    disabled={busy}
-                    onClick={() =>
-                      run({ action: 'review', turnId: r.id, review })
-                    }
-                  >
-                    保存人工评分
-                  </Button>
+          {r.status === 'review' &&
+            r.review?.source !== 'codex' &&
+            !t.automationMode && (
+              <details style={{ marginTop: 18 }} open={!r.review}>
+                <summary className="row-title">人工评分与反馈</summary>
+                <p className="sub" style={{ margin: '12px 0' }}>
+                  每项 1–5
+                  分。写清具体步骤、行为、证据与影响；同时核对过程和产物。
+                </p>
+                <div className="reviewgrid">
+                  {dimensions.map((d, i) => (
+                    <div className="scorebox" key={d}>
+                      <Field label={d}>
+                        <Picker
+                          label={d + '评分'}
+                          value={
+                            review.scores[i]
+                              ? String(review.scores[i])
+                              : '未评分'
+                          }
+                          options={['未评分', '1', '2', '3', '4', '5']}
+                          onChange={(v) =>
+                            setReview({
+                              ...review,
+                              scores: review.scores.map((s, j) =>
+                                j === i ? Number(v) || 0 : s,
+                              ),
+                            })
+                          }
+                        />
+                        <textarea
+                          style={{ marginTop: 10 }}
+                          placeholder="人工填写具体依据"
+                          value={review.descriptions[i]}
+                          onChange={(e) =>
+                            setReview({
+                              ...review,
+                              descriptions: review.descriptions.map((s, j) =>
+                                j === i ? e.target.value : s,
+                              ),
+                            })
+                          }
+                        />
+                      </Field>
+                    </div>
+                  ))}
                 </div>
-              </div>
-            </details>
-          )}
+                <div className="formgrid" style={{ marginTop: 16 }}>
+                  <Field label="评分人">
+                    <input
+                      value={review.reviewer}
+                      onChange={(e) =>
+                        setReview({ ...review, reviewer: e.target.value })
+                      }
+                    />
+                  </Field>
+                  <Field label="其他问题">
+                    <input
+                      value={review.other}
+                      onChange={(e) =>
+                        setReview({ ...review, other: e.target.value })
+                      }
+                    />
+                  </Field>
+                  <label className="wide actions sub">
+                    <Checkbox
+                      checked={review.attested}
+                      onCheckedChange={(v) =>
+                        setReview({ ...review, attested: Boolean(v) })
+                      }
+                    />
+                    我已人工检查过程和产物，并独立填写评分与依据。
+                  </label>
+                  <div className="wide">
+                    <Button
+                      disabled={busy}
+                      onClick={() =>
+                        run({ action: 'review', turnId: r.id, review })
+                      }
+                    >
+                      保存人工评分
+                    </Button>
+                  </div>
+                </div>
+              </details>
+            )}
           {['review', 'failed', 'submitted'].includes(r.status) && (
             <details style={{ marginTop: 16 }}>
               <summary className="row-title">

@@ -11,7 +11,7 @@ export async function GET() {
     return Response.json({
       tasks: tasks.map((t) => ({
         ...t,
-        turns: t.turns.map(({ jobToken, ...r }: any) => r),
+        turns: t.turns.map(({ jobToken, completedJobToken, ...r }: any) => r),
       })),
       runner: runner
         ? { ...JSON.parse(runner.data), heartbeat: runner.heartbeat }
@@ -35,9 +35,9 @@ export async function POST(req: Request) {
       throw new Error('首轮须选择有效题型，且不能为简单题');
     const task: Task = {
       id: crypto.randomUUID(),
-      title: text(b.title, '任务名称', 200),
+      title: text(b.title, '任务目标', 200),
       repoPath: text(b.repoPath, '本机仓库路径', 2000),
-      stack: text(b.stack, '语言/框架', 300),
+      stack: text(b.stack || '待 Codex 识别', '语言/框架', 300),
       category: b.category,
       difficulty: b.difficulty,
       reproducibility: text(b.reproducibility, '环境等级', 300),
@@ -45,7 +45,17 @@ export async function POST(req: Request) {
       createdAt: new Date().toISOString(),
       closed: false,
       turns: [],
+      automationMode: 'codex',
     };
+    if (b.autoStart === true)
+      task.turns.push({
+        id: crypto.randomUUID(),
+        prompt: task.title,
+        category: task.category,
+        difficulty: task.difficulty,
+        status: 'queued',
+        createdAt: new Date().toISOString(),
+      });
     if (!task.repoPath.startsWith('/'))
       throw new Error('仓库路径需为本机绝对路径');
     await db()

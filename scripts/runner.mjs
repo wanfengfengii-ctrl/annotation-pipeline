@@ -1,3 +1,4 @@
+import { codexStage } from './codex-stages.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import {
   readFileSync,
@@ -13,7 +14,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const token =
@@ -54,6 +55,7 @@ const command = (cmd, args, cwd) =>
     timeout: 60000,
   }).trim();
 const version = command('claude', ['--version'], root);
+const codexVersion = command('codex', ['--version'], root);
 async function api(body) {
   const r = await fetch(base + '/api/runner', {
     method: 'POST',
@@ -69,7 +71,7 @@ async function api(body) {
   return j;
 }
 const heartbeat = setInterval(
-  () => api({ action: 'heartbeat', version }).catch(() => {}),
+  () => api({ action: 'heartbeat', version, codexVersion }).catch(() => {}),
   10000,
 );
 function transcript(sessionId, prompt) {
@@ -99,11 +101,11 @@ function transcript(sessionId, prompt) {
   }
   return {};
 }
-async function execute({ task, turn }) {
+async function executeClaude({ task, turn }) {
   const dir = path.join(workRoot, task.id);
   mkdirSync(dir, { recursive: true });
-  const tracePath = path.join(dir, turn.id + '.jsonl');
-  const stderrPath = path.join(dir, turn.id + '.stderr.log');
+  const tracePath = path.join(dir, (turn.traceKey || turn.id) + '.jsonl');
+  const stderrPath = path.join(dir, (turn.traceKey || turn.id) + '.stderr.log');
   const result = {
     action: 'finish',
     taskId: task.id,
@@ -271,15 +273,196 @@ async function execute({ task, turn }) {
     if (!task.sessionId && !result.output && !result.promptId)
       delete result.sessionId;
   }
+  result.finishedAt = new Date().toISOString();
+  return result;
+}
+async function execute({ task, turn }) {
+  const dir = path.join(workRoot, task.id);
+  mkdirSync(dir, { recursive: true });
+  const cachePath = path.join(dir, turn.id + '.stages.json');
+  const cached = existsSync(cachePath)
+    ? JSON.parse(readFileSync(cachePath, 'utf8'))
+    : {};
+  const persist = () =>
+    writeFileSync(cachePath, JSON.stringify(cached, null, 2), { mode: 0o600 });
+  cached.attempt = (cached.attempt || 0) + 1;
+  persist();
+  const automation = {};
+  let stage = 'prepare';
+  let result = {
+    action: 'finish',
+    taskId: task.id,
+    turnId: turn.id,
+    jobToken: turn.jobToken,
+    success: false,
+    automation,
+  };
+  async function step(name, prompt, cwd) {
+    stage = name;
+    await api({
+      action: 'stage',
+      taskId: task.id,
+      turnId: turn.id,
+      jobToken: turn.jobToken,
+      stage: name,
+    });
+    if (cached[name]) return cached[name];
+    const value = await codexStage({
+      stage: name,
+      prompt,
+      cwd,
+      dir,
+      turnId: turn.id + '.attempt-' + (cached.attempt || 1),
+      onChild: (p) => (child = p),
+    });
+    return value;
+  }
+  try {
+    const preparation = await step(
+      'prepare',
+      `用户任务目标：${turn.requestedPrompt || turn.prompt}\n请读取当前仓库，准备交给 Claude 的完整任务 Prompt、分类、难度、技术栈和验收条件。保留用户约束，不擅自增加业务需求。${task.sessionId ? '这是后续轮次，应结合当前状态和上一轮原始目标。' : '这是首轮，禁止简单题。'}\n这是 AI 自动评测任务，不得声称是人工标注。`,
+      task.workDir || task.repoPath,
+    );
+    if (!task.sessionId && preparation.value.difficulty === '简单')
+      throw new Error('首轮自动出题过于简单');
+    cached.prepare = preparation;
+    persist();
+    automation.preparation = preparation;
+    result.preparedPrompt = preparation.value.prompt;
+    result.preparation = preparation.value;
+    const snap = await step(
+      'snapshot',
+      `只读检查此仓库的 Git 环境。读取 HEAD 完整 SHA 和 origin URL、工作区状态、依赖与可复现性。不得修改、提交或推送。${task.workDir ? '这是后续轮次，允许模型已有改动；初始快照必须继续引用 ' + task.snapshot : '这是首轮，若工作区不干净或缺少 GitHub origin，请返回 ready=false。'} 返回实际 head、remote 和检查说明。`,
+      task.workDir || task.repoPath,
+    );
+    if (!snap.value.ready)
+      throw new Error('Codex 环境检查未通过：' + snap.value.notes.join('；'));
+    if (
+      !task.workDir &&
+      snap.value.head !== command('git', ['rev-parse', 'HEAD'], task.repoPath)
+    )
+      throw new Error('Codex 检查的 HEAD 与仓库不一致');
+    cached.snapshot = snap;
+    persist();
+    automation.snapshot = snap;
+    stage = 'claude';
+    await api({
+      action: 'stage',
+      taskId: task.id,
+      turnId: turn.id,
+      jobToken: turn.jobToken,
+      stage,
+    });
+    if (!cached.claude?.success) {
+      const previous = cached.claude || {};
+      cached.claude = await executeClaude({
+        task: {
+          ...task,
+          ...(previous.workDir
+            ? {
+                workDir: previous.workDir,
+                snapshot: previous.snapshot,
+                sessionId: previous.sessionId,
+              }
+            : {}),
+        },
+        turn: {
+          ...turn,
+          traceKey: turn.id + '.attempt-' + (cached.attempt || 1),
+          prompt: preparation.value.prompt,
+        },
+      });
+      persist();
+    }
+    result = {
+      ...result,
+      ...cached.claude,
+      jobToken: turn.jobToken,
+      automation,
+    };
+    if (!result.success) throw new Error(result.error || 'Claude 执行失败');
+    const score = await step(
+      'score',
+      `你是 Codex 自动评分器。只读分析当前产物和本轮原始轨迹。\n任务：${preparation.value.prompt}\n验收条件：${JSON.stringify(preparation.value.acceptance)}\n本轮轨迹文件：${result.tracePath}\n初始快照：${result.snapshot}\n请用 git diff 和实际文件核对结果。按交付完整性、指令遵循、任务规划、推理能力、执行能力依次评分 1–5，并为每项提供具体步骤、文件或工具调用的证据和影响。不要修改、修复产物或编造测试；没有执行的测试不能声称通过。评分来源必须为 AI。other 无其他问题时写“无”。`,
+      result.workDir,
+    );
+    cached.score = score;
+    persist();
+    automation.score = score;
+    result.review = {
+      ...score.value,
+      source: 'codex',
+      attested: false,
+      reviewer: 'Codex CLI（AI）',
+    };
+    if (
+      !result.promptId ||
+      !result.sessionId ||
+      !result.tracePath ||
+      !existsSync(result.tracePath) ||
+      !/^https:\/\/github\.com\/[^/]+\/[^/]+\/commit\/[0-9a-f]{40}$/i.test(
+        result.snapshot || '',
+      )
+    )
+      throw new Error(
+        '自动交付缺少真实会话、轮次、轨迹或完整快照，不能生成合格交付包',
+      );
+    const delivery = await step(
+      'delivery',
+      `对以下 AI 评测数据做交付校验：${JSON.stringify({ snapshot: result.snapshot, sessionId: result.sessionId, promptId: result.promptId, tracePath: result.tracePath, prompt: preparation.value.prompt, review: result.review })}\n检查五维分数与证据是否一致、是否具体可追溯、是否存在虚假成功。基于实际轨迹与代码。passed 只代表内部 AI 评测数据是否完整一致，不能声称满足原项目人工标注规则。不要向腾讯文档或其他平台提交；返回校验清单和结论。`,
+      result.workDir,
+    );
+    automation.delivery = delivery;
+    if (!delivery.value.passed)
+      throw new Error('Codex 交付校验未通过：' + delivery.value.summary);
+    cached.delivery = delivery;
+    persist();
+    const bundlePath = path.join(dir, turn.id + '.ai-delivery.json');
+    automation.bundlePath = bundlePath;
+    writeFileSync(
+      bundlePath,
+      JSON.stringify(
+        {
+          provenance: 'AI-generated / Codex CLI',
+          usage: '内部 AI 评测数据，不作为原项目人工标注',
+          taskId: task.id,
+          turnId: turn.id,
+          prompt: preparation.value.prompt,
+          snapshot: result.snapshot,
+          sessionId: result.sessionId,
+          promptId: result.promptId,
+          tracePath: result.tracePath,
+          review: result.review,
+          validation: delivery.value,
+          stages: automation,
+        },
+        null,
+        2,
+      ),
+    );
+    result.success = true;
+    result.error = '';
+  } catch (e) {
+    result.success = false;
+    result.error = e.message;
+  }
+  result.stage = stage;
+  result.automation = automation;
   const receipt = path.join(dir, turn.id + '.result.json');
   writeFileSync(receipt, JSON.stringify(result, null, 2), { mode: 0o600 });
   return { result, receipt };
 }
+
 async function deliver(result, receipt) {
   await api(result);
-  writeFileSync(receipt + '.delivered', 'ok');
+  writeFileSync(
+    receipt + '.delivered',
+    createHash('sha256').update(readFileSync(receipt)).digest('hex'),
+  );
 }
-console.log(`Claude 执行器就绪 · ${version} · ${base} · 使用 CLI 配置模型`);
+console.log(
+  `Codex 编排 / Claude 执行器就绪 · ${version} · ${base} · 使用 CLI 配置模型`,
+);
 try {
   for (const taskDir of readdirSync(workRoot)) {
     const p = path.join(workRoot, taskDir);
@@ -288,13 +471,17 @@ try {
       x.endsWith('.result.json'),
     )) {
       const receipt = path.join(p, name);
-      if (!existsSync(receipt + '.delivered'))
+      if (
+        !existsSync(receipt + '.delivered') ||
+        readFileSync(receipt + '.delivered', 'utf8') !==
+          createHash('sha256').update(readFileSync(receipt)).digest('hex')
+      )
         await deliver(JSON.parse(readFileSync(receipt, 'utf8')), receipt);
     }
   }
   while (!stopping) {
     try {
-      await api({ action: 'heartbeat', version });
+      await api({ action: 'heartbeat', version, codexVersion });
       const { job } = await api({ action: 'claim' });
       if (job) {
         console.log(`开始：${job.task.title} / ${job.turn.id}`);
@@ -311,7 +498,7 @@ try {
         }
         console.log(
           result.success
-            ? '该轮已完成，等待人工评分'
+            ? '该轮已完成 Codex 评分与交付校验'
             : '该轮异常：' + result.error,
         );
       } else await new Promise((r) => setTimeout(r, 2500));
