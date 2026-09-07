@@ -76,8 +76,11 @@ export function SchedulerPanel({
         <p className="sub">
           {s.cpu} · {s.cores} 核 / {s.totalGB} GB · 可用及可回收内存约{' '}
           {s.availableGB} GB · 1 分钟负载 {s.load} · {s.reason}。
-          {s.generating ? '出题占用 1 个槽位。' : ''}今日补充 {s.generatedToday}{' '}
-          / {s.dailyLimit} 个。
+          {s.generating ? '出题占用 1 个槽位。' : ''}
+          {s.recovering
+            ? ` ${s.recovering} 个旧任务等待进程退出，占用相应槽位。`
+            : ''}
+          今日补充 {s.generatedToday} / {s.dailyLimit} 个。
         </p>
       )}
       <p role="status" className="sub">
@@ -98,9 +101,36 @@ export function SchedulerPanel({
           ? `最近审核：${s.lastAudit.allowed ? '通过' : '拦截'}，${s.lastAudit.reason}`
           : ''}
       </p>
+      <p className="sub">
+        流程规则：{s?.workflowVersion || '等待执行器报告'}
+        。评分包含五维分档、过程与产物证据；每轮生成带 SHA-256 清单的本地归档。
+      </p>
+      {s?.mix && (
+        <p className="sub">
+          今日有效轮次：
+          {Object.entries(s.mix.counts)
+            .map(([name, n]) => `${name} ${String(n)}`)
+            .join(' · ')}
+          。优先补充：{s.mix.suggested}。{s.mix.note}
+        </p>
+      )}
+      <p className="sub">
+        待外部完成：提供任务仓库、确认评审者仓库访问权限、原项目人工标注与外部表格提交。AI
+        归档不代表已对外交付。
+      </p>
       <details>
         <summary>调度设置</summary>
         <form onSubmit={save} className="scheduler-form">
+          <label className="scheduler-check" htmlFor="auto-continue">
+            <Checkbox
+              id="auto-continue"
+              checked={config.autoContinue}
+              onCheckedChange={(v) =>
+                setConfig({ ...config, autoContinue: v === true })
+              }
+            />
+            每轮评分后自动判断并续跑（最多 10 轮）
+          </label>
           <label className="scheduler-check">
             <Checkbox
               checked={config.enabled}

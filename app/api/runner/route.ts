@@ -1,3 +1,4 @@
+import { nextDecision, dailyMix } from '@/lib/workflow.mjs';
 import { candidateDigest, assertPolicyAudit } from '@/lib/task-policy.mjs';
 import { schedulerConfig } from '@/db/scheduler';
 import { sources } from '@/lib/scheduler';
@@ -42,6 +43,7 @@ export async function POST(req: Request) {
         config = await schedulerConfig();
       return Response.json({
         config,
+        mix: dailyMix(tasks, businessDate(new Date().toISOString())),
         repos: sources(config, tasks),
         queued: tasks.some((t) =>
           t.turns.some((r: any) => r.status === 'queued'),
@@ -148,7 +150,12 @@ export async function POST(req: Request) {
         Number.isInteger(b.capacity) ? Math.max(1, Math.min(4, b.capacity)) : 1,
       );
       for (const item of [...tasks].reverse()) {
-        if (item.closed || item.turns.some((r: any) => r.status === 'running'))
+        if (
+          item.closed ||
+          item.turns.some(
+            (r: any) => r.recoveryBlocked || r.status === 'running',
+          )
+        )
           continue;
         const r = item.turns.find((r: any) => r.status === 'queued');
         if (!r) continue;
@@ -181,12 +188,49 @@ export async function POST(req: Request) {
           'claude',
           'score',
           'delivery',
+          'next',
         ].includes(b.stage)
       )
         throw new Error('未知阶段');
       r.stage = b.stage;
       await save(item.task, item.revision);
       return Response.json({ ok: true });
+    }
+    if (b.action === 'recover') {
+      const item = await get(text(b.taskId, '任务 ID'));
+      const r = item?.task.turns.find((r) => r.id === b.turnId);
+      if (!item || !r) return Response.json({ done: true });
+      if (r.completedJobToken === b.jobToken)
+        return Response.json({ done: true });
+      if (
+        typeof b.jobToken !== 'string' ||
+        (r.jobToken !== b.jobToken && r.recoveryToken !== b.jobToken)
+      )
+        return Response.json({ done: true });
+      r.recoveryToken = b.jobToken;
+      delete r.jobToken;
+      r.status = 'failed';
+      r.recoveryBlocked = b.live === true;
+      r.error = b.live
+        ? '旧执行器子进程仍在运行，暂不允许重试'
+        : '执行器中断，结果未确认；请检查轨迹后决定重试或排除';
+      if (!b.live && b.salvage?.success === true) {
+        r.status = 'queued';
+        r.error = '';
+        for (const key of [
+          'workDir',
+          'sessionId',
+          'snapshot',
+          'harnessVersion',
+          'os',
+          'model',
+        ] as const)
+          if (typeof b.salvage[key] === 'string')
+            item.task[key] = b.salvage[key];
+      }
+      if (!b.live) delete r.recoveryToken;
+      await save(item.task, item.revision);
+      return Response.json({ done: !b.live });
     }
     if (b.action === 'finish') {
       const item = await get(text(b.taskId, '任务 ID'));
@@ -206,7 +250,8 @@ export async function POST(req: Request) {
       if (typeof b.stage === 'string') r.stage = b.stage;
       if (b.preparedPrompt) {
         r.requestedPrompt = r.requestedPrompt || r.prompt;
-        r.prompt = text(b.preparedPrompt, 'Codex Prompt', 80000);
+        text(b.preparedPrompt, 'Codex Prompt', 80000);
+        r.prompt = b.preparedPrompt;
       }
       if (b.review?.source === 'codex') {
         const v = b.review;
@@ -230,6 +275,7 @@ export async function POST(req: Request) {
         item.task.category = b.preparation.category;
         item.task.difficulty = b.preparation.difficulty;
         item.task.stack = b.preparation.stack;
+        r.stack = b.preparation.stack;
         r.category = b.preparation.category;
         r.difficulty = b.preparation.difficulty;
       }
@@ -248,10 +294,30 @@ export async function POST(req: Request) {
         'sessionId',
       ] as const)
         if (typeof b[key] === 'string') item.task[key] = b[key];
+      for (const key of ['harnessVersion', 'os', 'model'] as const)
+        if (typeof b[key] === 'string') r[key] = b[key];
+      if (!item.task.snapshot && typeof b.reproducibility === 'string')
+        item.task.reproducibility = b.reproducibility;
       if (b.githubSnapshot?.engine === 'github-cli')
         item.task.githubSnapshot = b.githubSnapshot;
       if (!item.task.snapshot && typeof b.snapshot === 'string')
         item.task.snapshot = b.snapshot;
+      if (b.success && !item.task.closed) {
+        const decision = nextDecision(item.task, r, await schedulerConfig());
+        if (decision) {
+          item.task.automationNotice = decision.notice;
+          if (decision.prompt)
+            item.task.turns.push({
+              id: crypto.randomUUID(),
+              prompt: decision.prompt,
+              category: r.category,
+              difficulty: r.difficulty,
+              status: 'queued',
+              createdAt: new Date().toISOString(),
+              autoFollowup: true,
+            });
+        }
+      }
       await save(item.task, item.revision);
       return Response.json({ ok: true });
     }

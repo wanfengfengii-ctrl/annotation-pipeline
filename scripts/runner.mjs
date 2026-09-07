@@ -1,3 +1,6 @@
+import { workflow, scoreInstructions } from '../lib/workflow.mjs';
+import { verifyScoreEvidence, createEvidenceArchive } from './evidence.mjs';
+import { acquireLock, journalChild, livingChildren } from './recovery.mjs';
 import {
   rules,
   policyInstructions,
@@ -36,15 +39,7 @@ const workRoot = path.resolve(
 );
 mkdirSync(workRoot, { recursive: true });
 const lock = path.join(workRoot, 'runner.lock');
-try {
-  const fd = openSync(lock, 'wx');
-  writeFileSync(fd, String(process.pid));
-  closeSync(fd);
-} catch {
-  throw new Error(
-    '执行器锁已存在。确认旧进程已退出后再删除 .runner/runner.lock',
-  );
-}
+acquireLock(lock);
 let stopping = false;
 const children = new Set();
 function track(p) {
@@ -129,7 +124,7 @@ function transcript(sessionId, prompt) {
   }
   return {};
 }
-async function executeClaude({ task, turn }) {
+async function executeClaude({ task, turn, onChild = track }) {
   const dir = path.join(workRoot, task.id);
   mkdirSync(dir, { recursive: true });
   const tracePath = path.join(dir, (turn.traceKey || turn.id) + '.jsonl');
@@ -199,7 +194,7 @@ async function executeClaude({ task, turn }) {
         env: { ...process.env },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
-      track(child);
+      onChild(child);
       let hardLimit;
       const limit = setTimeout(
         () => {
@@ -251,7 +246,16 @@ async function executeClaude({ task, turn }) {
             `Claude CLI 未正常完成（退出码 ${code}，信号 ${signal || '无'}）。查看 ${stderrPath}`;
         }
         result.output = final?.result || '';
-        result.success = code === 0 && Boolean(final) && !final.is_error;
+        result.executionOutcome =
+          final?.subtype === 'error_max_turns'
+            ? 'truncated'
+            : final?.is_error
+              ? 'error'
+              : 'complete';
+        result.success =
+          Boolean(final) &&
+          ((code === 0 && !final.is_error) ||
+            final.subtype === 'error_max_turns');
         resolve();
       });
       child.stdin.on('error', () => {});
@@ -293,9 +297,20 @@ async function execute({ task, turn }) {
     : {};
   const persist = () =>
     writeFileSync(cachePath, JSON.stringify(cached, null, 2), { mode: 0o600 });
+  if (cached.workflowVersion !== workflow.version) {
+    delete cached.score;
+    delete cached.delivery;
+    delete cached.next;
+  }
+  cached.workflowVersion = workflow.version;
   cached.attempt = (cached.attempt || 0) + 1;
   persist();
-  const automation = {};
+  const automation = { workflowVersion: workflow.version };
+  const journal = path.join(dir, turn.id + '.job.json');
+  const onChild = (p) => {
+    track(p);
+    if (p) journalChild(journal, p);
+  };
   let stage = 'prepare';
   let result = {
     action: 'finish',
@@ -323,11 +338,25 @@ async function execute({ task, turn }) {
       cwd,
       dir,
       turnId: turn.id + '.attempt-' + (cached.attempt || 1),
-      onChild: track,
+      onChild,
     });
     return value;
   }
   try {
+    if (
+      task.sessionId &&
+      task.os &&
+      task.os !== `${os.platform()} ${os.release()}`
+    )
+      throw Error('操作系统环境发生变化，请新建会话');
+    if (
+      task.sessionId &&
+      task.harnessVersion &&
+      task.harnessVersion !== version
+    )
+      throw Error(
+        'Claude CLI 版本已变化，请新建会话，不能混用同一会话的运行环境',
+      );
     const index = task.turns.findIndex((r) => r.id === turn.id);
     const previousTurns = task.turns
       .slice(0, Math.max(0, index))
@@ -398,7 +427,7 @@ async function execute({ task, turn }) {
     persist();
     const snap = await step(
       'snapshot',
-      `只读检查此仓库的 Git 环境。读取 HEAD 完整 SHA 和 origin URL、工作区状态、依赖与可复现性。不得修改、提交或推送。${task.workDir ? '这是后续轮次，允许模型已有改动；初始快照必须继续引用 ' + task.snapshot : '这是首轮，若工作区不干净或缺少 GitHub origin，请返回 ready=false。'} 返回实际 head、remote 和检查说明。`,
+      `只读检查此仓库的 Git 环境。读取 HEAD 完整 SHA 和 origin URL、工作区状态、依赖与可复现性。不得修改、提交或推送。${task.workDir ? '这是后续轮次，允许模型已有改动；初始快照必须继续引用 ' + task.snapshot : '这是首轮，若工作区不干净或缺少 GitHub origin，请返回 ready=false。'} 返回实际 head、remote 和检查说明。\n环境等级只能是：${workflow.environmentLevels.join('；')}。根据真实依赖、配置与启动文件判断，列出 dependencies、startup 和 verification；只读检查未实际运行时必须说明未运行，不能仅因为有 Dockerfile 就声称可一键复现。`,
       task.workDir || task.repoPath,
     );
     if (!snap.value.ready)
@@ -412,6 +441,9 @@ async function execute({ task, turn }) {
       expectedSha: snap.value.head,
       existingSnapshot: task.workDir ? task.snapshot : undefined,
     });
+    result.reproducibility = task.snapshot
+      ? task.reproducibility
+      : snap.value.environmentLevel;
     result.githubSnapshot = githubEvidence;
     result.snapshot = githubEvidence.url;
     task = { ...task, githubSnapshot: githubEvidence };
@@ -434,6 +466,7 @@ async function execute({ task, turn }) {
     if (!cached.claude?.success) {
       const previous = cached.claude || {};
       cached.claude = await executeClaude({
+        onChild,
         task: {
           ...task,
           ...(previous.workDir
@@ -462,9 +495,17 @@ async function execute({ task, turn }) {
     if (!result.success) throw new Error(result.error || 'Claude 执行失败');
     const score = await step(
       'score',
-      `你是 Codex 自动评分器。只读分析当前产物和本轮原始轨迹。\n任务：${preparation.value.prompt}\n验收条件：${JSON.stringify(preparation.value.acceptance)}\n本轮轨迹文件：${result.tracePath}\n初始快照：${result.snapshot}\n请用 git diff 和实际文件核对结果。按交付完整性、指令遵循、任务规划、推理能力、执行能力依次评分 1–5，并为每项提供具体步骤、文件或工具调用的证据和影响。不要修改、修复产物或编造测试；没有执行的测试不能声称通过。评分来源必须为 AI。other 无其他问题时写“无”。`,
+      ` ${scoreInstructions()}\n你是 Codex 自动评分器。只读分析当前产物和本轮原始轨迹。\n任务：${preparation.value.prompt}\n验收条件：${JSON.stringify(preparation.value.acceptance)}\n本轮轨迹文件：${result.tracePath}\n初始快照：${result.snapshot}\n请用 git diff 和实际文件核对结果。按交付完整性、指令遵循、任务规划、推理能力、执行能力依次评分 1–5，并为每项提供具体步骤、文件或工具调用的证据和影响。不要修改、修复产物或编造测试；没有执行的测试不能声称通过。评分来源必须为 AI。other 无其他问题时写“无”。`,
       result.workDir,
     );
+    try {
+      score.value = verifyScoreEvidence(score.value, result.workDir, dir);
+    } catch (e) {
+      delete cached.score;
+      delete cached.delivery;
+      persist();
+      throw e;
+    }
     cached.score = score;
     persist();
     automation.score = score;
@@ -474,6 +515,18 @@ async function execute({ task, turn }) {
       attested: false,
       reviewer: 'Codex CLI（AI）',
     };
+    if (task.sessionId && result.sessionId !== task.sessionId)
+      throw Error('Claude 返回的 SessionID 与原会话不一致');
+    if (
+      task.turns.some(
+        (r) =>
+          r.id !== turn.id &&
+          !r.excluded &&
+          r.promptId &&
+          r.promptId === result.promptId,
+      )
+    )
+      throw Error('本轮 PromptID 与历史轮次重复，请检查原始轨迹');
     if (
       !result.promptId ||
       !result.sessionId ||
@@ -488,7 +541,7 @@ async function execute({ task, turn }) {
       );
     const delivery = await step(
       'delivery',
-      `对以下 AI 评测数据做交付校验：${JSON.stringify({ snapshot: result.snapshot, sessionId: result.sessionId, promptId: result.promptId, tracePath: result.tracePath, prompt: preparation.value.prompt, review: result.review })}\n检查五维分数与证据是否一致、是否具体可追溯、是否存在虚假成功。基于实际轨迹与代码。passed 只代表内部 AI 评测数据是否完整一致，不能声称满足原项目人工标注规则。不要向腾讯文档或其他平台提交；返回校验清单和结论。`,
+      `对以下 AI 评测数据做交付校验：${JSON.stringify({ snapshot: result.snapshot, sessionId: result.sessionId, promptId: result.promptId, tracePath: result.tracePath, prompt: preparation.value.prompt, review: result.review, processFindings: score.value.processFindings, artifactFindings: score.value.artifactFindings })}\n逐项核对 When/What/Impact/正确做法、过程与产物证据、模型归因和分数分档一致性；检查五维分数与证据是否一致、是否具体可追溯、是否存在虚假成功。基于实际轨迹与代码。passed 只代表内部 AI 评测数据是否完整一致，不能声称满足原项目人工标注规则。不要向腾讯文档或其他平台提交；返回校验清单和结论。`,
       result.workDir,
     );
     automation.delivery = delivery;
@@ -496,6 +549,24 @@ async function execute({ task, turn }) {
       throw new Error('Codex 交付校验未通过：' + delivery.value.summary);
     cached.delivery = delivery;
     persist();
+    if (
+      context.config.autoContinue &&
+      task.turns.filter((r) => !r.excluded).length < 10
+    ) {
+      const next = await step(
+        'next',
+        `只读判断是否需要下一轮。会话最初目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}\n本轮原始目标：${turn.requestedPrompt || turn.prompt}\n完整任务：${preparation.value.prompt}\n轨迹：${result.tracePath}\n产物目录：${result.workDir}\n本轮评价：${JSON.stringify(result.review)}\n执行结果类型：${result.executionOutcome || 'complete'}\n仅对本题未完成部分或已发现 Bug 提出具体修复，不增加无关功能。需要用户凭据、付费、外部访问或关键决策时 needs_input。完成时 complete；截断未完成时 continue；已证实产物问题时 repair。prompt 必须是可执行的下一轮完整指令，complete/needs_input 时写“无”。reason 给出实际依据。每个会话最多 10 轮，每轮独立评分。`,
+        result.workDir,
+      );
+      if (
+        result.executionOutcome === 'truncated' &&
+        next.value.action === 'complete'
+      )
+        throw Error('截断轮次不能直接判定为完整结束');
+      cached.next = next;
+      persist();
+      automation.next = next;
+    }
     const bundlePath = path.join(dir, turn.id + '.ai-delivery.json');
     automation.bundlePath = bundlePath;
     writeFileSync(
@@ -521,6 +592,14 @@ async function execute({ task, turn }) {
         2,
       ),
     );
+    automation.archive = createEvidenceArchive({
+      dir,
+      turnId: turn.id,
+      bundlePath,
+      tracePath: result.tracePath,
+      automation,
+      workDir: result.workDir,
+    });
     result.success = true;
     result.error = '';
   } catch (e) {
@@ -560,6 +639,38 @@ try {
         await deliver(JSON.parse(readFileSync(receipt, 'utf8')), receipt);
     }
   }
+  const orphans = [];
+  for (const name of readdirSync(workRoot)) {
+    const dir = path.join(workRoot, name);
+    if (!statSync(dir).isDirectory()) continue;
+    for (const file of readdirSync(dir).filter((f) =>
+      f.endsWith('.job.json'),
+    )) {
+      const journal = path.join(dir, file);
+      if (!existsSync(journal + '.done')) orphans.push(journal);
+    }
+  }
+  async function recoverOrphans() {
+    for (const journal of [...orphans]) {
+      const j = JSON.parse(readFileSync(journal, 'utf8'));
+      const live = livingChildren(j).length > 0;
+      const cachePath = journal.replace('.job.json', '.stages.json');
+      const cache = existsSync(cachePath)
+        ? JSON.parse(readFileSync(cachePath, 'utf8'))
+        : {};
+      const r = await api({
+        action: 'recover',
+        ...j,
+        live,
+        salvage: cache.claude || null,
+      });
+      if (!live || r.done) {
+        writeFileSync(journal + '.done', '1');
+        orphans.splice(orphans.indexOf(journal), 1);
+      }
+    }
+  }
+  await recoverOrphans();
   const active = new Map();
   const supplyDir = path.join(workRoot, 'supply');
   mkdirSync(supplyDir, { recursive: true });
@@ -573,10 +684,40 @@ try {
   const nap = (ms) => new Promise((r) => setTimeout(r, ms));
   async function runJob(job) {
     console.log(`开始：${job.task.title} / ${job.turn.id}`);
-    const { result, receipt } = await execute(job);
+    const jobDir = path.join(workRoot, job.task.id);
+    mkdirSync(jobDir, { recursive: true });
+    const journal = path.join(jobDir, job.turn.id + '.job.json');
+    writeFileSync(
+      journal,
+      JSON.stringify({
+        taskId: job.task.id,
+        turnId: job.turn.id,
+        jobToken: job.turn.jobToken,
+        children: [],
+      }),
+      { mode: 0o600 },
+    );
+    let outcome;
+    try {
+      outcome = await execute(job);
+    } catch (e) {
+      const result = {
+        action: 'finish',
+        taskId: job.task.id,
+        turnId: job.turn.id,
+        jobToken: job.turn.jobToken,
+        success: false,
+        error: '执行器异常：' + e.message,
+      };
+      const receipt = path.join(jobDir, job.turn.id + '.result.json');
+      writeFileSync(receipt, JSON.stringify(result), { mode: 0o600 });
+      outcome = { result, receipt };
+    }
+    const { result, receipt } = outcome;
     do {
       try {
         await deliver(result, receipt);
+        writeFileSync(journal + '.done', '1');
         break;
       } catch (e) {
         console.error('回写失败，将重试：' + e.message);
@@ -606,7 +747,7 @@ try {
           dir: supplyDir,
           turnId: randomUUID(),
           onChild: track,
-          prompt: `只读分析当前仓库，为 Claude 生成一个独立、可验证的工程任务。出题范围：${context.config.scope}\n${policyInstructions()}\n不要重复或改写已有题目：${JSON.stringify(history)}\n禁止依赖其他自动任务的改动。不要提出需要外部付费、发布、推送或外部消息的任务。不执行此任务，只返回具体任务目标和验收要求。title 最多 200 字、prompt 最多 20000 字、stack 最多 300 字。`,
+          prompt: `只读分析当前仓库，为 Claude 生成一个独立、可验证的工程任务。出题范围：${context.config.scope}\n今日已完成及排队题型分布：${JSON.stringify(context.mix)}。优先补充建议题型 ${context.mix?.suggested || '按实际需要'}，但必须按真实需求分类，不改标签凑比例。\n${policyInstructions()}\n不要重复或改写已有题目：${JSON.stringify(history)}\n禁止依赖其他自动任务的改动。不要提出需要外部付费、发布、推送或外部消息的任务。不执行此任务，只返回具体任务目标和验收要求。title 最多 200 字、prompt 最多 20000 字、stack 最多 300 字。`,
         });
         if (
           history.some(
@@ -670,6 +811,7 @@ try {
   }
   while (!stopping) {
     try {
+      if (orphans.length) await recoverOrphans();
       const context = await api({ action: 'supply-context' });
       if (Date.now() - githubChecked > 300000) {
         github = githubStatus();
@@ -679,12 +821,15 @@ try {
       schedulerStatus = {
         ...resource,
         active: active.size,
+        recovering: orphans.length,
         generating: !!generating,
         configured: context.config.concurrency,
         enabled: context.config.enabled,
         generatedToday: context.generatedToday,
         dailyLimit: context.config.dailyLimit,
         repoCount: context.repos.length,
+        workflowVersion: workflow.version,
+        mix: context.mix,
         ruleVersion: rules.version,
         lastAudit: supplyState.lastAudit
           ? {
@@ -705,11 +850,11 @@ try {
       // Claims are sequential; executions are independent. Generation consumes one slot too.
       while (
         !stopping &&
-        active.size + Number(!!generating) < resource.effective
+        active.size + orphans.length + Number(!!generating) < resource.effective
       ) {
         const { job } = await api({
           action: 'claim',
-          capacity: resource.effective - Number(!!generating),
+          capacity: resource.effective - Number(!!generating) - orphans.length,
         });
         if (!job) break;
         const promise = runJob(job)
@@ -720,7 +865,7 @@ try {
       if (
         !stopping &&
         !generating &&
-        active.size < resource.effective &&
+        active.size + orphans.length < resource.effective &&
         !supplyDecision(context, supplyState)
       ) {
         generating = replenish(context).finally(() => {

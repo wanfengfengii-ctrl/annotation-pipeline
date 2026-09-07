@@ -56,12 +56,16 @@ npm run runner
 
 初始仓库有未提交改动或提交未在 GitHub 可访问时会失败；系统不自动创建仓库、提交或推送用户代码。后续轮次重新核验原始提交，不将模型产物替换为初始快照。私有仓库只证明当前 gh 账号可访问，评审者权限仍需另行核验。工作台显示 gh 连接状态，执行器每 5 分钟刷新。
 
-## 四个 Codex 阶段
+## Codex 阶段与证据归档
 
 1. **任务准备**：读取仓库和用户目标，输出执行 Prompt、任务分类、难度、技术栈、验收条件。原始目标与执行 Prompt 分开保存。
 2. **环境快照**：只读检查 HEAD、origin、工作区及依赖状态。首次 HEAD 必须与真实 Git 命令一致。执行器验证远端提交并创建快照链接。
 3. **自动评分**：只读检查本轮原始轨迹与产物，按交付完整性、指令遵循、任务规划、推理能力、执行能力输出分数和具体证据。不修复被测代码，不虚构测试。
 4. **校验与交付**：Codex 检查证据与评分一致性；执行器额外校验真实 ID、轨迹及完整 SHA。通过后生成 `.runner/<task-id>/<turn-id>.ai-delivery.json`，页面可导出 CSV。
+
+5. **后续决策**：Codex 基于本轮轨迹和产物决定结束、修复、继续或需要输入。每轮独立评分归档后才创建下一轮；可在调度设置关闭，最多 10 轮，重复目标会暂停。
+
+`rules/workflow.json` 保存五维分档和反馈要求。评分必须记录 When/What/Impact/正确做法、过程与产物观察，并引用可核验文件行号。逐轮 `.evidence.tar.gz` 收录轨迹、评估、阶段记录、Git diff 和受大小限制的新增普通文件；清单含 SHA-256 和排除项。页面可导出当日合格轮次。完整差距见 [流程核对](docs/workflow-audit.md)。
 
 CSV 和 JSON 始终明确标记 `AI / Codex CLI`、AI 评测用途，`attested` 不会伪造为人工确认。本模式不符合原腾讯文档项目的人工标注要求，不能冒充人工标注提交。外部平台提交不是自动步骤；界面仅可登记已实际完成的外部提交回执。
 
@@ -69,7 +73,7 @@ CSV 和 JSON 始终明确标记 `AI / Codex CLI`、AI 评测用途，`attested` 
 
 阶段结果按轮次保存在 `.stages.json`。点击“重试失败阶段”重新排队同一轮：成功阶段复用，已成功的 Claude 调用不会因评分失败而重复执行。失败的 CLI 调用按显式重试请求再执行，能恢复会话时使用原会话。每次尝试的事件日志分开保存。
 
-回写结果保存在本机文件，网络异常时重试回写。API 对同一完成凭据支持幂等回写。单执行器锁防止重复启动；异常退出残留锁时先确认记录的 PID 已停止，再移除锁。未产生最终结果就崩溃的运行仍需人工运维确认，系统不会自动重放结果不确定的模型调用。
+回写结果保存在本机文件，网络异常时重试回写。API 对同一完成凭据支持幂等回写。单执行器锁防止重复启动；异常退出残留锁会检查原 PID 已停止后回收。启动时读取任务日志并检查旧子进程身份，存活进程占用槽位且阻止同会话重试；已缓存成功执行的轮次重新排队完成后续阶段。未产生最终结果就崩溃的运行仍需人工运维确认，系统不会自动重放结果不确定的模型调用。
 
 Claude 默认超时 30 分钟，Codex 每阶段默认 15 分钟。可通过 `RUNNER_TIMEOUT_MS` 和 `CODEX_STAGE_TIMEOUT_MS` 调整。原始事件、stderr、会话轨迹和数据包保存在 `.runner`，密钥在 `.dev.vars`，均不进入 Git 或发布包。
 
@@ -78,7 +82,7 @@ Claude 默认超时 30 分钟，Codex 每阶段默认 15 分钟。可通过 `RUN
 ## 检查
 
 ```sh
-node --experimental-strip-types --test tests/rules.test.mjs tests/codex-stages.test.mjs tests/scheduler.test.mjs tests/task-policy.test.mjs tests/difficulty.test.mjs
+node --experimental-strip-types --test tests/rules.test.mjs tests/codex-stages.test.mjs tests/scheduler.test.mjs tests/task-policy.test.mjs tests/difficulty.test.mjs tests/workflow.test.mjs
 npx tsc --noEmit
 npm run build
 ```
@@ -86,3 +90,5 @@ npm run build
 `tests/api.test.mjs` 测试接口，`tests/flow.test.mjs` 使用明确的假 CLI 测试完整阶段及断点重试，不调用真实模型。运行这些本机集成测试前停掉执行器，测试只使用自己创建的临时任务，测试后按记录的 ID 清理。
 
 `tests/scheduler-api.test.mjs` 验证原子领取、幂等补充、额度与暂停；`tests/scheduler-flow.test.mjs` 使用假 CLI 和模拟资源验证三个重叠执行及空队列补充。运行需空的本机测试队列、停止真实执行器，完成后按 `.runner/*-ids` 中的测试 ID 清理。`RUNNER_WORK_ROOT` 可为测试指定隔离的执行器存储目录。
+
+`tests/workflow-api.test.mjs` 验证自动续跑幂等、暂停和异常恢复；全局 lint 尚有既有 any 类型及 UI 组件规则错误，不能声称 lint 全绿。

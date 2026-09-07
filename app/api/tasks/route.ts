@@ -9,7 +9,9 @@ export async function GET() {
     return Response.json({
       tasks: tasks.map((t) => ({
         ...t,
-        turns: t.turns.map(({ jobToken, completedJobToken, ...r }: any) => r),
+        turns: t.turns.map(
+          ({ jobToken, completedJobToken, recoveryToken, ...r }: any) => r,
+        ),
       })),
       runner: runner
         ? { ...JSON.parse(runner.data), heartbeat: runner.heartbeat }

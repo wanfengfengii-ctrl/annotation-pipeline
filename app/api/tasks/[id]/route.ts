@@ -39,7 +39,13 @@ export async function PATCH(
       });
     } else if (b.action === 'retry') {
       const r = t.turns.find((r) => r.id === b.turnId);
-      if (!r || r.status !== 'failed' || pending(t) || t.closed)
+      if (
+        !r ||
+        r.recoveryBlocked ||
+        r.status !== 'failed' ||
+        pending(t) ||
+        t.closed
+      )
         throw new Error('此轮不能重试');
       r.status = 'queued';
       r.error = '';

@@ -156,6 +156,7 @@ const emptyTask = {
 };
 export default function Home() {
   const [local, setLocal] = useState(false);
+  const [exportDay, setExportDay] = useState('');
   const [tasks, setTasks] = useState<RecordTask[]>([]),
     [runner, setRunner] = useState<any>(null),
     [error, setError] = useState(''),
@@ -170,6 +171,7 @@ export default function Home() {
   const reload = useCallback(async () => {
     try {
       const d = await request('/api/tasks');
+      setExportDay(businessDate(new Date().toISOString()));
       setTasks(d.tasks);
       setRunner(d.runner);
       setError('');
@@ -281,6 +283,9 @@ export default function Home() {
             <p className="sub">从真实工程任务，到可追溯的逐轮交付。</p>
           </div>
           <div className="actions">
+            <a href={`/api/export?day=${exportDay}`}>
+              <Button variant="outline">导出今日合格轮次</Button>
+            </a>
             <a href="/api/export">
               <Button
                 variant="outline"
@@ -1050,6 +1055,9 @@ function TurnPanel({
           </pre>
         </details>
       )}
+      {t.automationNotice && (
+        <output className="sub">自动流程：{t.automationNotice}</output>
+      )}
       {t.automationMode && (
         <section className="section">
           <h3>
@@ -1073,7 +1081,7 @@ function TurnPanel({
           )}
           {r.automation &&
             Object.entries(r.automation)
-              .filter(([k]) => k !== 'bundlePath')
+              .filter(([, v]) => v && typeof v === 'object' && 'tracePath' in v)
               .map(([k, v]) => (
                 <details key={k}>
                   <summary className="sub">{k} · Codex 阶段记录</summary>
@@ -1127,6 +1135,27 @@ function TurnPanel({
               GitHub CLI 已核验 · {t.githubSnapshot.repository} ·{' '}
               {t.githubSnapshot.isPrivate ? '私有仓库' : '公开仓库'} ·{' '}
               {t.githubSnapshot.accessNote}
+            </p>
+          )}
+          {r.automation?.snapshot?.value?.environmentLevel && (
+            <p className="sub">
+              环境：{r.automation.snapshot.value.environmentLevel} · 启动方式：
+              {r.automation.snapshot.value.startup} · 核验：
+              {r.automation.snapshot.value.verification}
+            </p>
+          )}
+          {r.automation?.archive && (
+            <p className="sub mono">
+              本机证据归档：{r.automation.archive.archivePath}
+              <br />
+              SHA-256：{r.automation.archive.sha256} ·{' '}
+              {r.automation.archive.files} 个文件
+            </p>
+          )}
+          {r.automation?.next && (
+            <p className="sub">
+              下一步：{r.automation.next.value.action} ·{' '}
+              {r.automation.next.value.reason}
             </p>
           )}
           {r.automation?.bundlePath && (

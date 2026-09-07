@@ -3,6 +3,7 @@ import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 const str = { type: 'string' };
 const strings = { type: 'array', items: str };
+const five = { type: 'array', items: str, minItems: 5, maxItems: 5 };
 const schema = (properties) => ({
   type: 'object',
   properties,
@@ -10,6 +11,14 @@ const schema = (properties) => ({
   additionalProperties: false,
 });
 export const schemas = {
+  next: schema({
+    action: {
+      type: 'string',
+      enum: ['complete', 'repair', 'continue', 'needs_input'],
+    },
+    prompt: str,
+    reason: str,
+  }),
   policy: schema({
     allowed: { type: 'boolean' },
     simpleFeatures: strings,
@@ -66,6 +75,13 @@ export const schemas = {
     head: str,
     remote: str,
     notes: strings,
+    environmentLevel: {
+      type: 'string',
+      enum: ['无外部依赖', '有外部依赖，未容器化', '已容器化，可一键起环境'],
+    },
+    dependencies: strings,
+    startup: str,
+    verification: str,
   }),
   score: schema({
     scores: {
@@ -76,6 +92,13 @@ export const schemas = {
     },
     descriptions: { type: 'array', items: str, minItems: 5, maxItems: 5 },
     other: str,
+    when: five,
+    behavior: five,
+    impact: five,
+    expected: five,
+    evidenceRefs: five,
+    processFindings: str,
+    artifactFindings: str,
   }),
   delivery: schema({
     passed: { type: 'boolean' },

@@ -1,5 +1,6 @@
 export type SchedulerConfig = {
   enabled: boolean;
+  autoContinue: boolean;
   useHistory: boolean;
   repos: string[];
   scope: string;
@@ -8,6 +9,7 @@ export type SchedulerConfig = {
 };
 export const defaultScheduler: SchedulerConfig = {
   enabled: true,
+  autoContinue: true,
   useHistory: true,
   repos: [],
   scope:
@@ -37,8 +39,11 @@ export function normalizeConfig(b: any): SchedulerConfig {
     throw Error('请填写本机仓库绝对路径，最多 20 个');
   if (typeof b.scope !== 'string' || !b.scope.trim() || b.scope.length > 4000)
     throw Error('出题范围不能为空或超过 4000 字');
+  if (b.autoContinue !== undefined && typeof b.autoContinue !== 'boolean')
+    throw Error('自动续跑开关无效');
   return {
     enabled: b.enabled,
+    autoContinue: b.autoContinue ?? true,
     useHistory: b.useHistory,
     repos: [
       ...new Set<string>(
