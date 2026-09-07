@@ -29,6 +29,7 @@ export type Turn = {
   difficulty: string;
   status: 'queued' | 'running' | 'review' | 'failed' | 'submitted';
   createdAt: string;
+  startedAt?: string;
   finishedAt?: string;
   sessionId?: string;
   promptId?: string;
@@ -70,6 +71,14 @@ export function validSnapshot(s: string) {
   return /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/commit\/[0-9a-f]{40}$/i.test(
     s,
   );
+}
+export function producedAt(r: Turn) {
+  return r.finishedAt || r.startedAt || r.createdAt;
+}
+export function businessDate(s: string) {
+  return new Date(new Date(s).getTime() + 8 * 3600000)
+    .toISOString()
+    .slice(0, 10);
 }
 export function deadline(createdAt: string) {
   const date = new Date(new Date(createdAt).getTime() + 8 * 3600000);
@@ -166,8 +175,8 @@ export function csv(tasks: Task[]) {
         ]),
         r.review!.other,
         r.review!.reviewer,
-        r.createdAt,
-        deadline(r.createdAt),
+        producedAt(r),
+        deadline(producedAt(r)),
       ]),
   );
   const cell = (x: unknown) =>

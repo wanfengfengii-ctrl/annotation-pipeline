@@ -29,6 +29,7 @@ export async function POST(req: Request) {
         const r = item.turns.find((r: any) => r.status === 'queued');
         if (!r) continue;
         r.status = 'running';
+        r.startedAt = new Date().toISOString();
         r.jobToken = crypto.randomUUID();
         const { revision, ...task } = item;
         await save(task, revision);

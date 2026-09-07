@@ -59,6 +59,8 @@ import {
   issues,
   status,
   deadline,
+  producedAt,
+  businessDate,
   type Task,
   type Turn,
   type Review,
@@ -219,7 +221,9 @@ export default function Home() {
       ({ t, r }) => r.status === 'review' && !issues(t, r).length,
     ),
     review = turns.filter(({ r }) => r.status === 'review' && !r.excluded),
-    awaiting = turns.filter(({ r }) => !r.excluded && r.status !== 'submitted'),
+    awaiting = turns.filter(
+      ({ r }) => !r.excluded && ['review', 'failed'].includes(r.status),
+    ),
     online =
       runner && Date.now() - new Date(runner.heartbeat).getTime() < 30000;
   const mutate = async (t: RecordTask, body: object) => {
@@ -330,7 +334,7 @@ export default function Home() {
             {
               label: '待提交轮次',
               num: awaiting.length,
-              note: `${awaiting.filter(({ r }) => Date.now() > new Date(deadline(r.createdAt)).getTime()).length} 轮已过截止时间`,
+              note: `${awaiting.filter(({ r }) => Date.now() > new Date(deadline(producedAt(r))).getTime()).length} 轮已过截止时间`,
               icon: Clock3,
             },
           ].map(({ label, num, note, icon: Icon }) => (
@@ -560,13 +564,13 @@ export default function Home() {
                           <span
                             className={
                               Date.now() >
-                                new Date(deadline(r.createdAt)).getTime() &&
+                                new Date(deadline(producedAt(r))).getTime() &&
                               r.status !== 'submitted'
                                 ? 'tag red'
                                 : 'sub'
                             }
                           >
-                            {fmt(deadline(r.createdAt))}
+                            {fmt(deadline(producedAt(r)))}
                           </span>
                         </TableCell>
                         <TableCell>
@@ -635,8 +639,9 @@ export default function Home() {
                         ({ r }) =>
                           !r.excluded &&
                           r.category === c &&
-                          fmt(r.createdAt).slice(0, 5) ===
-                            fmt(new Date().toISOString()).slice(0, 5),
+                          Boolean(r.finishedAt) &&
+                          businessDate(producedAt(r)) ===
+                            businessDate(new Date().toISOString()),
                       ).length
                     }{' '}
                     轮（今日）
@@ -1001,7 +1006,7 @@ function TurnPanel({
         <Badge value={r.excluded ? '工程故障已排除' : labels[r.status]} />
       </div>
       <p className="sub">
-        {fmt(r.createdAt)} · 截止 {fmt(deadline(r.createdAt))}
+        {fmt(producedAt(r))} · 截止 {fmt(deadline(producedAt(r)))}
       </p>
       <details style={{ marginTop: 12 }}>
         <summary className="row-title">原始 Prompt</summary>

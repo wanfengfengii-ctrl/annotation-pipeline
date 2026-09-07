@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   deadline,
+  producedAt,
   validSnapshot,
   issues,
   counted,
@@ -64,4 +65,13 @@ test('逐轮完整性、排除与 CSV 公式安全', () => {
       'DANGEROUS',
     ),
   );
+});
+
+test('排队跨过 20 点，以结果产生时间计算截止', () => {
+  const r = {
+    createdAt: '2026-09-07T11:59:00Z',
+    startedAt: '2026-09-07T12:01:00Z',
+    finishedAt: '2026-09-07T12:05:00Z',
+  };
+  assert.equal(deadline(producedAt(r)), '2026-09-08T06:00:00.000Z');
 });
