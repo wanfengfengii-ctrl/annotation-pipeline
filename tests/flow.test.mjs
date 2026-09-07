@@ -18,7 +18,7 @@ if(name==='gh'){if(a[0]==='repo')console.log(JSON.stringify({nameWithOwner:'fixt
 let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{if(a.includes('--model')||a.includes('-m'))throw Error('Model override is forbidden');
 if(name==='claude'){fs.appendFileSync(dir+'/calls.jsonl',JSON.stringify({name:'claude'})+'\\n');const v=JSON.parse(input);console.log(JSON.stringify({type:'system',subtype:'init',model:'fixture-config-model',session_id:v.session_id}));console.log(JSON.stringify({...v,uuid:'fixture-user-message'}));console.log(JSON.stringify({type:'result',result:'Synthetic fixture output',is_error:false}));return}
 const schema=a[a.indexOf('--output-schema')+1],out=a[a.indexOf('--output-last-message')+1];const stage=['policy','prepare','snapshot','score','delivery'].find(x=>schema.endsWith('.'+x+'.schema.json'));fs.appendFileSync(dir+'/calls.jsonl',JSON.stringify({name:stage})+'\\n');if(stage==='score'&&fs.existsSync(dir+'/fail-score-once')){fs.unlinkSync(dir+'/fail-score-once');process.exit(1)}
-const values={policy:{allowed:!input.includes('__POLICY_REJECT__'),matchedRuleIds:input.includes('__POLICY_REJECT__')?['games']:[],duplicateTaskIds:[],checkedGroups:['games','desktop','business','dashboard'],reason:'synthetic eligible task'},prepare:{prompt:'Synthetic prepared goal',category:'Feature 迭代',difficulty:'中等',stack:'fixture',acceptance:['fixture evidence']},snapshot:{ready:true,head:sha,remote:'https://github.com/fixture/fixture.git',notes:['fixture snapshot']},score:{scores:[3,3,3,3,3],descriptions:['a','b','c','d','e'],other:'无'},delivery:{passed:true,checks:['fixture data complete'],summary:'synthetic verification'}};fs.writeFileSync(out,JSON.stringify(values[stage]));console.log(JSON.stringify({type:'thread.started',thread_id:'fixture-'+stage}));});
+const values={policy:{simpleFeatures:input.includes('用户原目标：__FOLLOWUP_FIX__')?['scope','breadth']:[],difficultyEvidence:['scope evidence','context evidence','interaction evidence','breadth evidence'],assessedDifficulty:input.includes('用户原目标：__FOLLOWUP_FIX__')?'简单':'中等',followupFix:input.includes('用户原目标：__FOLLOWUP_FIX__'),followupReason:'首轮或非产物修复',allowed:!input.includes('用户原目标：__POLICY_REJECT__'),matchedRuleIds:input.includes('用户原目标：__POLICY_REJECT__')?['games']:[],duplicateTaskIds:[],checkedGroups:['games','desktop','business','dashboard'],reason:'synthetic eligible task'},prepare:{prompt:'Synthetic prepared goal',category:'Feature 迭代',difficulty:'中等',stack:'fixture',acceptance:['fixture evidence']},snapshot:{ready:true,head:sha,remote:'https://github.com/fixture/fixture.git',notes:['fixture snapshot']},score:{scores:[3,3,3,3,3],descriptions:['a','b','c','d','e'],other:'无'},delivery:{passed:true,checks:['fixture data complete'],summary:'synthetic verification'}};fs.writeFileSync(out,JSON.stringify(values[stage]));console.log(JSON.stringify({type:'thread.started',thread_id:'fixture-'+stage}));});
 `;
 for (const name of ['git', 'codex', 'claude', 'gh']) {
   const p = path.join(bin, name);
@@ -125,6 +125,35 @@ try {
     1,
     'blocked task must never reach Claude',
   );
+  t = (await api('/api/tasks', null, 'GET')).tasks.find(
+    (t) => t.id === task.id,
+  );
+  await api(
+    '/api/tasks/' + task.id,
+    {
+      action: 'enqueue',
+      prompt: '__FOLLOWUP_FIX__ 修复前轮产物的边界判断',
+      category: 'Bug 修复',
+      difficulty: '简单',
+      revision: t.revision,
+    },
+    'PATCH',
+  );
+  for (let i = 0; i < 120; i++) {
+    t = (await api('/api/tasks', null, 'GET')).tasks.find(
+      (t) => t.id === task.id,
+    );
+    if (['failed', 'review'].includes(t.turns[1].status)) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  assert.equal(t.turns[1].status, 'review', t.turns[1].error);
+  assert.equal(t.turns[1].difficulty, '简单');
+  assert.equal(t.turns[1].automation.policy.roundContext.firstTurn, false);
+  assert.equal(
+    t.turns[1].automation.policy.roundContext.allowFollowupFix,
+    true,
+  );
+  assert.equal(t.turns[1].automation.policy.accepted, true);
   console.log(
     'Full fixture pipeline passed, including score failure and resume without rerunning Claude.',
   );

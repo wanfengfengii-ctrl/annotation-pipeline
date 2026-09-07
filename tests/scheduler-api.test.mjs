@@ -31,6 +31,11 @@ const run = async (b) => {
         tracePath: '/synthetic/policy',
         threadId: 'fixture',
         value: {
+          simpleFeatures: [],
+          difficultyEvidence: ['scope', 'context', 'interaction', 'breadth'],
+          assessedDifficulty: '中等',
+          followupFix: false,
+          followupReason: '新任务',
           allowed: true,
           matchedRuleIds: [],
           duplicateTaskIds: [],

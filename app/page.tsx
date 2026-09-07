@@ -1,5 +1,5 @@
 'use client';
-import { rules } from '@/lib/task-policy.mjs';
+import { rules, difficultyRules } from '@/lib/task-policy.mjs';
 import { SchedulerPanel } from '@/components/pipeline/scheduler-panel';
 import { useEffect, useState, useCallback, type ReactNode } from 'react';
 import {
@@ -663,6 +663,27 @@ export default function Home() {
                     <li key={item}>{item}</li>
                   ))}
                 </ul>
+                <details>
+                  <summary>难度规则：四项命中至少两项则拒绝</summary>
+                  <p>
+                    首轮禁止简单题；后续已有产物的小 Bug
+                    修复可使用简单修复例外，必须有前序产物证据。不设量化难度上限。
+                  </p>
+                  <ul>
+                    {difficultyRules.features.map((f) => (
+                      <li key={f.id}>
+                        {f.name}：{f.description}
+                      </li>
+                    ))}
+                  </ul>
+                  <ul>
+                    {difficultyRules.levels.map((l) => (
+                      <li key={l.name}>
+                        {l.name}：{l.definition}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
                 {rules.groups.map((g) => (
                   <details key={g.id}>
                     <summary>{g.name}</summary>
@@ -1036,7 +1057,7 @@ function TurnPanel({
             {(
               {
                 prepare: 'Codex 任务准备',
-                policy: 'Codex 禁出与雷同审核',
+                policy: 'Codex 禁出、雷同与难度审核',
                 snapshot: 'Codex + GitHub CLI 环境快照',
                 claude: 'Claude 执行',
                 score: 'Codex 五维评分',
@@ -1063,9 +1084,43 @@ function TurnPanel({
               ))}
           {r.automation?.policy && (
             <p className="sub">
-              禁出审核：{r.automation.policy.value.allowed ? '通过' : '已拦截'}{' '}
-              · {r.automation.policy.value.reason}
+              禁出审核：
+              {r.automation.policy.accepted === true
+                ? '通过'
+                : r.automation.policy.accepted === false ||
+                    !r.automation.policy.value.allowed
+                  ? '已拦截'
+                  : '历史审核（需按新版复核）'}{' '}
+              ·{' '}
+              {r.automation.policy.rejection ||
+                r.automation.policy.value.reason}
             </p>
+          )}
+          {r.automation?.policy?.value?.difficultyEvidence && (
+            <div className="rulebox">
+              <h3>
+                独立难度评估：{r.automation.policy.value.assessedDifficulty}
+              </h3>
+              <p className="sub">
+                过于简单特征：{r.automation.policy.value.simpleFeatures.length}{' '}
+                / 4 项。
+                {r.automation.policy.value.followupFix
+                  ? '本轮申请后续产物小 Bug 修复例外。'
+                  : ''}
+              </p>
+              <ul>
+                {difficultyRules.features.map((f, i) => (
+                  <li key={f.id}>
+                    {f.name} ·{' '}
+                    {r.automation!.policy.value.simpleFeatures.includes(f.id)
+                      ? '命中'
+                      : '未命中'}
+                    ：{r.automation!.policy.value.difficultyEvidence[i]}
+                  </li>
+                ))}
+              </ul>
+              <p className="sub">{r.automation.policy.value.followupReason}</p>
+            </div>
           )}
           {t.githubSnapshot && (
             <p className="sub">

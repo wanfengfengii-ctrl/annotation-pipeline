@@ -19,6 +19,11 @@ test('policy covers every source family and rejects missing, stale, mismatched o
     tracePath: '/trace',
     threadId: 'thread',
     value: {
+      simpleFeatures: [],
+      difficultyEvidence: ['scope', 'context', 'interaction', 'breadth'],
+      assessedDifficulty: '中等',
+      followupFix: false,
+      followupReason: '新任务',
       allowed: true,
       matchedRuleIds: [],
       duplicateTaskIds: [],

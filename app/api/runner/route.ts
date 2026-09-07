@@ -85,6 +85,8 @@ export async function POST(req: Request) {
       )
         throw Error('自动题型或难度无效');
       assertPolicyAudit(b.policyAudit, await candidateDigest(b));
+      if (b.difficulty !== b.policyAudit.value.assessedDifficulty)
+        throw Error('题目难度与独立审核等级不一致');
       const now = new Date().toISOString(),
         day = businessDate(now);
       const task: Task = {

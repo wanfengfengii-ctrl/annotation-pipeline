@@ -328,13 +328,36 @@ async function execute({ task, turn }) {
     return value;
   }
   try {
+    const index = task.turns.findIndex((r) => r.id === turn.id);
+    const previousTurns = task.turns
+      .slice(0, Math.max(0, index))
+      .filter((r) => !r.excluded && ['review', 'submitted'].includes(r.status));
+    const firstTurn = previousTurns.length === 0;
+    const previousTurn = previousTurns.at(-1);
+    const allowFollowupFix = !!(
+      task.workDir &&
+      existsSync(task.workDir) &&
+      previousTurn?.tracePath &&
+      existsSync(previousTurn.tracePath) &&
+      previousTurn?.output
+    );
+    const roundContext = JSON.stringify({
+      firstTurn,
+      allowFollowupFix,
+      previousGoal: previousTurn?.prompt,
+      previousGoals: previousTurns.map((r) => ({
+        requestedGoal: r.requestedPrompt,
+        preparedGoal: r.prompt.slice(0, 4000),
+      })),
+      previousTrace: previousTurn?.tracePath,
+      previousOutput: previousTurn?.output?.slice(0, 8000),
+      currentGoal: turn.requestedPrompt || turn.prompt,
+    });
     const preparation = await step(
       'prepare',
-      `用户任务目标：${turn.requestedPrompt || turn.prompt}\n请读取当前仓库，准备交给 Claude 的完整任务 Prompt、分类、难度、技术栈和验收条件。保留用户约束，不擅自增加业务需求。${task.sessionId ? '这是后续轮次，应结合当前状态和上一轮原始目标。' : '这是首轮，禁止简单题。'}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions()}`,
+      `用户任务目标：${turn.requestedPrompt || turn.prompt}\n请读取当前仓库，准备交给 Claude 的完整任务 Prompt、分类、难度、技术栈和验收条件。保留用户约束，不擅自增加业务需求。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions()}`,
       task.workDir || task.repoPath,
     );
-    if (!task.sessionId && preparation.value.difficulty === '简单')
-      throw new Error('首轮自动出题过于简单');
     cached.prepare = preparation;
     persist();
     automation.preparation = preparation;
@@ -353,13 +376,24 @@ async function execute({ task, turn }) {
       .slice(0, 200);
     const audit = await step(
       'policy',
-      `${policyInstructions()}\n独立审核用户原目标与准备后的实际任务，两个都必须合规。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
+      `${policyInstructions()}\n轮次上下文：${roundContext}\n独立审核用户原目标与准备后的实际任务，两个都必须合规。若当前输入仅为继续或续写，必须根据前序原始目标判断。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同且难度合格时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
       task.workDir || task.repoPath,
     );
+    audit.proposedDifficulty = candidate.difficulty;
+    candidate.difficulty = audit.value.assessedDifficulty;
+    preparation.value.difficulty = audit.value.assessedDifficulty;
+    audit.roundContext = {
+      firstTurn,
+      allowFollowupFix,
+      previousTurnId: previousTurn?.id,
+    };
     audit.ruleVersion = rules.version;
     audit.candidateDigest = await candidateDigest(candidate);
     automation.policy = audit;
-    assertPolicyAudit(audit, audit.candidateDigest);
+    assertPolicyAudit(audit, audit.candidateDigest, {
+      firstTurn,
+      allowFollowupFix,
+    });
     cached.policy = audit;
     persist();
     const snap = await step(
@@ -595,8 +629,10 @@ try {
           dir: supplyDir,
           turnId: randomUUID(),
           onChild: track,
-          prompt: `${policyInstructions()}\n独立审核候选题：${JSON.stringify(generated.value)}\n全仓库最近历史：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。只有核心功能不落入禁出范围、无实质雷同时 allowed=true。matchedRuleIds 和 duplicateTaskIds 必须与结论一致；reason 给出依据。`,
+          prompt: `${policyInstructions()}\n这是首轮自动新任务，没有后续简单修复例外。独立审核候选题：${JSON.stringify(generated.value)}\n全仓库最近历史：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。只有核心功能不落入禁出范围、无实质雷同且难度合格时 allowed=true。matchedRuleIds 和 duplicateTaskIds 必须与结论一致；reason 给出依据。`,
         });
+        audit.proposedDifficulty = payload.difficulty;
+        payload.difficulty = audit.value.assessedDifficulty;
         audit.ruleVersion = rules.version;
         audit.candidateDigest = await candidateDigest(payload);
         // Persist rejections too, so the UI can explain why nothing was enqueued.
@@ -652,8 +688,10 @@ try {
         ruleVersion: rules.version,
         lastAudit: supplyState.lastAudit
           ? {
-              allowed: supplyState.lastAudit.value.allowed,
-              reason: supplyState.lastAudit.value.reason,
+              allowed: supplyState.lastAudit.accepted === true,
+              reason:
+                supplyState.lastAudit.rejection ||
+                supplyState.lastAudit.value.reason,
             }
           : null,
         supply: generating

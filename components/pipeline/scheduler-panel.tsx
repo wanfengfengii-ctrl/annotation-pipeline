@@ -93,7 +93,7 @@ export function SchedulerPanel({
       </p>
       <p className="sub">
         禁出规则：{s?.ruleVersion || '等待执行器报告'}
-        。自动出题先审核，再进入队列。
+        。自动出题先审核禁出、雷同与难度，再进入队列。
         {s?.lastAudit
           ? `最近审核：${s.lastAudit.allowed ? '通过' : '拦截'}，${s.lastAudit.reason}`
           : ''}

@@ -12,6 +12,14 @@ const schema = (properties) => ({
 export const schemas = {
   policy: schema({
     allowed: { type: 'boolean' },
+    simpleFeatures: strings,
+    difficultyEvidence: { type: 'array', items: str, minItems: 4, maxItems: 4 },
+    assessedDifficulty: {
+      type: 'string',
+      enum: ['简单', '中等', '困难', '地狱'],
+    },
+    followupFix: { type: 'boolean' },
+    followupReason: str,
     matchedRuleIds: strings,
     duplicateTaskIds: strings,
     checkedGroups: strings,

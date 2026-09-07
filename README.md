@@ -42,6 +42,14 @@ npm run runner
 
 语义审核使用最近 200 个跨仓库历史任务，每个任务的 Prompt 摘要最多 4000 字；精确指纹去重继续覆盖数据库中的自动题目。语义模型可能误判，有限历史窗口也不等于全库语义查重。
 
+## 难度要求
+
+`rules/difficulty.json` 对照文档第 5、12 页保存四级定义及四项“过于简单”特征：单文件局部/纯函数实现、无需仓库上下文、一轮即可交付且无需报错分析或规划、单文件单语言且无联调/跨服务。Codex 必须给出独立等级、命中特征 ID 和四项判断证据；程序按命中数计算，命中至少两项即拒绝，即使模型自报“困难/地狱”或 allowed=true 也不能绕过。
+
+首轮禁止“简单”。后续针对前轮产物的小 Bug 修复例外需要已完成的前序轮次、存在的工作区和轨迹文件、产物输出，以及 Codex 对本轮确为该产物修复的判断；新任务和新增功能不能使用该例外。“继续”结合前序原始目标和执行 Prompt 评估。难度等级采用独立审核结果，页面显示四项证据、命中数量及例外理由。困难和地狱题没有额外量化上限；禁止用机械拆文件、无关技术栈或强迫多轮来凑难度。
+
+新版规则会使旧审核失效，重试和待入队题目需按新版规则重新核验。语义判据是否命中仍依赖 Codex，程序确保计数、首轮门槛和例外资格不会被标签绕过。
+
 ## GitHub CLI 自动快照
 
 执行器通过已登录的 `gh` 读取 GitHub 仓库信息与实际提交：自动识别 origin、查询仓库元数据、以本地完整 HEAD 查询远端提交，并验证返回的 SHA 和链接一致。快照证据包含仓库、完整 SHA、可见性、当前账号权限、默认分支与核验时间，保存到本机 `.github-snapshot.json`、任务详情和交付包。
@@ -70,7 +78,7 @@ Claude 默认超时 30 分钟，Codex 每阶段默认 15 分钟。可通过 `RUN
 ## 检查
 
 ```sh
-node --experimental-strip-types --test tests/rules.test.mjs tests/codex-stages.test.mjs tests/scheduler.test.mjs tests/task-policy.test.mjs
+node --experimental-strip-types --test tests/rules.test.mjs tests/codex-stages.test.mjs tests/scheduler.test.mjs tests/task-policy.test.mjs tests/difficulty.test.mjs
 npx tsc --noEmit
 npm run build
 ```
