@@ -1,3 +1,4 @@
+import { resources, fingerprint, supplyDecision } from './scheduler.mjs';
 import { codexStage } from './codex-stages.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import {
@@ -23,7 +24,9 @@ const token =
     /^RUNNER_TOKEN=(.+)$/m,
   )?.[1];
 const base = process.env.PIPELINE_API_URL || 'http://localhost:3000';
-const workRoot = path.join(root, '.runner');
+const workRoot = path.resolve(
+  process.env.RUNNER_WORK_ROOT || path.join(root, '.runner'),
+);
 mkdirSync(workRoot, { recursive: true });
 const lock = path.join(workRoot, 'runner.lock');
 try {
@@ -35,12 +38,22 @@ try {
     '执行器锁已存在。确认旧进程已退出后再删除 .runner/runner.lock',
   );
 }
-let stopping = false,
-  child = null;
+let stopping = false;
+const children = new Set();
+function track(p) {
+  if (!p) return;
+  children.add(p);
+  p.once('close', () => children.delete(p));
+  if (stopping) p.kill('SIGTERM');
+}
 for (const signal of ['SIGINT', 'SIGTERM'])
   process.on(signal, () => {
     stopping = true;
-    child?.kill('SIGTERM');
+    for (const p of children) p.kill('SIGTERM');
+    const hard = setTimeout(() => {
+      for (const p of children) p.kill('SIGKILL');
+    }, 10000);
+    hard.unref();
   });
 process.on('exit', () => {
   try {
@@ -70,10 +83,15 @@ async function api(body) {
   if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
   return j;
 }
-const heartbeat = setInterval(
-  () => api({ action: 'heartbeat', version, codexVersion }).catch(() => {}),
-  10000,
-);
+let schedulerStatus = {};
+const beat = () =>
+  api({
+    action: 'heartbeat',
+    version,
+    codexVersion,
+    scheduler: schedulerStatus,
+  });
+const heartbeat = setInterval(() => beat().catch(() => {}), 10000);
 function transcript(sessionId, prompt) {
   const projects = path.join(os.homedir(), '.claude', 'projects');
   if (!existsSync(projects)) return {};
@@ -186,11 +204,12 @@ async function executeClaude({ task, turn }) {
     let buffer = '',
       final = null;
     await new Promise((resolve, reject) => {
-      child = spawn('claude', args, {
+      const child = spawn('claude', args, {
         cwd: result.workDir,
         env: { ...process.env },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
+      track(child);
       let hardLimit;
       const limit = setTimeout(
         () => {
@@ -235,7 +254,6 @@ async function executeClaude({ task, turn }) {
         clearTimeout(hardLimit);
         closeSync(outFd);
         closeSync(errFd);
-        child = null;
         if (!final || code !== 0 || final.is_error) {
           result.error =
             final?.errors?.join('\n') ||
@@ -298,6 +316,7 @@ async function execute({ task, turn }) {
     automation,
   };
   async function step(name, prompt, cwd) {
+    if (stopping) throw Error('执行器正在停止');
     stage = name;
     await api({
       action: 'stage',
@@ -313,7 +332,7 @@ async function execute({ task, turn }) {
       cwd,
       dir,
       turnId: turn.id + '.attempt-' + (cached.attempt || 1),
-      onChild: (p) => (child = p),
+      onChild: track,
     });
     return value;
   }
@@ -353,6 +372,7 @@ async function execute({ task, turn }) {
       jobToken: turn.jobToken,
       stage,
     });
+    if (stopping) throw Error('执行器正在停止');
     if (!cached.claude?.success) {
       const previous = cached.claude || {};
       cached.claude = await executeClaude({
@@ -479,34 +499,151 @@ try {
         await deliver(JSON.parse(readFileSync(receipt, 'utf8')), receipt);
     }
   }
-  while (!stopping) {
+  const active = new Map();
+  const supplyDir = path.join(workRoot, 'supply');
+  mkdirSync(supplyDir, { recursive: true });
+  const statePath = path.join(supplyDir, 'state.json');
+  const supplyState = existsSync(statePath)
+    ? JSON.parse(readFileSync(statePath, 'utf8'))
+    : {};
+  let generating = null;
+  const saveSupply = () =>
+    writeFileSync(statePath, JSON.stringify(supplyState), { mode: 0o600 });
+  const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function runJob(job) {
+    console.log(`开始：${job.task.title} / ${job.turn.id}`);
+    const { result, receipt } = await execute(job);
+    do {
+      try {
+        await deliver(result, receipt);
+        break;
+      } catch (e) {
+        console.error('回写失败，将重试：' + e.message);
+        if (stopping) break;
+        await nap(5000);
+      }
+    } while (!stopping);
+    console.log(
+      result.success
+        ? '该轮已完成 Codex 评分与交付校验'
+        : '该轮异常：' + result.error,
+    );
+  }
+  async function replenish(context) {
     try {
-      await api({ action: 'heartbeat', version, codexVersion });
-      const { job } = await api({ action: 'claim' });
-      if (job) {
-        console.log(`开始：${job.task.title} / ${job.turn.id}`);
-        const { result, receipt } = await execute(job);
-        let delivered = false;
-        while (!delivered && !stopping) {
-          try {
-            await deliver(result, receipt);
-            delivered = true;
-          } catch (e) {
-            console.error('回写失败，将重试：' + e.message);
-            await new Promise((r) => setTimeout(r, 5000));
-          }
-        }
-        console.log(
-          result.success
-            ? '该轮已完成 Codex 评分与交付校验'
-            : '该轮异常：' + result.error,
-        );
-      } else await new Promise((r) => setTimeout(r, 2500));
+      // Reuse an undelivered generation across a network failure or restart.
+      let payload = supplyState.pending;
+      if (!payload) {
+        const index = (supplyState.cursor || 0) % context.repos.length;
+        const repoPath = context.repos[index];
+        supplyState.cursor = index + 1;
+        saveSupply();
+        const history = context.history
+          .filter((t) => t.repoPath === repoPath)
+          .map((t) => t.title)
+          .slice(0, 200);
+        const generated = await codexStage({
+          stage: 'generate',
+          cwd: repoPath,
+          dir: supplyDir,
+          turnId: randomUUID(),
+          onChild: track,
+          prompt: `只读分析当前仓库，为 Claude 生成一个独立、可验证的工程任务。出题范围：${context.config.scope}\n不要重复或改写已有题目：${JSON.stringify(history)}\n禁止依赖其他自动任务的改动。不要提出需要外部付费、发布、推送或外部消息的任务。不执行此任务，只返回具体任务目标和验收要求。title 最多 200 字、prompt 最多 20000 字、stack 最多 300 字。`,
+        });
+        if (
+          history.some(
+            (t) =>
+              fingerprint(repoPath, t) ===
+              fingerprint(repoPath, generated.value.title),
+          )
+        )
+          throw Error('Codex 生成了重复标题');
+        payload = {
+          action: 'enqueue-auto',
+          repoPath,
+          ...generated.value,
+          tracePath: generated.tracePath,
+          fingerprint: fingerprint(repoPath, generated.value.prompt),
+        };
+        supplyState.pending = payload;
+        saveSupply();
+      }
+      if (stopping) return;
+      const res = await api(payload);
+      delete supplyState.pending;
+      supplyState.failures = 0;
+      supplyState.lastError = '';
+      supplyState.nextAt = Date.now() + 60000;
+      supplyState.lastResult =
+        res.skipped ||
+        (res.duplicate ? '重复任务已跳过' : '已自动补充一个任务');
+      saveSupply();
     } catch (e) {
-      console.error(e.message);
-      await new Promise((r) => setTimeout(r, 5000));
+      supplyState.failures = (supplyState.failures || 0) + 1;
+      supplyState.lastError = e.message;
+      supplyState.nextAt =
+        Date.now() +
+        Math.min(3600000, 300000 * 2 ** Math.min(4, supplyState.failures - 1));
+      saveSupply();
+      console.error('自动补充失败：' + e.message);
     }
   }
+  while (!stopping) {
+    try {
+      const context = await api({ action: 'supply-context' });
+      const resource = resources(context.config.concurrency);
+      schedulerStatus = {
+        ...resource,
+        active: active.size,
+        generating: !!generating,
+        configured: context.config.concurrency,
+        enabled: context.config.enabled,
+        generatedToday: context.generatedToday,
+        dailyLimit: context.config.dailyLimit,
+        repoCount: context.repos.length,
+        supply: generating
+          ? 'Codex 正在生成任务'
+          : supplyDecision(context, supplyState) ||
+            supplyState.lastResult ||
+            '等待补充',
+        nextAt: supplyState.nextAt || null,
+      };
+      await beat();
+      // Claims are sequential; executions are independent. Generation consumes one slot too.
+      while (
+        !stopping &&
+        active.size + Number(!!generating) < resource.effective
+      ) {
+        const { job } = await api({
+          action: 'claim',
+          capacity: resource.effective - Number(!!generating),
+        });
+        if (!job) break;
+        const promise = runJob(job)
+          .catch((e) => console.error(e.message))
+          .finally(() => active.delete(job.task.id));
+        active.set(job.task.id, promise);
+      }
+      if (
+        !stopping &&
+        !generating &&
+        active.size < resource.effective &&
+        !supplyDecision(context, supplyState)
+      ) {
+        generating = replenish(context).finally(() => {
+          generating = null;
+        });
+      }
+      await nap(2500);
+    } catch (e) {
+      console.error(e.message);
+      await nap(5000);
+    }
+  }
+  await Promise.allSettled([
+    ...active.values(),
+    ...(generating ? [generating] : []),
+  ]);
 } finally {
   clearInterval(heartbeat);
 }

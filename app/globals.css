@@ -506,3 +506,48 @@ h3 {
     grid-template-columns: 1fr;
   }
 }
+
+.scheduler-panel {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 22px;
+  margin: 20px 0;
+  background: var(--card);
+}
+.scheduler-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.scheduler-heading h2 {
+  font-size: 18px;
+  font-weight: 650;
+  margin-bottom: 8px;
+}
+.scheduler-panel summary {
+  cursor: pointer;
+  margin-top: 16px;
+  font-weight: 600;
+}
+.scheduler-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 20px;
+}
+.scheduler-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+.scheduler-form .wide {
+  grid-column: 1/-1;
+}
+@media (max-width: 640px) {
+  .scheduler-form {
+    grid-template-columns: 1fr;
+  }
+}

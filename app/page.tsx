@@ -1,4 +1,5 @@
 'use client';
+import { SchedulerPanel } from '@/components/pipeline/scheduler-panel';
 import { useEffect, useState, useCallback, type ReactNode } from 'react';
 import {
   Workflow,
@@ -311,6 +312,7 @@ export default function Home() {
             </Button>
           </div>
         )}
+        <SchedulerPanel runner={runner} local={local} />
         <div className="stats">
           {[
             {

@@ -10,6 +10,24 @@ const schema = (properties) => ({
   additionalProperties: false,
 });
 export const schemas = {
+  generate: schema({
+    title: str,
+    prompt: str,
+    category: {
+      type: 'string',
+      enum: [
+        '0-1 代码生成',
+        'Feature 迭代',
+        'Bug 修复',
+        '代码理解',
+        '代码重构',
+        '工程化',
+        '代码测试',
+      ],
+    },
+    difficulty: { type: 'string', enum: ['中等', '困难', '地狱'] },
+    stack: str,
+  }),
   prepare: schema({
     prompt: str,
     category: {

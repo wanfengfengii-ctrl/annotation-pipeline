@@ -4,9 +4,7 @@ export async function GET() {
   try {
     const tasks = await all();
     const runner = await db()
-      .prepare(
-        'SELECT data,heartbeat FROM runners ORDER BY heartbeat DESC LIMIT 1',
-      )
+      .prepare("SELECT data,heartbeat FROM runners WHERE id='local'")
       .first<{ data: string; heartbeat: string }>();
     return Response.json({
       tasks: tasks.map((t) => ({
