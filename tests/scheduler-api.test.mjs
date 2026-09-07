@@ -1,3 +1,4 @@
+import { rules, candidateDigest } from '../lib/task-policy.mjs';
 // Run against an empty local test workspace with the real runner stopped.
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -19,7 +20,27 @@ async function call(route, body, method = 'POST', auth = false) {
   if (!r.ok) throw Error(d.error);
   return d;
 }
-const run = (b) => call('/api/runner', b, 'POST', true);
+const run = async (b) => {
+  if (b.action === 'enqueue-auto')
+    b = {
+      ...b,
+      policyAudit: {
+        engine: 'codex-cli',
+        ruleVersion: rules.version,
+        candidateDigest: await candidateDigest(b),
+        tracePath: '/synthetic/policy',
+        threadId: 'fixture',
+        value: {
+          allowed: true,
+          matchedRuleIds: [],
+          duplicateTaskIds: [],
+          checkedGroups: rules.groups.map((g) => g.id),
+          reason: 'synthetic pass',
+        },
+      },
+    };
+  return call('/api/runner', b, 'POST', true);
+};
 const original = (await call('/api/scheduler', null, 'GET')).config;
 const ids = [];
 writeFileSync('.runner/scheduler-test-ids', '');
@@ -113,6 +134,10 @@ try {
     tracePath: '/synthetic/generate.jsonl',
     fingerprint: fingerprint(draft.repoPath, 'Synthetic generated task'),
   };
+  await assert.rejects(
+    () => call('/api/runner', payload, 'POST', true),
+    /审核记录/,
+  );
   const responses = await Promise.all(
     Array.from({ length: 8 }, () => run(payload)),
   );

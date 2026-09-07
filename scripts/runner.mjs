@@ -1,3 +1,10 @@
+import {
+  rules,
+  policyInstructions,
+  candidateDigest,
+  assertPolicyAudit,
+} from '../lib/task-policy.mjs';
+import { githubSnapshot, githubStatus } from './github-snapshot.mjs';
 import { resources, fingerprint, supplyDecision } from './scheduler.mjs';
 import { codexStage } from './codex-stages.mjs';
 import { spawn, execFileSync } from 'node:child_process';
@@ -69,6 +76,8 @@ const command = (cmd, args, cwd) =>
   }).trim();
 const version = command('claude', ['--version'], root);
 const codexVersion = command('codex', ['--version'], root);
+let github = githubStatus(),
+  githubChecked = Date.now();
 async function api(body) {
   const r = await fetch(base + '/api/runner', {
     method: 'POST',
@@ -90,6 +99,7 @@ const beat = () =>
     version,
     codexVersion,
     scheduler: schedulerStatus,
+    github,
   });
 const heartbeat = setInterval(() => beat().catch(() => {}), 10000);
 function transcript(sessionId, prompt) {
@@ -137,38 +147,18 @@ async function executeClaude({ task, turn }) {
     os: `${os.platform()} ${os.release()}`,
     workDir: task.workDir || path.join(dir, 'workspace'),
     snapshot: task.snapshot,
+    githubSnapshot: task.githubSnapshot,
     sessionId: task.sessionId || randomUUID(),
   };
   try {
     if (!task.workDir) {
       const repo = task.repoPath;
-      const head = command('git', ['rev-parse', 'HEAD'], repo);
-      if (command('git', ['status', '--porcelain'], repo))
-        throw new Error('初始仓库有未提交改动，请先提交改动后再创建新会话。');
-      const remote = command('git', ['remote', 'get-url', 'origin'], repo);
-      const match = remote.match(
-        /^(?:https:\/\/github\.com\/|git@github\.com:)([^/]+)\/([^/]+?)(?:\.git)?$/,
-      );
-      if (!match)
-        throw new Error(
-          '初始快照需要 GitHub origin，请先配置可供评测团队访问的远端仓库。',
-        );
-      command('git', ['fetch', '--no-tags', 'origin'], repo);
-      if (
-        !command(
-          'git',
-          [
-            'for-each-ref',
-            '--contains',
-            head,
-            '--format=%(refname)',
-            'refs/remotes/origin',
-          ],
-          repo,
-        )
-      )
-        throw new Error('初始提交尚未发布到 origin，请先推送后再创建新会话。');
-      result.snapshot = `https://github.com/${match[1]}/${match[2]}/commit/${head}`;
+      const evidence = githubSnapshot(repo, {
+        expectedSha: task.githubSnapshot?.sha,
+      });
+      result.snapshot = evidence.url;
+      result.githubSnapshot = evidence;
+      const head = evidence.sha;
       command(
         'git',
         ['worktree', 'add', '--detach', result.workDir, head],
@@ -325,7 +315,8 @@ async function execute({ task, turn }) {
       jobToken: turn.jobToken,
       stage: name,
     });
-    if (cached[name]) return cached[name];
+    if (cached[name] && name !== 'policy' && name !== 'snapshot')
+      return cached[name];
     const value = await codexStage({
       stage: name,
       prompt,
@@ -339,7 +330,7 @@ async function execute({ task, turn }) {
   try {
     const preparation = await step(
       'prepare',
-      `用户任务目标：${turn.requestedPrompt || turn.prompt}\n请读取当前仓库，准备交给 Claude 的完整任务 Prompt、分类、难度、技术栈和验收条件。保留用户约束，不擅自增加业务需求。${task.sessionId ? '这是后续轮次，应结合当前状态和上一轮原始目标。' : '这是首轮，禁止简单题。'}\n这是 AI 自动评测任务，不得声称是人工标注。`,
+      `用户任务目标：${turn.requestedPrompt || turn.prompt}\n请读取当前仓库，准备交给 Claude 的完整任务 Prompt、分类、难度、技术栈和验收条件。保留用户约束，不擅自增加业务需求。${task.sessionId ? '这是后续轮次，应结合当前状态和上一轮原始目标。' : '这是首轮，禁止简单题。'}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions()}`,
       task.workDir || task.repoPath,
     );
     if (!task.sessionId && preparation.value.difficulty === '简单')
@@ -349,6 +340,28 @@ async function execute({ task, turn }) {
     automation.preparation = preparation;
     result.preparedPrompt = preparation.value.prompt;
     result.preparation = preparation.value;
+    const candidate = {
+      repoPath: task.repoPath,
+      title: task.title,
+      prompt: preparation.value.prompt,
+      category: preparation.value.category,
+      difficulty: preparation.value.difficulty,
+    };
+    const context = await api({ action: 'supply-context' });
+    const history = context.history
+      .filter((t) => t.id !== task.id)
+      .slice(0, 200);
+    const audit = await step(
+      'policy',
+      `${policyInstructions()}\n独立审核用户原目标与准备后的实际任务，两个都必须合规。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
+      task.workDir || task.repoPath,
+    );
+    audit.ruleVersion = rules.version;
+    audit.candidateDigest = await candidateDigest(candidate);
+    automation.policy = audit;
+    assertPolicyAudit(audit, audit.candidateDigest);
+    cached.policy = audit;
+    persist();
     const snap = await step(
       'snapshot',
       `只读检查此仓库的 Git 环境。读取 HEAD 完整 SHA 和 origin URL、工作区状态、依赖与可复现性。不得修改、提交或推送。${task.workDir ? '这是后续轮次，允许模型已有改动；初始快照必须继续引用 ' + task.snapshot : '这是首轮，若工作区不干净或缺少 GitHub origin，请返回 ready=false。'} 返回实际 head、remote 和检查说明。`,
@@ -361,6 +374,17 @@ async function execute({ task, turn }) {
       snap.value.head !== command('git', ['rev-parse', 'HEAD'], task.repoPath)
     )
       throw new Error('Codex 检查的 HEAD 与仓库不一致');
+    const githubEvidence = githubSnapshot(task.workDir || task.repoPath, {
+      expectedSha: snap.value.head,
+      existingSnapshot: task.workDir ? task.snapshot : undefined,
+    });
+    result.githubSnapshot = githubEvidence;
+    result.snapshot = githubEvidence.url;
+    task = { ...task, githubSnapshot: githubEvidence };
+    writeFileSync(
+      path.join(dir, turn.id + '.github-snapshot.json'),
+      JSON.stringify(githubEvidence, null, 2),
+    );
     cached.snapshot = snap;
     persist();
     automation.snapshot = snap;
@@ -397,6 +421,7 @@ async function execute({ task, turn }) {
     result = {
       ...result,
       ...cached.claude,
+      githubSnapshot: githubEvidence,
       jobToken: turn.jobToken,
       automation,
     };
@@ -449,6 +474,8 @@ async function execute({ task, turn }) {
           turnId: turn.id,
           prompt: preparation.value.prompt,
           snapshot: result.snapshot,
+          githubSnapshot: result.githubSnapshot,
+          policyAudit: automation.policy,
           sessionId: result.sessionId,
           promptId: result.promptId,
           tracePath: result.tracePath,
@@ -538,22 +565,19 @@ try {
         const repoPath = context.repos[index];
         supplyState.cursor = index + 1;
         saveSupply();
-        const history = context.history
-          .filter((t) => t.repoPath === repoPath)
-          .map((t) => t.title)
-          .slice(0, 200);
+        const history = context.history.slice(0, 200);
         const generated = await codexStage({
           stage: 'generate',
           cwd: repoPath,
           dir: supplyDir,
           turnId: randomUUID(),
           onChild: track,
-          prompt: `只读分析当前仓库，为 Claude 生成一个独立、可验证的工程任务。出题范围：${context.config.scope}\n不要重复或改写已有题目：${JSON.stringify(history)}\n禁止依赖其他自动任务的改动。不要提出需要外部付费、发布、推送或外部消息的任务。不执行此任务，只返回具体任务目标和验收要求。title 最多 200 字、prompt 最多 20000 字、stack 最多 300 字。`,
+          prompt: `只读分析当前仓库，为 Claude 生成一个独立、可验证的工程任务。出题范围：${context.config.scope}\n${policyInstructions()}\n不要重复或改写已有题目：${JSON.stringify(history)}\n禁止依赖其他自动任务的改动。不要提出需要外部付费、发布、推送或外部消息的任务。不执行此任务，只返回具体任务目标和验收要求。title 最多 200 字、prompt 最多 20000 字、stack 最多 300 字。`,
         });
         if (
           history.some(
             (t) =>
-              fingerprint(repoPath, t) ===
+              fingerprint(repoPath, t.title) ===
               fingerprint(repoPath, generated.value.title),
           )
         )
@@ -565,10 +589,30 @@ try {
           tracePath: generated.tracePath,
           fingerprint: fingerprint(repoPath, generated.value.prompt),
         };
+        const audit = await codexStage({
+          stage: 'policy',
+          cwd: repoPath,
+          dir: supplyDir,
+          turnId: randomUUID(),
+          onChild: track,
+          prompt: `${policyInstructions()}\n独立审核候选题：${JSON.stringify(generated.value)}\n全仓库最近历史：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。只有核心功能不落入禁出范围、无实质雷同时 allowed=true。matchedRuleIds 和 duplicateTaskIds 必须与结论一致；reason 给出依据。`,
+        });
+        audit.ruleVersion = rules.version;
+        audit.candidateDigest = await candidateDigest(payload);
+        // Persist rejections too, so the UI can explain why nothing was enqueued.
+        supplyState.lastAudit = audit;
+        saveSupply();
+        assertPolicyAudit(audit, audit.candidateDigest);
+        payload.policyAudit = audit;
         supplyState.pending = payload;
         saveSupply();
       }
       if (stopping) return;
+      if (payload.policyAudit?.ruleVersion !== rules.version) {
+        delete supplyState.pending;
+        saveSupply();
+        throw Error('出题规则已更新，将重新生成并审核');
+      }
       const res = await api(payload);
       delete supplyState.pending;
       supplyState.failures = 0;
@@ -591,6 +635,10 @@ try {
   while (!stopping) {
     try {
       const context = await api({ action: 'supply-context' });
+      if (Date.now() - githubChecked > 300000) {
+        github = githubStatus();
+        githubChecked = Date.now();
+      }
       const resource = resources(context.config.concurrency);
       schedulerStatus = {
         ...resource,
@@ -601,6 +649,13 @@ try {
         generatedToday: context.generatedToday,
         dailyLimit: context.config.dailyLimit,
         repoCount: context.repos.length,
+        ruleVersion: rules.version,
+        lastAudit: supplyState.lastAudit
+          ? {
+              allowed: supplyState.lastAudit.value.allowed,
+              reason: supplyState.lastAudit.value.reason,
+            }
+          : null,
         supply: generating
           ? 'Codex 正在生成任务'
           : supplyDecision(context, supplyState) ||

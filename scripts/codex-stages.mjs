@@ -10,6 +10,13 @@ const schema = (properties) => ({
   additionalProperties: false,
 });
 export const schemas = {
+  policy: schema({
+    allowed: { type: 'boolean' },
+    matchedRuleIds: strings,
+    duplicateTaskIds: strings,
+    checkedGroups: strings,
+    reason: str,
+  }),
   generate: schema({
     title: str,
     prompt: str,

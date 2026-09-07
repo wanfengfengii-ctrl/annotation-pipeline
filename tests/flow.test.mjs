@@ -14,13 +14,13 @@ writeFileSync(calls, '');
 writeFileSync(path.join(bin, 'fail-score-once'), '1');
 const fixture = `#!/usr/bin/env node
 const fs=require('fs'),path=require('path');const name=path.basename(process.argv[1]),a=process.argv.slice(2),dir=process.env.FIXTURE_BIN;const sha='a'.repeat(40);if(a.includes('--version')){console.log(name+' fixture');process.exit(0)}
-if(name==='git'){if(a[0]==='rev-parse')console.log(sha);if(a[0]==='remote')console.log('https://github.com/fixture/fixture.git');if(a[0]==='for-each-ref')console.log('refs/remotes/origin/main');if(a[0]==='worktree')fs.mkdirSync(a[3],{recursive:true});process.exit(0)}
+if(name==='gh'){if(a[0]==='repo')console.log(JSON.stringify({nameWithOwner:'fixture/fixture',url:'https://github.com/fixture/fixture',isPrivate:false,viewerPermission:'READ',defaultBranchRef:{name:'main'}}));else if(a.includes('user'))console.log('fixture-user');else console.log(JSON.stringify({sha:'a'.repeat(40),html_url:'https://github.com/fixture/fixture/commit/'+'a'.repeat(40)}));process.exit(0)}\nif(name==='git'){if(a[0]==='rev-parse')console.log(sha);if(a[0]==='remote')console.log('https://github.com/fixture/fixture.git');if(a[0]==='for-each-ref')console.log('refs/remotes/origin/main');if(a[0]==='worktree')fs.mkdirSync(a[3],{recursive:true});process.exit(0)}
 let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{if(a.includes('--model')||a.includes('-m'))throw Error('Model override is forbidden');
 if(name==='claude'){fs.appendFileSync(dir+'/calls.jsonl',JSON.stringify({name:'claude'})+'\\n');const v=JSON.parse(input);console.log(JSON.stringify({type:'system',subtype:'init',model:'fixture-config-model',session_id:v.session_id}));console.log(JSON.stringify({...v,uuid:'fixture-user-message'}));console.log(JSON.stringify({type:'result',result:'Synthetic fixture output',is_error:false}));return}
-const schema=a[a.indexOf('--output-schema')+1],out=a[a.indexOf('--output-last-message')+1];const stage=['prepare','snapshot','score','delivery'].find(x=>schema.endsWith('.'+x+'.schema.json'));fs.appendFileSync(dir+'/calls.jsonl',JSON.stringify({name:stage})+'\\n');if(stage==='score'&&fs.existsSync(dir+'/fail-score-once')){fs.unlinkSync(dir+'/fail-score-once');process.exit(1)}
-const values={prepare:{prompt:'Synthetic prepared goal',category:'Feature 迭代',difficulty:'中等',stack:'fixture',acceptance:['fixture evidence']},snapshot:{ready:true,head:sha,remote:'https://github.com/fixture/fixture.git',notes:['fixture snapshot']},score:{scores:[3,3,3,3,3],descriptions:['a','b','c','d','e'],other:'无'},delivery:{passed:true,checks:['fixture data complete'],summary:'synthetic verification'}};fs.writeFileSync(out,JSON.stringify(values[stage]));console.log(JSON.stringify({type:'thread.started',thread_id:'fixture-'+stage}));});
+const schema=a[a.indexOf('--output-schema')+1],out=a[a.indexOf('--output-last-message')+1];const stage=['policy','prepare','snapshot','score','delivery'].find(x=>schema.endsWith('.'+x+'.schema.json'));fs.appendFileSync(dir+'/calls.jsonl',JSON.stringify({name:stage})+'\\n');if(stage==='score'&&fs.existsSync(dir+'/fail-score-once')){fs.unlinkSync(dir+'/fail-score-once');process.exit(1)}
+const values={policy:{allowed:!input.includes('__POLICY_REJECT__'),matchedRuleIds:input.includes('__POLICY_REJECT__')?['games']:[],duplicateTaskIds:[],checkedGroups:['games','desktop','business','dashboard'],reason:'synthetic eligible task'},prepare:{prompt:'Synthetic prepared goal',category:'Feature 迭代',difficulty:'中等',stack:'fixture',acceptance:['fixture evidence']},snapshot:{ready:true,head:sha,remote:'https://github.com/fixture/fixture.git',notes:['fixture snapshot']},score:{scores:[3,3,3,3,3],descriptions:['a','b','c','d','e'],other:'无'},delivery:{passed:true,checks:['fixture data complete'],summary:'synthetic verification'}};fs.writeFileSync(out,JSON.stringify(values[stage]));console.log(JSON.stringify({type:'thread.started',thread_id:'fixture-'+stage}));});
 `;
-for (const name of ['git', 'codex', 'claude']) {
+for (const name of ['git', 'codex', 'claude', 'gh']) {
   const p = path.join(bin, name);
   writeFileSync(p, fixture);
   chmodSync(p, 0o755);
@@ -94,6 +94,37 @@ try {
   assert.equal(log.filter((x) => x === 'score').length, 2);
   assert.equal(log.filter((x) => x === 'delivery').length, 1);
   assert.ok(!r.jobToken && !r.completedJobToken);
+  const blocked = (
+    await api('/api/tasks', {
+      title: '__POLICY_REJECT__',
+      repoPath: bin,
+      stack: 'fixture',
+      category: 'Feature 迭代',
+      difficulty: '中等',
+      reproducibility: '无外部依赖',
+      autoStart: true,
+    })
+  ).task;
+  writeFileSync('.runner/policy-blocked-test-id', blocked.id);
+  let rejected;
+  for (let i = 0; i < 120; i++) {
+    rejected = (await api('/api/tasks', null, 'GET')).tasks.find(
+      (t) => t.id === blocked.id,
+    );
+    if (rejected.turns[0].status === 'failed') break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  assert.equal(rejected.turns[0].stage, 'policy');
+  assert.equal(rejected.turns[0].automation.policy.value.allowed, false);
+  assert.equal(
+    readFileSync(calls, 'utf8')
+      .trim()
+      .split('\n')
+      .map(JSON.parse)
+      .filter((x) => x.name === 'claude').length,
+    1,
+    'blocked task must never reach Claude',
+  );
   console.log(
     'Full fixture pipeline passed, including score failure and resume without rerunning Claude.',
   );

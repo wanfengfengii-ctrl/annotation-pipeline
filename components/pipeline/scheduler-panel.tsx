@@ -85,6 +85,19 @@ export function SchedulerPanel({
           ? s?.supply || '等待本机执行器连接'
           : '云端设置仅作用于云端队列；请在本机工作台配置本机执行器。'}
       </p>
+      <p className="sub">
+        GitHub CLI：
+        {runner?.github?.available
+          ? `已连接 ${runner.github.login} · ${runner.github.version}`
+          : runner?.github?.error || '等待执行器检查'}
+      </p>
+      <p className="sub">
+        禁出规则：{s?.ruleVersion || '等待执行器报告'}
+        。自动出题先审核，再进入队列。
+        {s?.lastAudit
+          ? `最近审核：${s.lastAudit.allowed ? '通过' : '拦截'}，${s.lastAudit.reason}`
+          : ''}
+      </p>
       <details>
         <summary>调度设置</summary>
         <form onSubmit={save} className="scheduler-form">

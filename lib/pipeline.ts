@@ -48,6 +48,7 @@ export type Turn = {
   requestedPrompt?: string;
   automation?: {
     preparation?: any;
+    policy?: any;
     snapshot?: any;
     score?: any;
     delivery?: any;
@@ -63,6 +64,17 @@ export type Task = {
   difficulty: string;
   reproducibility: string;
   snapshot: string;
+  githubSnapshot?: {
+    url: string;
+    sha: string;
+    repository: string;
+    isPrivate: boolean;
+    viewerPermission: string;
+    defaultBranch: string;
+    verifiedAt: string;
+    engine: string;
+    accessNote: string;
+  };
   sessionId?: string;
   workDir?: string;
   harnessVersion?: string;
@@ -76,6 +88,7 @@ export type Task = {
     fingerprint: string;
     tracePath: string;
     generatedAt: string;
+    policyAudit?: any;
   };
 };
 export function counted(t: Task) {

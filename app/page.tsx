@@ -1,4 +1,5 @@
 'use client';
+import { rules } from '@/lib/task-policy.mjs';
 import { SchedulerPanel } from '@/components/pipeline/scheduler-panel';
 import { useEffect, useState, useCallback, type ReactNode } from 'react';
 import {
@@ -353,7 +354,7 @@ export default function Home() {
         <div className="flow">
           {[
             ['任务准备 · Codex', '目标转为任务与验收条件'],
-            ['环境快照 · Codex', '检查环境并锁定 Commit'],
+            ['环境快照 · Codex + gh', '核验 GitHub 完整提交'],
             ['CLI 执行', '每个会话最多 10 轮'],
             ['自动评分 · Codex', '依据轨迹与产物评分'],
             ['校验与交付 · Codex', '生成带 AI 来源的交付包'],
@@ -653,9 +654,25 @@ export default function Home() {
                   </p>
                 ))}
                 <p>
-                  雷同题、经典小游戏、Todo 和常见 CRUD
-                  模板需人工检查；系统不通过关键词代替语义查重。
+                  禁出规则 {rules.version}
+                  ：自动出题后独立审核，准备后的任务再次审核；不通过则拦截。覆盖换皮变体，并对最近
+                  200 个跨仓库任务做语义查重。语义判断仍可能误判。
                 </p>
+                <ul>
+                  {rules.general.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+                {rules.groups.map((g) => (
+                  <details key={g.id}>
+                    <summary>{g.name}</summary>
+                    <ul>
+                      {g.items.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </details>
+                ))}
               </div>
               <div className="rulebox">
                 <h2>提交约束</h2>
@@ -1019,7 +1036,8 @@ function TurnPanel({
             {(
               {
                 prepare: 'Codex 任务准备',
-                snapshot: 'Codex 环境快照',
+                policy: 'Codex 禁出与雷同审核',
+                snapshot: 'Codex + GitHub CLI 环境快照',
                 claude: 'Claude 执行',
                 score: 'Codex 五维评分',
                 delivery: 'Codex 校验与交付',
@@ -1043,6 +1061,19 @@ function TurnPanel({
                   </pre>
                 </details>
               ))}
+          {r.automation?.policy && (
+            <p className="sub">
+              禁出审核：{r.automation.policy.value.allowed ? '通过' : '已拦截'}{' '}
+              · {r.automation.policy.value.reason}
+            </p>
+          )}
+          {t.githubSnapshot && (
+            <p className="sub">
+              GitHub CLI 已核验 · {t.githubSnapshot.repository} ·{' '}
+              {t.githubSnapshot.isPrivate ? '私有仓库' : '公开仓库'} ·{' '}
+              {t.githubSnapshot.accessNote}
+            </p>
+          )}
           {r.automation?.bundlePath && (
             <p className="sub mono">本机交付包：{r.automation.bundlePath}</p>
           )}
