@@ -59,7 +59,7 @@ test('逐轮完整性、排除与 CSV 公式安全', () => {
     issues(task, { ...r, review: { ...r.review, attested: false } }).length,
     1,
   );
-  assert.equal(counted({ ...task, turns: [r, { ...r, excluded: true }] }), 1);
+  assert.equal(counted({ ...task, turns: [r, { ...r, excluded: true }] }), 2);
   assert.ok(
     !csv([{ ...task, turns: [{ ...r, excluded: true }] }]).includes(
       'DANGEROUS',

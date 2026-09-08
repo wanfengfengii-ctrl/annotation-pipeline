@@ -26,6 +26,7 @@ export type HumanReview = {
   qualityReasons: string[];
   reworkReason?: string;
   receipt?: string;
+  submitter?: string;
   deliveredAt?: string;
 };
 export type EvidenceItem = {

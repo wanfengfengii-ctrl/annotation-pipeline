@@ -1,4 +1,10 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import {
+  sqliteTable,
+  text,
+  integer,
+  index,
+  primaryKey,
+} from 'drizzle-orm/sqlite-core';
 export const tasks = sqliteTable('tasks', {
   id: text('id').primaryKey(),
   data: text('data').notNull(),
@@ -22,4 +28,26 @@ export const reviewHistory = sqliteTable(
     createdAt: text('created_at').notNull(),
   },
   (table) => [index('review_history_turn_idx').on(table.taskId, table.turnId)],
+);
+
+export const exportBatches = sqliteTable('export_batches', {
+  id: text('id').primaryKey(),
+  nonce: text('nonce').notNull(),
+  filter: text('filter').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+export const exportItems = sqliteTable(
+  'export_items',
+  {
+    batchId: text('batch_id').notNull(),
+    taskId: text('task_id').notNull(),
+    turnId: text('turn_id').notNull(),
+    source: text('source').notNull(),
+    snapshot: text('snapshot').notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.batchId, t.taskId, t.turnId] }),
+    index('export_items_turn_idx').on(t.taskId, t.turnId),
+  ],
 );

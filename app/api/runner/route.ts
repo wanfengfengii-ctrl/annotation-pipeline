@@ -1,3 +1,4 @@
+import { validateSeries, claudeCallCount } from '@/lib/project-series.mjs';
 import { nextDecision, dailyMix } from '@/lib/workflow.mjs';
 import { candidateDigest, assertPolicyAudit } from '@/lib/task-policy.mjs';
 import { schedulerConfig } from '@/db/scheduler';
@@ -86,12 +87,16 @@ export async function POST(req: Request) {
         b.difficulty === '简单'
       )
         throw Error('自动题型或难度无效');
+      validateSeries(b.projectSeries);
+      if (b.category !== '0-1 代码生成')
+        throw Error('自动新项目首题必须为 0-1 代码生成');
       assertPolicyAudit(b.policyAudit, await candidateDigest(b));
       if (b.difficulty !== b.policyAudit.value.assessedDifficulty)
         throw Error('题目难度与独立审核等级不一致');
       const now = new Date().toISOString(),
         day = businessDate(now);
       const task: Task = {
+        projectSeries: b.projectSeries,
         id: crypto.randomUUID(),
         title: text(b.title, '任务名称', 200),
         repoPath: text(b.repoPath, '仓库', 2000),
@@ -175,6 +180,32 @@ export async function POST(req: Request) {
       }
       return Response.json({ job: null });
     }
+    if (b.action === 'reserve-claude') {
+      const item = await get(text(b.taskId, '任务 ID'));
+      const r = item?.task.turns.find((r) => r.id === b.turnId);
+      if (!item || !r || r.status !== 'running' || r.jobToken !== b.jobToken)
+        throw Error('执行额度凭据无效');
+      const attempt = text(b.attemptId, '调用标识', 200);
+      const sessionId = text(b.sessionId, 'Claude 会话 ID', 300);
+      if (item.task.sessionId && item.task.sessionId !== sessionId)
+        throw Error('不能在同一项目切换 Claude 会话');
+      if (r.claudeAttempts?.includes(attempt))
+        return Response.json({
+          allowed: true,
+          count: claudeCallCount(item.task),
+        });
+      r.claudeAttempts ||= r.promptId || r.sessionId ? ['legacy'] : [];
+      if (claudeCallCount(item.task) >= 10)
+        return Response.json({ allowed: false, count: 10 });
+      // Reserve before spawning; even uncertain/failed calls retain their slot.
+      r.claudeAttempts.push(attempt);
+      item.task.sessionId = sessionId;
+      await save(item.task, item.revision);
+      return Response.json({
+        allowed: true,
+        count: claudeCallCount(item.task),
+      });
+    }
     if (b.action === 'stage') {
       const item = await get(text(b.taskId, '任务 ID'));
       const r = item?.task.turns.find((r) => r.id === b.turnId);
@@ -189,6 +220,7 @@ export async function POST(req: Request) {
           'score',
           'delivery',
           'next',
+          'project-next',
         ].includes(b.stage)
       )
         throw new Error('未知阶段');
@@ -322,8 +354,11 @@ export async function POST(req: Request) {
             item.task.turns.push({
               id: crypto.randomUUID(),
               prompt: decision.prompt,
-              category: r.category,
-              difficulty: r.difficulty,
+              category:
+                ('category' in decision && decision.category) || r.category,
+              difficulty:
+                ('difficulty' in decision && decision.difficulty) ||
+                r.difficulty,
               status: 'queued',
               createdAt: new Date().toISOString(),
               autoFollowup: true,

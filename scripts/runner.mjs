@@ -1,3 +1,9 @@
+import {
+  seriesVersion,
+  seriesPrompt,
+  nextCategory,
+  canAddTurn,
+} from '../lib/project-series.mjs';
 import { workflow, scoreInstructions } from '../lib/workflow.mjs';
 import {
   verifyScoreEvidence,
@@ -185,6 +191,15 @@ async function executeClaude({ task, turn, onChild = track }) {
         : ['--session-id', result.sessionId]),
     ];
     // No --model / --settings / permission override: honor the installed CLI configuration.
+    const reservation = await api({
+      action: 'reserve-claude',
+      taskId: task.id,
+      turnId: turn.id,
+      jobToken: turn.jobToken,
+      attemptId: turn.traceKey || turn.id,
+      sessionId: result.sessionId,
+    });
+    if (!reservation.allowed) throw Error('同一项目已达 10 次 Claude 交互上限');
     const requestedId = randomUUID();
     writeFileSync(tracePath, '');
     writeFileSync(stderrPath, '');
@@ -388,9 +403,21 @@ async function execute({ task, turn }) {
     });
     const preparation = await step(
       'prepare',
-      `用户任务目标：${turn.requestedPrompt || turn.prompt}\n请读取当前仓库，准备交给 Claude 的完整任务 Prompt、分类、难度、技术栈和验收条件。保留用户约束，不擅自增加业务需求。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions()}`,
+      `${seriesPrompt(task)}\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n请读取当前仓库，准备交给 Claude 的完整任务 Prompt、分类、难度、技术栈和验收条件。保留用户约束，不擅自增加业务需求。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions()}`,
       task.workDir || task.repoPath,
     );
+    if (
+      task.projectSeries &&
+      (index === 0
+        ? preparation.value.category !== '0-1 代码生成'
+        : preparation.value.category === '0-1 代码生成')
+    )
+      throw Error('项目首题必须为 0-1，后续题必须基于产物扩展');
+    if (task.projectSeries) {
+      const scope = `项目目录约束：仅在 ${task.projectSeries.directory} 创建或修改本项目文件；保持同一项目，不另建项目。`;
+      if (!preparation.value.prompt.includes(scope))
+        preparation.value.prompt += '\n\n' + scope;
+    }
     cached.prepare = preparation;
     persist();
     automation.preparation = preparation;
@@ -553,10 +580,23 @@ async function execute({ task, turn }) {
       throw new Error('Codex 交付校验未通过：' + delivery.value.summary);
     cached.delivery = delivery;
     persist();
-    if (
-      context.config.autoContinue &&
-      task.turns.filter((r) => !r.excluded).length < 10
-    ) {
+    if (context.config.autoContinue && canAddTurn(task) && task.projectSeries) {
+      const next = await step(
+        'project-next',
+        `${seriesPrompt(task)}
+当前是第 ${task.turns.length} 次交互。初始项目目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}
+项目路径：${task.projectSeries.directory}
+本轮目标：${preparation.value.prompt}
+本轮产物轨迹：${result.tracePath}
+本轮评分：${JSON.stringify(result.review)}
+已有题目（禁止实质重复）：${JSON.stringify(task.turns.map((r) => ({ category: r.category, prompt: r.requestedPrompt || r.prompt })))}
+读取真实项目目录和测试/错误轨迹；基础尚不可用时 action=repair，category=Bug 修复。基础可用后主动设计下一道该项目的合理工程任务，action=advance，当前优先建议 ${nextCategory(task)}，但 Bug 必须有实际证据，理解与重构按真实工程需要选择。baseComplete 必须反映真实基础产物状态。projectEvidence 写实际文件和现象；下一题不能另建项目。任务都已充分覆盖且没有有价值的下一题时 complete；缺少外部凭据或关键输入时 needs_input。结束时 prompt 写“无”。每题仍经独立禁出、雷同和难度审核。`,
+        result.workDir,
+      );
+      cached.next = next;
+      persist();
+      automation.next = next;
+    } else if (context.config.autoContinue && canAddTurn(task)) {
       const next = await step(
         'next',
         `只读判断是否需要下一轮。会话最初目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}\n本轮原始目标：${turn.requestedPrompt || turn.prompt}\n完整任务：${preparation.value.prompt}\n轨迹：${result.tracePath}\n产物目录：${result.workDir}\n本轮评价：${JSON.stringify(result.review)}\n执行结果类型：${result.executionOutcome || 'complete'}\n仅对本题未完成部分或已发现 Bug 提出具体修复，不增加无关功能。需要用户凭据、付费、外部访问或关键决策时 needs_input。完成时 complete；截断未完成时 continue；已证实产物问题时 repair。prompt 必须是可执行的下一轮完整指令，complete/needs_input 时写“无”。reason 给出实际依据。每个会话最多 10 轮，每轮独立评分。`,
@@ -760,14 +800,26 @@ try {
         supplyState.cursor = index + 1;
         saveSupply();
         const history = context.history.slice(0, 200);
+        const projectSeries = {
+          version: seriesVersion,
+          directory: 'projects/p-' + randomUUID(),
+        };
         const generated = await codexStage({
           stage: 'generate',
           cwd: repoPath,
           dir: supplyDir,
           turnId: randomUUID(),
           onChild: track,
-          prompt: `只读分析当前仓库，为 Claude 生成一个独立、可验证的工程任务。出题范围：${context.config.scope}\n今日已完成及排队题型分布：${JSON.stringify(context.mix)}。优先补充建议题型 ${context.mix?.suggested || '按实际需要'}，但必须按真实需求分类，不改标签凑比例。\n${policyInstructions()}\n不要重复或改写已有题目：${JSON.stringify(history)}\n禁止依赖其他自动任务的改动。不要提出需要外部付费、发布、推送或外部消息的任务。不执行此任务，只返回具体任务目标和验收要求。title 最多 200 字、prompt 最多 20000 字、stack 最多 300 字。`,
+          prompt: `Codex 负责设计新项目的完整首题需求，Claude CLI 负责从零实现。首题 category 必须为 0-1 代码生成。只读分析当前仓库，将其作为种子/快照载体，在尚不存在的目录 ${projectSeries.directory} 设计独立项目，不基于现有业务只做小改动，不修改该目录外业务。完整首题应交付能运行的基础项目及验证方法，后续将在同一项目出 Feature 迭代、真实 Bug 修复、代码理解与代码重构题。出题范围：${context.config.scope}\n今日已完成及排队题型分布：${JSON.stringify(context.mix)}。新项目首题始终为 0-1；类型分布在同项目的后续题中调节。\n${policyInstructions()}\n不要重复或改写已有题目：${JSON.stringify(history)}\n禁止依赖其他自动任务的改动。不要提出需要外部付费、发布、推送或外部消息的任务。不执行此任务，只返回具体任务目标和验收要求。title 最多 200 字、prompt 最多 20000 字、stack 最多 300 字。`,
         });
+        if (generated.value.category !== '0-1 代码生成')
+          throw Error('自动新项目首题必须是 0-1 代码生成');
+        if (existsSync(path.join(repoPath, projectSeries.directory)))
+          throw Error('新项目目标目录已存在');
+        generated.value.prompt +=
+          '\n项目目录：' +
+          projectSeries.directory +
+          '。在该目录从零实现，后续题沿用同一项目；不修改目录外的现有业务。';
         if (
           history.some(
             (t) =>
@@ -778,6 +830,7 @@ try {
           throw Error('Codex 生成了重复标题');
         payload = {
           action: 'enqueue-auto',
+          projectSeries,
           repoPath,
           ...generated.value,
           tracePath: generated.tracePath,
@@ -804,7 +857,10 @@ try {
         saveSupply();
       }
       if (stopping) return;
-      if (payload.policyAudit?.ruleVersion !== rules.version) {
+      if (
+        payload.policyAudit?.ruleVersion !== rules.version ||
+        payload.projectSeries?.version !== seriesVersion
+      ) {
         delete supplyState.pending;
         saveSupply();
         throw Error('出题规则已更新，将重新生成并审核');

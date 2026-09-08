@@ -62,8 +62,9 @@ export function SchedulerPanel({
           <p className="eyebrow">AUTOMATIC SCHEDULER</p>
           <h2>自动补充与并行执行</h2>
           <p className="sub">
-            待执行队列为空且有空闲容量时，由 Codex
-            生成一个新任务。每个任务在独立工作目录执行。
+            待执行队列为空且有空闲容量时，由 Codex 先生成 0–1
+            项目题，再在同一项目生成迭代、修复、理解或重构题。不同项目独立并行，同一项目沿用一个
+            Claude 会话，累计最多 10 次。
           </p>
         </div>
         <span className="tag">

@@ -15,6 +15,13 @@
       "when": 1788847082079,
       "tag": "0001_familiar_chronomancer",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788857999621,
+      "tag": "0002_modern_lenny_balinger",
+      "breakpoints": true
     }
   ]
 }

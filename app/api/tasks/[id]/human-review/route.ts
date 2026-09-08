@@ -118,6 +118,7 @@ export async function POST(
       if (missing.length)
         throw Error(`还有 ${missing.length} 个有效轮次未完成人工质检`);
       actor = text(b.actor, '登记人', 100);
+      h.submitter = actor;
       h.receipt = text(b.receipt, '外部实际回执', 2000);
       h.deliveredAt = now;
     } else throw Error('未知人工评审操作');

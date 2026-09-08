@@ -1,3 +1,4 @@
+import { seriesVersion } from '@/lib/project-series.mjs';
 import { all, db, failure, protect, text } from '@/db/store';
 import { categories, difficulties, type Task } from '@/lib/pipeline';
 export async function GET() {
@@ -33,7 +34,17 @@ export async function POST(req: Request) {
       b.difficulty === '简单'
     )
       throw new Error('首轮须选择有效题型，且不能为简单题');
+    if (b.projectSeries === true && b.category !== '0-1 代码生成')
+      throw Error('连续项目的首题必须为 0-1 代码生成');
     const task: Task = {
+      ...(b.projectSeries === true
+        ? {
+            projectSeries: {
+              version: seriesVersion,
+              directory: 'projects/p-' + crypto.randomUUID(),
+            },
+          }
+        : {}),
       id: crypto.randomUUID(),
       title: text(b.title, '任务目标', 200),
       repoPath: text(b.repoPath, '本机仓库路径', 2000),

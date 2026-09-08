@@ -1,4 +1,6 @@
 'use client';
+import { canAddTurn, claudeCallCount } from '@/lib/project-series.mjs';
+import { RecordsTable } from '@/components/pipeline/records-table';
 import { rules, difficultyRules } from '@/lib/task-policy.mjs';
 import { HumanReviewPanel } from '@/components/pipeline/human-review-panel';
 import { humanLabel, humanIssues } from '@/lib/human-review';
@@ -149,16 +151,17 @@ async function request(url: string, body?: unknown, method = 'POST') {
   return data;
 }
 const emptyTask = {
+  projectSeries: true,
   title: '',
   repoPath: '',
   stack: '',
-  category: 'Feature 迭代',
+  category: '0-1 代码生成',
   difficulty: '中等',
   reproducibility: '无外部依赖',
 };
 export default function Home() {
   const [local, setLocal] = useState(false);
-  const [exportDay, setExportDay] = useState('');
+  const [recordsSource, setRecordsSource] = useState<'ai' | 'human'>('ai');
   const [tasks, setTasks] = useState<RecordTask[]>([]),
     [runner, setRunner] = useState<any>(null),
     [error, setError] = useState(''),
@@ -173,7 +176,6 @@ export default function Home() {
   const reload = useCallback(async () => {
     try {
       const d = await request('/api/tasks');
-      setExportDay(businessDate(new Date().toISOString()));
       setTasks(d.tasks);
       setRunner(d.runner);
       setError('');
@@ -295,18 +297,16 @@ export default function Home() {
             <p className="sub">从真实工程任务，到可追溯的逐轮交付。</p>
           </div>
           <div className="actions">
-            <a href={`/api/export?day=${exportDay}`}>
-              <Button variant="outline">导出今日 AI 评测</Button>
-            </a>
-            <a href="/api/export">
-              <Button
-                variant="outline"
-                disabled={!turns.some(({ t, r }) => !issues(t, r).length)}
-              >
-                <Download />
-                导出 AI 评测轮次
-              </Button>
-            </a>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setRecordsSource('ai');
+                setPage('records');
+              }}
+            >
+              <Download />
+              标注数据 / 导出 Excel
+            </Button>
             <Button onClick={() => setOpen(true)}>
               <Plus />
               新建任务
@@ -386,6 +386,7 @@ export default function Home() {
         <Tabs value={page} onValueChange={(v) => setPage(String(v))}>
           <TabsList variant="line" className="tabbar">
             <TabsTrigger value="tasks">任务工作台</TabsTrigger>
+            <TabsTrigger value="records">标注数据</TabsTrigger>
             <TabsTrigger value="human">人工二次确认</TabsTrigger>
             <TabsTrigger value="delivery">
               交付队列 <span className="tag gray">{ready.length}</span>
@@ -539,13 +540,26 @@ export default function Home() {
               )}
             </section>
           </TabsContent>
+          <TabsContent value="records">
+            <RecordsTable
+              key={recordsSource}
+              source={recordsSource}
+              onOpen={setSelected}
+            />
+          </TabsContent>
           <TabsContent value="human">
             <section className="panel">
               <div className="panelhead">
                 <h2>AI 评分后的人工确认</h2>
-                <a href="/api/export?source=human">
-                  <Button variant="outline">导出已确认轮次</Button>
-                </a>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setRecordsSource('human');
+                    setPage('records');
+                  }}
+                >
+                  筛选并导出已确认轮次
+                </Button>
               </div>
               <p className="sub" style={{ padding: '0 24px' }}>
                 自动执行、评分和续跑照常进行。按轮次检查产物与 AI
@@ -703,7 +717,8 @@ export default function Home() {
                 <h2>逐轮验收</h2>
                 <ul>
                   <li>
-                    每个有效 Prompt-response pair 为一条数据；最多 10 轮。
+                    每个 Prompt-response pair 为一条数据；同一项目累计最多 10
+                    次，失败重试也占调用次数。
                   </li>
                   <li>“继续”计入轮次，评价原始任务目标。</li>
                   <li>仅工程故障、网络波动导致无反馈价值的轮次可人工排除。</li>
@@ -813,6 +828,16 @@ export default function Home() {
             一个任务对应一个会话。执行前请确认仓库提交已推送，且评测团队可以访问。
           </DialogDescription>
           <form onSubmit={create} className="formgrid">
+            <label className="human-check wide">
+              <input
+                type="checkbox"
+                checked={draft.projectSeries}
+                onChange={(e) =>
+                  setDraft({ ...draft, projectSeries: e.target.checked })
+                }
+              />
+              项目连续出题：0–1 创建后，在同一项目迭代、修复与分析
+            </label>
             <Field label="任务名称" wide>
               <input
                 required
@@ -886,7 +911,9 @@ function TaskDetail({
   mutate: (t: RecordTask, b: object) => Promise<void>;
 }) {
   const [prompt, setPrompt] = useState(''),
-    [category, setCategory] = useState(t.category),
+    [category, setCategory] = useState(
+      t.turns.length ? 'Feature 迭代' : t.category,
+    ),
     [difficulty, setDifficulty] = useState(t.difficulty),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
@@ -915,7 +942,10 @@ function TaskDetail({
       </SheetDescription>
       <div className="actions" style={{ margin: '16px 0' }}>
         <Badge value={status(t)} />
-        <span className="tag gray">{counted(t)} / 10 轮</span>
+        <span className="tag gray">
+          {counted(t)} / 10 轮 · Claude 调用 {claudeCallCount(t)} / 10
+        </span>
+        {t.projectSeries && <span className="tag">同一项目连续出题</span>}
         <span className="sub">{t.model || '模型沿用 Claude CLI 配置'}</span>
       </div>
       {error && (
@@ -948,7 +978,7 @@ function TaskDetail({
               busy={busy}
             />
           ))}
-          {!t.closed && counted(t) < 10 && !pending(t) && (
+          {!t.closed && canAddTurn(t) && !pending(t) && (
             <form
               className="section formgrid"
               onSubmit={async (e) => {
@@ -967,7 +997,15 @@ function TaskDetail({
                 <Picker
                   label="本轮任务类型"
                   value={category}
-                  options={categories}
+                  options={
+                    t.projectSeries
+                      ? categories.filter((c) =>
+                          t.turns.length
+                            ? c !== '0-1 代码生成'
+                            : c === '0-1 代码生成',
+                        )
+                      : categories
+                  }
                   onChange={setCategory}
                 />
               </Field>
@@ -1012,7 +1050,7 @@ function TaskDetail({
               评分与交付校验。
             </div>
           )}
-          {counted(t) >= 10 && (
+          {!canAddTurn(t) && (
             <div className="issue">
               已达到 10 轮上限。完成本会话的逐轮评分后，请新建任务。
             </div>
@@ -1120,6 +1158,7 @@ function TurnPanel({
   };
   const [review, setReview] = useState<Review>(r.review || blank),
     [receipt, setReceipt] = useState(''),
+    [submitter, setSubmitter] = useState(''),
     [reason, setReason] = useState(''),
     [promptId, setPromptId] = useState(r.promptId || ''),
     [tracePath, setTracePath] = useState(r.tracePath || '');
@@ -1453,6 +1492,13 @@ function TurnPanel({
             <div style={{ marginTop: 18 }}>
               <p className="tag">字段形式校验通过</p>
               <div className="formgrid" style={{ marginTop: 12 }}>
+                <Field label="实际提交人" wide>
+                  <input
+                    maxLength={100}
+                    value={submitter}
+                    onChange={(e) => setSubmitter(e.target.value)}
+                  />
+                </Field>
                 <Field label="实际提交记录 / 外部回执" wide>
                   <input
                     value={receipt}
@@ -1464,7 +1510,12 @@ function TurnPanel({
                   <Button
                     disabled={busy || !receipt.trim()}
                     onClick={() =>
-                      run({ action: 'submit', turnId: r.id, receipt })
+                      run({
+                        action: 'submit',
+                        turnId: r.id,
+                        receipt,
+                        submitter,
+                      })
                     }
                   >
                     <CheckCircle2 />

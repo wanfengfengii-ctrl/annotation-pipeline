@@ -11,6 +11,28 @@ const schema = (properties) => ({
   additionalProperties: false,
 });
 export const schemas = {
+  'project-next': schema({
+    action: {
+      type: 'string',
+      enum: ['advance', 'repair', 'complete', 'needs_input'],
+    },
+    prompt: str,
+    reason: str,
+    category: {
+      type: 'string',
+      enum: [
+        'Feature 迭代',
+        'Bug 修复',
+        '代码理解',
+        '代码重构',
+        '工程化',
+        '代码测试',
+      ],
+    },
+    difficulty: { type: 'string', enum: ['简单', '中等', '困难', '地狱'] },
+    baseComplete: { type: 'boolean' },
+    projectEvidence: str,
+  }),
   next: schema({
     action: {
       type: 'string',

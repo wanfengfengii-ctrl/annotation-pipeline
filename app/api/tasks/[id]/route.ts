@@ -1,3 +1,4 @@
+import { canAddTurn } from '@/lib/project-series.mjs';
 import { get, save, failure, protect, text } from '@/db/store';
 import {
   counted,
@@ -26,7 +27,7 @@ export async function PATCH(
     )
       throw Error('人工交付已登记，该轮已锁定');
     if (b.action === 'enqueue') {
-      if (t.closed || pending(t) || counted(t) >= 10)
+      if (t.closed || pending(t) || !canAddTurn(t))
         throw new Error('会话已结束、正在执行或已达到 10 轮上限');
       if (
         !categories.includes(b.category) ||
@@ -34,6 +35,12 @@ export async function PATCH(
         (!counted(t) && b.difficulty === '简单')
       )
         throw new Error('题型或难度无效');
+      if (
+        t.projectSeries &&
+        ((t.turns.length === 0 && b.category !== '0-1 代码生成') ||
+          (t.turns.length > 0 && b.category === '0-1 代码生成'))
+      )
+        throw Error('项目首题须为 0-1，后续题须基于已有项目');
       t.turns.push({
         id: crypto.randomUUID(),
         prompt: text(b.prompt, 'Prompt', 80000),
@@ -102,6 +109,7 @@ export async function PATCH(
       if (!r || issues(t, r).length) throw new Error('请先通过本轮形式校验');
       r.status = 'submitted';
       r.submittedAt = new Date().toISOString();
+      if (b.submitter) r.submitter = text(b.submitter, '提交人', 100);
       r.receipt = text(b.receipt, '外部提交记录', 2000);
     } else if (b.action === 'close') {
       if (pending(t)) throw new Error('执行中的会话不能结束');

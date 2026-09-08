@@ -13,7 +13,7 @@ export const defaultScheduler: SchedulerConfig = {
   useHistory: true,
   repos: [],
   scope:
-    '根据仓库实际代码生成中等或困难的工程任务，优先选择可验证的测试、缺陷修复或小范围功能改进。每个任务独立完成，不依赖其他自动任务。',
+    '设计中等或困难的独立项目，首题从 0-1 创建可运行基础项目，再在同一项目生成有价值的功能迭代、真实缺陷修复、理解与重构题。不同项目互相独立。',
   concurrency: 3,
   dailyLimit: 20,
 };

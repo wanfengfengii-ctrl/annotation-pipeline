@@ -135,6 +135,11 @@ try {
   const payload = {
     action: 'enqueue-auto',
     ...draft,
+    category: '0-1 代码生成',
+    projectSeries: {
+      version: '2026-09-08.project1',
+      directory: 'projects/p-' + crypto.randomUUID(),
+    },
     prompt: 'Synthetic generated task',
     tracePath: '/synthetic/generate.jsonl',
     fingerprint: fingerprint(draft.repoPath, 'Synthetic generated task'),
