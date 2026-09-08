@@ -14,13 +14,14 @@ export const schemas = {
   'project-next': schema({
     action: {
       type: 'string',
-      enum: ['advance', 'repair', 'complete', 'needs_input'],
+      enum: ['advance', 'repair', 'continue', 'complete', 'needs_input'],
     },
     prompt: str,
     reason: str,
     category: {
       type: 'string',
       enum: [
+        '0-1 代码生成',
         'Feature 迭代',
         'Bug 修复',
         '代码理解',

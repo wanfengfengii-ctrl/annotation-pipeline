@@ -17,15 +17,21 @@ writeFileSync(
 );
 const calls = path.join(bin, 'calls.jsonl');
 writeFileSync(calls, '');
-rmSync(path.join(bin, 'project-mode'), { force: true });
+for (const f of [
+  'project-mode',
+  'truncate-once',
+  'fail-next-once',
+  'stop-project',
+])
+  rmSync(path.join(bin, f), { force: true });
 writeFileSync(path.join(bin, 'fail-score-once'), '1');
 const fixture = `#!/usr/bin/env node
 const fs=require('fs'),path=require('path');const name=path.basename(process.argv[1]),a=process.argv.slice(2),dir=process.env.FIXTURE_BIN;const sha='a'.repeat(40);if(a.includes('--version')){console.log(name+' fixture');process.exit(0)}
 if(name==='gh'){if(a[0]==='repo')console.log(JSON.stringify({nameWithOwner:'fixture/fixture',url:'https://github.com/fixture/fixture',isPrivate:false,viewerPermission:'READ',defaultBranchRef:{name:'main'}}));else if(a.includes('user'))console.log('fixture-user');else console.log(JSON.stringify({sha:'a'.repeat(40),html_url:'https://github.com/fixture/fixture/commit/'+'a'.repeat(40)}));process.exit(0)}\nif(name==='git'){if(a[0]==='rev-parse')console.log(sha);if(a[0]==='remote')console.log('https://github.com/fixture/fixture.git');if(a[0]==='for-each-ref')console.log('refs/remotes/origin/main');if(a[0]==='worktree')fs.mkdirSync(a[3],{recursive:true});process.exit(0)}
 let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{if(a.includes('--model')||a.includes('-m'))throw Error('Model override is forbidden');
-if(name==='claude'){fs.appendFileSync(dir+'/calls.jsonl',JSON.stringify({name:'claude',cwd:process.cwd(),session:JSON.parse(input).session_id,args:a})+'\\n');const v=JSON.parse(input);if(fs.existsSync(dir+'/project-mode')){const f='.fixture-round-count',n=fs.existsSync(f)?Number(fs.readFileSync(f,'utf8')):0;fs.writeFileSync(f,String(n+1));const project=(input.match(/projects\\/p-[a-f0-9-]{36}/)||[])[0];if(!project)throw Error('Missing project directory');fs.mkdirSync(project,{recursive:true});fs.writeFileSync(project+'/engine.ts','// synthetic project round '+(n+1));}console.log(JSON.stringify({type:'system',subtype:'init',model:'fixture-config-model',session_id:v.session_id}));console.log(JSON.stringify({...v,uuid:'fixture-'+v.uuid}));console.log(JSON.stringify({type:'result',result:'Synthetic fixture output',is_error:false}));return}
-const schema=a[a.indexOf('--output-schema')+1],out=a[a.indexOf('--output-last-message')+1];const stage=['policy','prepare','snapshot','score','delivery','next','project-next'].find(x=>schema.endsWith('.'+x+'.schema.json'));fs.appendFileSync(dir+'/calls.jsonl',JSON.stringify({name:stage})+'\\n');if(stage==='score'&&fs.existsSync(dir+'/fail-score-once')){fs.unlinkSync(dir+'/fail-score-once');process.exit(1)}
-const count=fs.existsSync('.fixture-round-count')?Number(fs.readFileSync('.fixture-round-count','utf8')):0;const cats=['0-1 代码生成','Feature 迭代','Bug 修复','代码理解','代码重构','Feature 迭代','Bug 修复','代码理解','代码重构','Feature 迭代'];const values={'project-next':{action:cats[count]==='Bug 修复'?'repair':'advance',prompt:'Synthetic project round '+(count+1),category:cats[count]||'Feature 迭代',difficulty:'中等',reason:'synthetic file evidence',baseComplete:true,projectEvidence:'projects directory engine.ts fixture'},policy:{simpleFeatures:input.includes('用户原目标：__FOLLOWUP_FIX__')?['scope','breadth']:[],difficultyEvidence:['scope evidence','context evidence','interaction evidence','breadth evidence'],assessedDifficulty:input.includes('用户原目标：__FOLLOWUP_FIX__')?'简单':'中等',followupFix:input.includes('用户原目标：__FOLLOWUP_FIX__'),followupReason:'首轮或非产物修复',allowed:!input.includes('用户原目标：__POLICY_REJECT__'),matchedRuleIds:input.includes('用户原目标：__POLICY_REJECT__')?['games']:[],duplicateTaskIds:[],checkedGroups:['games','desktop','business','dashboard'],reason:'synthetic eligible task'},prepare:{prompt:'Synthetic prepared goal '+count,category:input.includes('项目连续出题规则')?cats[count]:'Feature 迭代',difficulty:'中等',stack:'fixture',acceptance:['fixture evidence']},snapshot:{environmentLevel:'无外部依赖',dependencies:[],startup:'fixture',verification:'fixture',ready:true,head:sha,remote:'https://github.com/fixture/fixture.git',notes:['fixture snapshot']},next:{action:fs.existsSync(dir+'/auto-next')?'repair':'complete',prompt:'__AUTO_REPAIR__ repair boundary',reason:'fixture follow-up'},score:{when:Array(5).fill('fixture step'),behavior:Array(5).fill('fixture behavior'),impact:Array(5).fill('fixture impact'),expected:Array(5).fill('fixture expected'),evidenceRefs:Array(5).fill((input.match(/本轮轨迹文件：([^\\n]+)/)||[])[1]+':1'),processFindings:'fixture',artifactFindings:'fixture',scores:[3,3,3,3,3],descriptions:['a','b','c','d','e'],other:'无'},delivery:{passed:true,checks:['fixture data complete'],summary:'synthetic verification'}};if(stage==='next'&&fs.existsSync(dir+'/auto-next'))fs.unlinkSync(dir+'/auto-next');fs.writeFileSync(out,JSON.stringify(values[stage]));console.log(JSON.stringify({type:'thread.started',thread_id:'fixture-'+stage}));});
+if(name==='claude'){fs.appendFileSync(dir+'/calls.jsonl',JSON.stringify({name:'claude',cwd:process.cwd(),session:JSON.parse(input).session_id,args:a})+'\\n');const v=JSON.parse(input);if(fs.existsSync(dir+'/project-mode')){const f='.fixture-round-count',n=fs.existsSync(f)?Number(fs.readFileSync(f,'utf8')):0;fs.writeFileSync(f,String(n+1));const project=(input.match(/projects\\/p-[a-f0-9-]{36}/)||[])[0];const saved='.fixture-project-dir';if(project)fs.writeFileSync(saved,project);const projectDir=project||(fs.existsSync(saved)?fs.readFileSync(saved,'utf8'):'');if(!projectDir)throw Error('Missing project directory');fs.mkdirSync(projectDir,{recursive:true});fs.writeFileSync(projectDir+'/engine.ts','// synthetic project round '+(n+1));}console.log(JSON.stringify({type:'system',subtype:'init',model:'fixture-config-model',session_id:v.session_id}));console.log(JSON.stringify({...v,uuid:'fixture-'+v.uuid}));const truncated=fs.existsSync(dir+'/truncate-once');if(truncated)fs.unlinkSync(dir+'/truncate-once');console.log(JSON.stringify({type:'result',subtype:truncated?'error_max_turns':'success',result:'Synthetic fixture output',is_error:truncated}));return}
+const schema=a[a.indexOf('--output-schema')+1],out=a[a.indexOf('--output-last-message')+1];const stage=['policy','prepare','snapshot','score','delivery','next','project-next'].find(x=>schema.endsWith('.'+x+'.schema.json'));fs.appendFileSync(dir+'/calls.jsonl',JSON.stringify({name:stage})+'\\n');if(['next','project-next'].includes(stage)&&fs.existsSync(dir+'/fail-next-once')){fs.unlinkSync(dir+'/fail-next-once');process.exit(1)}if(stage==='score'&&fs.existsSync(dir+'/fail-score-once')){fs.unlinkSync(dir+'/fail-score-once');process.exit(1)}
+const count=fs.existsSync('.fixture-round-count')?Number(fs.readFileSync('.fixture-round-count','utf8')):0;const cats=['0-1 代码生成','Feature 迭代','Bug 修复','代码理解','代码重构','Feature 迭代','Bug 修复','代码理解','代码重构','Feature 迭代'];const values={'project-next':{action:fs.existsSync(dir+'/stop-project')?'complete':cats[count]==='Bug 修复'?'repair':'advance',prompt:'Synthetic project round '+(count+1),category:cats[count]||'Feature 迭代',difficulty:'中等',reason:'synthetic file evidence',baseComplete:true,projectEvidence:'projects directory engine.ts fixture'},policy:{simpleFeatures:input.includes('用户原目标：__FOLLOWUP_FIX__')?['scope','breadth']:[],difficultyEvidence:['scope evidence','context evidence','interaction evidence','breadth evidence'],assessedDifficulty:input.includes('用户原目标：__FOLLOWUP_FIX__')?'简单':'中等',followupFix:input.includes('用户原目标：__FOLLOWUP_FIX__'),followupReason:'首轮或非产物修复',allowed:!input.includes('用户原目标：__POLICY_REJECT__'),matchedRuleIds:input.includes('用户原目标：__POLICY_REJECT__')?['games']:[],duplicateTaskIds:[],checkedGroups:['games','desktop','business','dashboard'],reason:'synthetic eligible task'},prepare:{prompt:'Synthetic prepared goal '+count,category:input.includes('项目连续出题规则')?cats[count]:'Feature 迭代',difficulty:'中等',stack:'fixture',acceptance:['fixture evidence']},snapshot:{environmentLevel:'无外部依赖',dependencies:[],startup:'fixture',verification:'fixture',ready:true,head:sha,remote:'https://github.com/fixture/fixture.git',notes:['fixture snapshot']},next:{action:fs.existsSync(dir+'/auto-next')?'repair':'complete',prompt:'__AUTO_REPAIR__ repair boundary',reason:'fixture follow-up'},score:{when:Array(5).fill('fixture step'),behavior:Array(5).fill('fixture behavior'),impact:Array(5).fill('fixture impact'),expected:Array(5).fill('fixture expected'),evidenceRefs:Array(5).fill((input.match(/本轮轨迹文件：([^\\n]+)/)||[])[1]+':1'),processFindings:'fixture',artifactFindings:'fixture',scores:[3,3,3,3,3],descriptions:['a','b','c','d','e'],other:'无'},delivery:{passed:true,checks:['fixture data complete'],summary:'synthetic verification'}};if(stage==='next'&&fs.existsSync(dir+'/auto-next'))fs.unlinkSync(dir+'/auto-next');fs.writeFileSync(out,JSON.stringify(values[stage]));console.log(JSON.stringify({type:'thread.started',thread_id:'fixture-'+stage}));});
 `;
 for (const name of ['git', 'codex', 'claude', 'gh']) {
   const p = path.join(bin, name);
@@ -192,7 +198,96 @@ try {
       (r) => r.automation.archive && r.review.source === 'codex',
     ),
   );
-  writeFileSync(path.join(bin, 'project-mode'), '1');
+  for (const f of [
+    'project-mode',
+    'truncate-once',
+    'fail-next-once',
+    'stop-project',
+  ])
+    writeFileSync(path.join(bin, f), '1');
+  const interrupted = (
+    await api('/api/tasks', {
+      title: '__TRUNCATION_FLOW__',
+      repoPath: bin,
+      stack: 'fixture',
+      category: '0-1 代码生成',
+      difficulty: '中等',
+      reproducibility: '无外部依赖',
+      projectSeries: true,
+      autoStart: true,
+    })
+  ).task;
+  writeFileSync('.runner/truncation-flow-id', interrupted.id);
+  const awaitTruncation = async (planningDone = false) => {
+    for (let i = 0; i < 160; i++) {
+      const p = (await api('/api/tasks', null, 'GET')).tasks.find(
+        (t) => t.id === interrupted.id,
+      );
+      if (p.turns.some((r) => r.status === 'failed'))
+        throw Error(p.turns.find((r) => r.status === 'failed').error);
+      if (
+        p.turns.length === 2 &&
+        p.turns[1].status === 'review' &&
+        (!planningDone || !p.turns[1].automation.nextError)
+      )
+        return p;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    throw Error('Truncation/planning fixture timed out');
+  };
+  let interruptedProject = await awaitTruncation();
+  assert.equal(interruptedProject.turns[0].executionOutcome, 'truncated');
+  assert.equal(interruptedProject.turns[1].prompt, '继续');
+  assert.equal(interruptedProject.turns[1].category, '0-1 代码生成');
+  assert.equal(
+    interruptedProject.turns[1].evaluationPrompt,
+    interruptedProject.turns[0].prompt,
+  );
+  assert.equal(
+    interruptedProject.turns[1].continuationOf,
+    interruptedProject.turns[0].id,
+  );
+  assert.ok(interruptedProject.turns[1].automation.nextError);
+  assert.ok(
+    interruptedProject.turns.every(
+      (r) => r.automation.archive && r.review.source === 'codex',
+    ),
+  );
+  const beforeArchive = interruptedProject.turns[1].automation.archive.sha256;
+  const callCount = (name) =>
+    readFileSync(calls, 'utf8')
+      .trim()
+      .split('\n')
+      .map(JSON.parse)
+      .filter((e) => e.name === name).length;
+  const beforeClaude = callCount('claude'),
+    beforeScore = callCount('score');
+  await api(
+    '/api/tasks/' + interrupted.id,
+    {
+      action: 'retry-plan',
+      turnId: interruptedProject.turns[1].id,
+      revision: interruptedProject.revision,
+    },
+    'PATCH',
+  );
+  interruptedProject = await awaitTruncation(true);
+  assert.equal(
+    callCount('claude'),
+    beforeClaude,
+    'planning retry must not invoke Claude',
+  );
+  assert.equal(
+    callCount('score'),
+    beforeScore,
+    'planning retry must not rescore historical results',
+  );
+  assert.equal(
+    interruptedProject.turns[1].automation.archive.sha256,
+    beforeArchive,
+    'planning retry preserves immutable archive',
+  );
+  rmSync(path.join(bin, 'stop-project'));
   const series = (
     await api('/api/tasks', {
       title: '__PROJECT_SERIES_FLOW__',

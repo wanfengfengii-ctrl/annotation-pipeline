@@ -1339,6 +1339,32 @@ function TurnPanel({
           {r.error}
         </p>
       )}
+      {r.continuationOf && (
+        <details className="section">
+          <summary>本轮继续原题 · 原始验收目标</summary>
+          <p className="sub">{r.evaluationPrompt}</p>
+        </details>
+      )}
+      {r.automation?.nextError && (
+        <div className="section">
+          <p className="issue">
+            本轮评分和归档已保留；后续出题失败：{r.automation.nextError}
+          </p>
+          {r.status === 'review' &&
+            t.turns.at(-1)?.id === r.id &&
+            !r.humanReview &&
+            !r.receipt &&
+            !t.closed && (
+              <Button
+                variant="outline"
+                disabled={busy || pending(t)}
+                onClick={() => run({ action: 'retry-plan', turnId: r.id })}
+              >
+                仅重试后续出题
+              </Button>
+            )}
+        </div>
+      )}
       {r.status === 'failed' && !r.excluded && (
         <Button
           variant="outline"
@@ -1454,38 +1480,40 @@ function TurnPanel({
                   • {e}
                 </p>
               ))}
-              {r.status !== 'submitted' && (
-                <div className="formgrid" style={{ marginTop: 12 }}>
-                  <Field label="原始用户消息 PromptID">
-                    <input
-                      value={promptId}
-                      onChange={(e) => setPromptId(e.target.value)}
-                    />
-                  </Field>
-                  <Field label="原始轨迹文件位置">
-                    <input
-                      value={tracePath}
-                      onChange={(e) => setTracePath(e.target.value)}
-                    />
-                  </Field>
-                  <div className="wide">
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() =>
-                        run({
-                          action: 'trace',
-                          turnId: r.id,
-                          promptId,
-                          tracePath,
-                        })
-                      }
-                    >
-                      保存人工核对的定位信息
-                    </Button>
+              {r.status !== 'submitted' &&
+                !r.review &&
+                !r.automation?.archive && (
+                  <div className="formgrid" style={{ marginTop: 12 }}>
+                    <Field label="原始用户消息 PromptID">
+                      <input
+                        value={promptId}
+                        onChange={(e) => setPromptId(e.target.value)}
+                      />
+                    </Field>
+                    <Field label="原始轨迹文件位置">
+                      <input
+                        value={tracePath}
+                        onChange={(e) => setTracePath(e.target.value)}
+                      />
+                    </Field>
+                    <div className="wide">
+                      <Button
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() =>
+                          run({
+                            action: 'trace',
+                            turnId: r.id,
+                            promptId,
+                            tracePath,
+                          })
+                        }
+                      >
+                        保存人工核对的定位信息
+                      </Button>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
             </details>
           )}
           {r.status === 'review' && !issues(t, r).length && (

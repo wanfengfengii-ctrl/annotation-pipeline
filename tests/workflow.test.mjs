@@ -127,7 +127,7 @@ test('evidence verifies locations and archive hashes, includes new code and list
       turnId: 'turn',
       bundlePath: bundle,
       tracePath: trace,
-      automation: {},
+      automation: { score: { value: verified } },
       workDir: dir,
     });
     const preview = reviewEvidence({ dir, turnId: 'turn', tracePath: trace });
@@ -136,6 +136,18 @@ test('evidence verifies locations and archive hashes, includes new code and list
       readFileSync(trace, 'utf8'),
     );
     assert.equal(preview.find((e) => e.id === 'trace').truncated, false);
+    writeFileSync(trace, 'changed by later round');
+    const frozen = reviewEvidence({ dir, turnId: 'turn', tracePath: trace });
+    assert.match(
+      frozen.find((e) => e.originalRef === trace + ':1').content,
+      /type.*result/,
+    );
+    assert.ok(
+      !frozen
+        .find((e) => e.originalRef === trace + ':1')
+        .content.includes('changed by later'),
+    );
+    assert.ok(frozen.find((e) => e.originalRef).sha256);
     assert.equal(
       archive.sha256,
       createHash('sha256')

@@ -19,6 +19,8 @@ export function verifyScoreEvidence(value, workDir, dir) {
     const file = realpathSync(path.resolve(workDir, match[1]));
     if (!roots.some((root) => file.startsWith(root + path.sep)))
       throw Error('评分证据超出任务工作区');
+    if (lstatSync(file).size > 10 * 1024 * 1024)
+      throw Error('单个评分证据超过 10MB，请引用更小的可核验文件');
     const line = Number(match[2]),
       total = readFileSync(file, 'utf8').split('\n').length;
     if (line < 1 || line > total) throw Error('评分引用行号不存在：' + ref);
@@ -61,6 +63,39 @@ export function createEvidenceArchive({
   if (existsSync(native)) add(native, 'claude-native.jsonl');
   for (const [key, value] of Object.entries(automation))
     if (value?.tracePath) add(value.tracePath, key + '.jsonl');
+  // Freeze every cited file before any later Claude round changes the workspace.
+  const citations = [],
+    captured = new Map();
+  let citedBytes = 0;
+  for (const [i, ref] of (
+    automation.score?.value?.evidenceRefs || []
+  ).entries()) {
+    const match = ref.match(/^(.*):(\d+)$/);
+    if (!match) throw Error('评分引用格式无效');
+    const file = realpathSync(path.resolve(workDir, match[1]));
+    if (
+      ![realpathSync(workDir), realpathSync(dir)].some((root) =>
+        file.startsWith(root + path.sep),
+      )
+    )
+      throw Error('引用超出工作区');
+    const bytes = lstatSync(file).size;
+    let name = captured.get(file);
+    if (!name) {
+      if (bytes > 10 * 1024 * 1024 || citedBytes + bytes > 32 * 1024 * 1024)
+        throw Error('评分引用文件超过归档上限');
+      name = 'cited/' + i + '.txt';
+      add(file, name);
+      captured.set(file, name);
+      citedBytes += bytes;
+    }
+    citations.push({
+      ref,
+      name,
+      line: Number(match[2]),
+      sha256: manifest.find((f) => f.name === name).sha256,
+    });
+  }
   const diff = execFileSync('git', ['diff', '--binary', 'HEAD'], {
     cwd: workDir,
     encoding: 'utf8',
@@ -114,9 +149,10 @@ export function createEvidenceArchive({
     path.join(stageDir, 'manifest.json'),
     JSON.stringify(
       {
-        format: 1,
+        format: 2,
         provenance: 'AI evaluation',
         files: manifest,
+        citations,
         omitted,
         note: '本地证据包包含轨迹、评估、已跟踪 diff 和符合大小限制的未跟踪普通文件。排除项列入 omitted；使用前核对，未向外部上传。',
       },
@@ -158,7 +194,7 @@ export function reviewEvidence({ dir, turnId, tracePath }) {
     ['trace', '本轮执行轨迹', 'claude.jsonl', 24000, tracePath],
     [
       'diff',
-      '本轮归档的代码变更',
+      '本轮结束时相对初始快照的累计代码变更',
       'tracked-changes.patch',
       16000,
       path.join(stageDir, 'tracked-changes.patch'),
@@ -175,6 +211,27 @@ export function reviewEvidence({ dir, turnId, tracePath }) {
       originalPath,
       sha256: manifest.files.find((f) => f.name === name)?.sha256,
       truncated: full.length > limit,
+    });
+  }
+  for (const [i, citation] of (manifest.citations || []).entries()) {
+    const lines = readFileSync(
+      path.join(stageDir, citation.name),
+      'utf8',
+    ).split('\n');
+    const start = Math.max(0, citation.line - 4),
+      end = Math.min(lines.length, citation.line + 3);
+    const full = lines
+      .slice(start, end)
+      .map((s, n) => `${start + n + 1}: ${s}`)
+      .join('\n');
+    items.push({
+      id: 'cite_' + i,
+      label: '评分时的证据原文 · ' + citation.ref,
+      originalRef: citation.ref,
+      originalPath: path.join(stageDir, citation.name),
+      sha256: citation.sha256,
+      content: full.slice(0, 4800),
+      truncated: true,
     });
   }
   items.push({

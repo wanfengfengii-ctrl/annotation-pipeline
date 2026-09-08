@@ -66,7 +66,7 @@ export function recordRow(
       : h?.state === 'needs_revision'
         ? '待返工'
         : '待人工复核'
-    : r.automation?.delivery?.value?.passed
+    : !issues(t, r).length && r.automation?.delivery?.value?.passed
       ? 'AI 校验通过（待人工确认）'
       : '待 AI 校验';
   const base = [

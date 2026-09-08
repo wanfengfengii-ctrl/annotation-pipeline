@@ -273,6 +273,7 @@ export async function POST(req: Request) {
       if (!r || r.status !== 'running' || r.jobToken !== b.jobToken)
         throw new Error('任务状态或执行凭据不匹配');
       r.status = b.success ? 'review' : 'failed';
+      if (b.success) delete r.planRetry;
       r.finishedAt =
         typeof b.finishedAt === 'string' && !isNaN(Date.parse(b.finishedAt))
           ? b.finishedAt
@@ -325,6 +326,10 @@ export async function POST(req: Request) {
       }
       r.sessionId = typeof b.sessionId === 'string' ? b.sessionId : undefined;
       r.promptId = typeof b.promptId === 'string' ? b.promptId : undefined;
+      if (typeof b.evaluationPrompt === 'string')
+        r.evaluationPrompt = text(b.evaluationPrompt, '原始验收目标', 80000);
+      if (['complete', 'truncated', 'error'].includes(b.executionOutcome))
+        r.executionOutcome = b.executionOutcome;
       r.output = String(b.output || '').slice(0, 100000);
       r.error = String(b.error || '').slice(0, 10000);
       r.tracePath = String(b.tracePath || '');
@@ -347,13 +352,30 @@ export async function POST(req: Request) {
       if (!item.task.snapshot && typeof b.snapshot === 'string')
         item.task.snapshot = b.snapshot;
       if (b.success && !item.task.closed) {
-        const decision = nextDecision(item.task, r, await schedulerConfig());
+        let decision;
+        try {
+          decision = nextDecision(item.task, r, await schedulerConfig());
+        } catch (e) {
+          r.automation ||= {};
+          r.automation.nextError =
+            e instanceof Error ? e.message : '后续规划无效';
+          delete r.automation.next;
+        }
+        if (r.automation?.nextError)
+          item.task.automationNotice =
+            '本轮已归档；后续出题待重试：' + r.automation.nextError;
         if (decision) {
           item.task.automationNotice = decision.notice;
           if (decision.prompt)
             item.task.turns.push({
               id: crypto.randomUUID(),
               prompt: decision.prompt,
+              ...('continuationOf' in decision && 'evaluationPrompt' in decision
+                ? {
+                    continuationOf: String(decision.continuationOf),
+                    evaluationPrompt: String(decision.evaluationPrompt),
+                  }
+                : {}),
               category:
                 ('category' in decision && decision.category) || r.category,
               difficulty:

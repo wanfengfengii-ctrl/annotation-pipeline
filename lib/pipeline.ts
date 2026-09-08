@@ -71,6 +71,10 @@ export type Turn = {
   autoFollowup?: boolean;
   stage?: string;
   requestedPrompt?: string;
+  continuationOf?: string;
+  planRetry?: boolean;
+  evaluationPrompt?: string;
+  executionOutcome?: 'complete' | 'truncated' | 'error';
   automation?: {
     preparation?: any;
     policy?: any;
@@ -81,6 +85,8 @@ export type Turn = {
     archive?: { archivePath: string; sha256: string; files: number };
     workflowVersion?: string;
     next?: any;
+    nextError?: string;
+    evidenceVersion?: number;
   };
 };
 export type Task = {

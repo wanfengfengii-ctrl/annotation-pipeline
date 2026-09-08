@@ -34,6 +34,7 @@ export type EvidenceItem = {
   label: string;
   content: string;
   originalPath?: string;
+  originalRef?: string;
   sha256?: string;
   truncated?: boolean;
 };
@@ -59,6 +60,15 @@ export function blankHumanDraft(): HumanDraft {
 export function humanMaterials(r: Turn, draft?: HumanDraft): EvidenceItem[] {
   return [
     { id: 'prompt', label: '实际执行需求', content: r.prompt },
+    ...(r.continuationOf && r.evaluationPrompt
+      ? [
+          {
+            id: 'evaluation',
+            label: '继续所沿用的原始验收目标',
+            content: r.evaluationPrompt,
+          },
+        ]
+      : []),
     ...(r.output
       ? [
           {
@@ -138,7 +148,12 @@ export function humanDraftIssues(r: Turn, d: HumanDraft): string[] {
       const m = ref.match(/^([a-z0-9_-]+):(\d+)$/),
         file = m && materials.find((x) => x.id === m[1]);
       if (
-        !(r.review?.evidenceVerified && r.review.evidenceRefs?.includes(ref)) &&
+        !(
+          r.review?.evidenceVerified &&
+          r.review.evidenceRefs?.includes(ref) &&
+          (r.automation?.evidenceVersion !== 2 ||
+            materials.some((m) => m.originalRef === ref && m.sha256))
+        ) &&
         (!m ||
           !file ||
           Number(m[2]) < 1 ||
