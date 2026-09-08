@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
 export const tasks = sqliteTable('tasks', {
   id: text('id').primaryKey(),
   data: text('data').notNull(),
@@ -10,3 +10,16 @@ export const runners = sqliteTable('runners', {
   data: text('data').notNull(),
   heartbeat: text('heartbeat').notNull(),
 });
+
+export const reviewHistory = sqliteTable(
+  'review_history',
+  {
+    id: text('id').primaryKey(),
+    taskId: text('task_id').notNull(),
+    turnId: text('turn_id').notNull(),
+    action: text('action').notNull(),
+    data: text('data').notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => [index('review_history_turn_idx').on(table.taskId, table.turnId)],
+);

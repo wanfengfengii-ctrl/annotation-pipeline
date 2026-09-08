@@ -247,6 +247,18 @@ export async function POST(req: Request) {
           : new Date().toISOString();
       if (b.automation && typeof b.automation === 'object')
         r.automation = b.automation;
+      if (
+        Array.isArray(b.evidence) &&
+        JSON.stringify(b.evidence).length <= 65000 &&
+        b.evidence.every(
+          (x: any) =>
+            x &&
+            /^[a-z0-9_-]+$/.test(x.id) &&
+            typeof x.label === 'string' &&
+            typeof x.content === 'string',
+        )
+      )
+        r.evidence = b.evidence;
       if (typeof b.stage === 'string') r.stage = b.stage;
       if (b.preparedPrompt) {
         r.requestedPrompt = r.requestedPrompt || r.prompt;

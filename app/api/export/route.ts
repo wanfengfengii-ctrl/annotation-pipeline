@@ -6,6 +6,8 @@ export async function GET(req: Request) {
     if (day && (!/^\d{4}-\d{2}-\d{2}$/.test(day) || isNaN(Date.parse(day))))
       throw Error('日期格式无效');
     const tasks = await all();
+    const source = new URL(req.url).searchParams.get('source');
+    if (source && source !== 'human') throw Error('导出来源无效');
     return new Response(
       csv(
         day
@@ -16,6 +18,7 @@ export async function GET(req: Request) {
               ),
             }))
           : tasks,
+        source === 'human' ? 'human' : 'primary',
       ),
       {
         headers: {

@@ -92,3 +92,15 @@ npm run build
 `tests/scheduler-api.test.mjs` 验证原子领取、幂等补充、额度与暂停；`tests/scheduler-flow.test.mjs` 使用假 CLI 和模拟资源验证三个重叠执行及空队列补充。运行需空的本机测试队列、停止真实执行器，完成后按 `.runner/*-ids` 中的测试 ID 清理。`RUNNER_WORK_ROOT` 可为测试指定隔离的执行器存储目录。
 
 `tests/workflow-api.test.mjs` 验证自动续跑幂等、暂停和异常恢复；全局 lint 尚有既有 any 类型及 UI 组件规则错误，不能声称 lint 全绿。
+
+## AI 评分后的人工二次确认
+
+自动执行、Codex 评分、归档和自动续跑保持连续，不等待人工操作。在“人工二次确认”中，AI 分数和评语自动带入，人工填写本人姓名、实际核验步骤与观察结果，核对或修改五个维度后确认。AI 原评分不被覆盖，导出明确标记“人工复核（已有 AI 评估）”。这不等于原文档要求的纯人工标注流程。
+
+低分、与 AI 分差至少 2 分、多个维度描述重复时，要求补充重点问题的二次核验依据。同一位实际检查者可完成最终确认，无须额外第三人。证据不足可标记待返工。评分与评语可预填；姓名、实际核验、本人确认不会由 AI 填入。
+
+页面提供本轮归档的轨迹与代码变更节选，以及完整本机归档路径；节选明确标注截断，不替代全量检查。引用支持页面证据编号/行号和原 AI 已核验的文件引用。后续轮次修改工作目录不会改变已归档的证据节选。
+
+每次草稿、确认、返工、交付登记均在 `review_history` 保存完整快照、实际填写人和服务端时间，版本冲突不会覆盖记录。完成全部有效轮次的人工核验后，填写实际外部回执方可锁定人工交付；系统不向外部平台自动提交。人工确认单独导出 CSV/JSON，AI 原评测保留自己的导出。
+
+已有本机数据库升级一次：`npx wrangler d1 execute DB --local --config wrangler.local.json --file drizzle/0001_familiar_chronomancer.sql`。全新环境在初始化后也需要应用该迁移。检查：`node --test tests/human-review.test.mjs`、`node tests/human-review-api.test.mjs`；接口测试须停止真实 runner，按 `.runner/human-review-test-ids` 清理测试任务及其 review_history。

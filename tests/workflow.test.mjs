@@ -9,6 +9,7 @@ import { nextDecision, dailyMix } from '../lib/workflow.mjs';
 import {
   verifyScoreEvidence,
   createEvidenceArchive,
+  reviewEvidence,
 } from '../scripts/evidence.mjs';
 import { acquireLock, identity, livingChildren } from '../scripts/recovery.mjs';
 test('automatic continuation honors pause, ten rounds, repeated goals and input decisions', () => {
@@ -129,6 +130,12 @@ test('evidence verifies locations and archive hashes, includes new code and list
       automation: {},
       workDir: dir,
     });
+    const preview = reviewEvidence({ dir, turnId: 'turn', tracePath: trace });
+    assert.equal(
+      preview.find((e) => e.id === 'trace').content,
+      readFileSync(trace, 'utf8'),
+    );
+    assert.equal(preview.find((e) => e.id === 'trace').truncated, false);
     assert.equal(
       archive.sha256,
       createHash('sha256')

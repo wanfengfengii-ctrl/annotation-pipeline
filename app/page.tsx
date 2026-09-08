@@ -1,5 +1,7 @@
 'use client';
 import { rules, difficultyRules } from '@/lib/task-policy.mjs';
+import { HumanReviewPanel } from '@/components/pipeline/human-review-panel';
+import { humanLabel, humanIssues } from '@/lib/human-review';
 import { SchedulerPanel } from '@/components/pipeline/scheduler-panel';
 import { useEffect, useState, useCallback, type ReactNode } from 'react';
 import {
@@ -231,6 +233,16 @@ export default function Home() {
     online =
       runner && Date.now() - new Date(runner.heartbeat).getTime() < 30000;
   const mutate = async (t: RecordTask, body: object) => {
+    if ('humanAction' in body) {
+      const { humanAction, ...rest } = body;
+      await request('/api/tasks/' + t.id + '/human-review', {
+        ...rest,
+        action: humanAction,
+        revision: t.revision,
+      });
+      await reload();
+      return;
+    }
     await request(
       '/api/tasks/' + t.id,
       { ...body, revision: t.revision },
@@ -284,7 +296,7 @@ export default function Home() {
           </div>
           <div className="actions">
             <a href={`/api/export?day=${exportDay}`}>
-              <Button variant="outline">导出今日合格轮次</Button>
+              <Button variant="outline">导出今日 AI 评测</Button>
             </a>
             <a href="/api/export">
               <Button
@@ -292,7 +304,7 @@ export default function Home() {
                 disabled={!turns.some(({ t, r }) => !issues(t, r).length)}
               >
                 <Download />
-                导出合格轮次
+                导出 AI 评测轮次
               </Button>
             </a>
             <Button onClick={() => setOpen(true)}>
@@ -374,6 +386,7 @@ export default function Home() {
         <Tabs value={page} onValueChange={(v) => setPage(String(v))}>
           <TabsList variant="line" className="tabbar">
             <TabsTrigger value="tasks">任务工作台</TabsTrigger>
+            <TabsTrigger value="human">人工二次确认</TabsTrigger>
             <TabsTrigger value="delivery">
               交付队列 <span className="tag gray">{ready.length}</span>
             </TabsTrigger>
@@ -521,6 +534,70 @@ export default function Home() {
                         </TableCell>
                       </TableRow>
                     ))}
+                  </TableBody>
+                </Table>
+              )}
+            </section>
+          </TabsContent>
+          <TabsContent value="human">
+            <section className="panel">
+              <div className="panelhead">
+                <h2>AI 评分后的人工确认</h2>
+                <a href="/api/export?source=human">
+                  <Button variant="outline">导出已确认轮次</Button>
+                </a>
+              </div>
+              <p className="sub" style={{ padding: '0 24px' }}>
+                自动执行、评分和续跑照常进行。按轮次检查产物与 AI
+                评价，记录最终人工确认。
+              </p>
+              {!turns.some(
+                ({ r }) =>
+                  r.review?.source === 'codex' &&
+                  !r.excluded &&
+                  ['review', 'submitted'].includes(r.status),
+              ) ? (
+                <div className="blank">
+                  <h2>AI 评分完成后，轮次会出现在这里</h2>
+                </div>
+              ) : (
+                <Table className="data-table">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>任务 / 轮次</TableHead>
+                      <TableHead>人工确认状态</TableHead>
+                      <TableHead>待核对</TableHead>
+                      <TableHead>操作</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {turns
+                      .filter(
+                        ({ r }) =>
+                          r.review?.source === 'codex' &&
+                          !r.excluded &&
+                          ['review', 'submitted'].includes(r.status),
+                      )
+                      .map(({ t, r }) => (
+                        <TableRow key={r.id}>
+                          <TableCell>
+                            {t.title}
+                            <p className="sub">
+                              第 {t.turns.indexOf(r) + 1} 轮 · {r.category}
+                            </p>
+                          </TableCell>
+                          <TableCell>{humanLabel(r)}</TableCell>
+                          <TableCell>{humanIssues(t, r).length} 项</TableCell>
+                          <TableCell>
+                            <Button
+                              variant="ghost"
+                              onClick={() => setSelected(t.id)}
+                            >
+                              打开确认
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
                   </TableBody>
                 </Table>
               )}
@@ -789,6 +866,7 @@ export default function Home() {
               task={active}
               online={online}
               mutate={mutate}
+              initialTab={page === 'human' ? 'human' : 'turns'}
             />
           )}
         </SheetContent>
@@ -800,8 +878,10 @@ function TaskDetail({
   task: t,
   online,
   mutate,
+  initialTab,
 }: {
   task: RecordTask;
+  initialTab: string;
   online: boolean;
   mutate: (t: RecordTask, b: object) => Promise<void>;
 }) {
@@ -810,7 +890,7 @@ function TaskDetail({
     [difficulty, setDifficulty] = useState(t.difficulty),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
-    [tab, setTab] = useState('turns');
+    [tab, setTab] = useState(initialTab);
   async function run(body: object) {
     setBusy(true);
     setError('');
@@ -846,6 +926,7 @@ function TaskDetail({
       <Tabs value={tab} onValueChange={(v) => setTab(String(v))}>
         <TabsList>
           <TabsTrigger value="turns">交互与自动评分</TabsTrigger>
+          <TabsTrigger value="human">人工二次确认</TabsTrigger>
           <TabsTrigger value="environment">环境与快照</TabsTrigger>
         </TabsList>
         <TabsContent value="turns">
@@ -945,6 +1026,39 @@ function TaskDetail({
             >
               结束此会话
             </Button>
+          )}
+        </TabsContent>
+        <TabsContent value="human">
+          {t.turns
+            .filter(
+              (r) =>
+                r.review?.source === 'codex' &&
+                !r.excluded &&
+                ['review', 'submitted'].includes(r.status),
+            )
+            .map((r) => (
+              <div key={r.id}>
+                <h3 className="section">
+                  第 {t.turns.indexOf(r) + 1} 轮 · {r.category}
+                </h3>
+                <HumanReviewPanel
+                  key={r.id}
+                  task={t}
+                  turn={r}
+                  busy={busy}
+                  run={run}
+                />
+              </div>
+            ))}
+          {!t.turns.some(
+            (r) =>
+              r.review?.source === 'codex' &&
+              !r.excluded &&
+              ['review', 'submitted'].includes(r.status),
+          ) && (
+            <p className="sub section">
+              本会话暂未产生 AI 评分。流水线会自动执行，完成后可在这里核验。
+            </p>
           )}
         </TabsContent>
         <TabsContent value="environment">
@@ -1354,7 +1468,7 @@ function TurnPanel({
                     }
                   >
                     <CheckCircle2 />
-                    登记已提交并锁定
+                    登记 AI 评测提交并锁定
                   </Button>
                 </div>
               </div>

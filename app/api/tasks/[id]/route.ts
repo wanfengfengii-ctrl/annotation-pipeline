@@ -20,6 +20,11 @@ export async function PATCH(
     if (!b || typeof b !== 'object' || Array.isArray(b))
       throw new Error('请求格式无效');
     if (b.revision !== revision) throw new Error('数据已更新，请刷新后重试');
+    if (
+      t.turns.find((r) => r.id === b.turnId)?.humanReview?.receipt &&
+      ['review', 'retry', 'assess', 'exclude', 'trace'].includes(b.action)
+    )
+      throw Error('人工交付已登记，该轮已锁定');
     if (b.action === 'enqueue') {
       if (t.closed || pending(t) || counted(t) >= 10)
         throw new Error('会话已结束、正在执行或已达到 10 轮上限');
@@ -105,6 +110,7 @@ export async function PATCH(
       const r = t.turns.find((r) => r.id === b.turnId);
       if (!r || !['review', 'failed'].includes(r.status))
         throw new Error('该轮不可修改');
+      if (r.humanReview) throw Error('已有人工评审，不能直接修改证据定位');
       r.promptId = text(b.promptId, '原始用户消息 PromptID', 300);
       r.tracePath = text(b.tracePath, '轨迹位置', 2000);
     } else throw new Error('未知操作');

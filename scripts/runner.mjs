@@ -1,5 +1,9 @@
 import { workflow, scoreInstructions } from '../lib/workflow.mjs';
-import { verifyScoreEvidence, createEvidenceArchive } from './evidence.mjs';
+import {
+  verifyScoreEvidence,
+  createEvidenceArchive,
+  reviewEvidence,
+} from './evidence.mjs';
 import { acquireLock, journalChild, livingChildren } from './recovery.mjs';
 import {
   rules,
@@ -600,6 +604,21 @@ async function execute({ task, turn }) {
       automation,
       workDir: result.workDir,
     });
+    try {
+      result.evidence = reviewEvidence({
+        dir,
+        turnId: turn.id,
+        tracePath: result.tracePath,
+      });
+    } catch (e) {
+      result.evidence = [
+        {
+          id: 'notice',
+          label: '页面证据预览',
+          content: '预览整理失败，请从本机归档核对：' + e.message,
+        },
+      ];
+    }
     result.success = true;
     result.error = '';
   } catch (e) {

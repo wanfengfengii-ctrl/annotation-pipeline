@@ -1,3 +1,9 @@
+import {
+  humanIssues,
+  humanAsReview,
+  type HumanReview,
+  type EvidenceItem,
+} from './human-review.ts';
 export const categories = [
   '0-1 代码生成',
   'Feature 迭代',
@@ -22,6 +28,14 @@ export type Review = {
   reviewer: string;
   attested: boolean;
   other: string;
+  when?: string[];
+  behavior?: string[];
+  impact?: string[];
+  expected?: string[];
+  evidenceRefs?: string[];
+  evidenceVerified?: boolean;
+  processFindings?: string;
+  artifactFindings?: string;
 };
 export type Turn = {
   id: string;
@@ -38,6 +52,8 @@ export type Turn = {
   tracePath?: string;
   error?: string;
   review?: Review;
+  humanReview?: HumanReview;
+  evidence?: EvidenceItem[];
   submittedAt?: string;
   receipt?: string;
   excluded?: boolean;
@@ -179,7 +195,7 @@ export function status(t: Task) {
     return '待提交';
   return t.turns.length ? '可继续交互' : '待开始';
 }
-export function csv(tasks: Task[]) {
+export function csv(tasks: Task[], source: 'primary' | 'human' = 'primary') {
   const headers = [
     '任务名称',
     '任务类型',
@@ -204,34 +220,50 @@ export function csv(tasks: Task[]) {
   ];
   const rows = tasks.flatMap((t) =>
     t.turns
-      .filter((r) => !r.excluded && !issues(t, r).length)
-      .map((r) => [
-        t.title,
-        r.category,
-        r.difficulty,
-        r.stack || t.stack,
-        'Claude Code',
-        r.harnessVersion || t.harnessVersion,
-        r.os || t.os,
-        t.reproducibility,
-        t.snapshot,
-        r.prompt,
-        r.sessionId,
-        r.promptId,
-        r.tracePath,
-        ...dimensions.flatMap((_, i) => [
-          r.review!.scores[i],
-          r.review!.descriptions[i],
-        ]),
-        r.review!.other,
-        r.review!.reviewer,
-        r.review!.source === 'codex' ? 'AI / Codex CLI' : '人工',
-        r.review!.source === 'codex'
-          ? 'AI评测数据（不作为原项目人工标注）'
-          : '人工标注',
-        producedAt(r),
-        deadline(producedAt(r)),
-      ]),
+      .filter(
+        (r) =>
+          !r.excluded &&
+          !(source === 'human' ? humanIssues(t, r) : issues(t, r)).length,
+      )
+      .map((original) => {
+        const manual = source === 'human';
+        const r = manual
+          ? { ...original, review: humanAsReview(original.humanReview!) }
+          : original;
+        return [
+          t.title,
+          r.category,
+          r.difficulty,
+          r.stack || t.stack,
+          'Claude Code',
+          r.harnessVersion || t.harnessVersion,
+          r.os || t.os,
+          t.reproducibility,
+          t.snapshot,
+          r.prompt,
+          r.sessionId,
+          r.promptId,
+          r.tracePath,
+          ...dimensions.flatMap((_, i) => [
+            r.review!.scores[i],
+            r.review!.descriptions[i],
+          ]),
+          r.review!.other,
+          r.review!.reviewer,
+          manual
+            ? '人工复核（已有 AI 评估）'
+            : r.review!.source === 'codex'
+              ? 'AI / Codex CLI'
+              : '人工',
+          manual
+            ? '人工复核数据，非纯人工标注流程'
+            : r.review!.source === 'codex'
+              ? 'AI评测数据（不作为原项目人工标注）'
+              : '人工标注',
+          producedAt(r),
+          deadline(producedAt(r)),
+        ];
+      }),
   );
   const cell = (x: unknown) =>
     '"' +

@@ -146,3 +146,52 @@ export function createEvidenceArchive({
     files: manifest.length + 1,
   };
 }
+
+// Stable excerpts from the finished round's archive staging, never the later working tree.
+export function reviewEvidence({ dir, turnId, tracePath }) {
+  const stageDir = path.join(dir, turnId + '.evidence');
+  const manifest = JSON.parse(
+    readFileSync(path.join(stageDir, 'manifest.json'), 'utf8'),
+  );
+  const items = [];
+  for (const [id, label, name, limit, originalPath] of [
+    ['trace', '本轮执行轨迹', 'claude.jsonl', 24000, tracePath],
+    [
+      'diff',
+      '本轮归档的代码变更',
+      'tracked-changes.patch',
+      16000,
+      path.join(stageDir, 'tracked-changes.patch'),
+    ],
+  ]) {
+    const full = readFileSync(path.join(stageDir, name), 'utf8');
+    let content = full.slice(0, limit);
+    if (full.length > limit && content.lastIndexOf('\n') > 0)
+      content = content.slice(0, content.lastIndexOf('\n'));
+    items.push({
+      id,
+      label,
+      content,
+      originalPath,
+      sha256: manifest.files.find((f) => f.name === name)?.sha256,
+      truncated: full.length > limit,
+    });
+  }
+  items.push({
+    id: 'manifest',
+    label: '归档文件与排除项',
+    content: JSON.stringify(manifest, null, 2).slice(0, 16000),
+    truncated: JSON.stringify(manifest, null, 2).length > 16000,
+  });
+  while (JSON.stringify(items).length > 60000) {
+    const longest = items.reduce((a, b) =>
+      a.content.length > b.content.length ? a : b,
+    );
+    longest.content = longest.content.slice(
+      0,
+      Math.floor(longest.content.length / 2),
+    );
+    longest.truncated = true;
+  }
+  return items;
+}
