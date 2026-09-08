@@ -9,6 +9,7 @@ import {
   canAddTurn,
 } from '../lib/project-series.mjs';
 import { workflow, scoreInstructions, nextDecision } from '../lib/workflow.mjs';
+import { withProjectScope } from '../lib/writing-style.mjs';
 import {
   verifyScoreEvidence,
   createEvidenceArchive,
@@ -320,6 +321,7 @@ async function execute({ task, turn }) {
   const persist = () =>
     writeFileSync(cachePath, JSON.stringify(cached, null, 2), { mode: 0o600 });
   if (cached.workflowVersion !== workflow.version) {
+    if (!cached.claude) delete cached.prepare;
     delete cached.score;
     delete cached.delivery;
     delete cached.next;
@@ -525,9 +527,12 @@ async function execute({ task, turn }) {
       )
         throw Error('项目首题必须为 0-1，后续题必须基于产物扩展');
       if (task.projectSeries && !continuation) {
-        const scope = `项目目录约束：仅在 ${task.projectSeries.directory} 创建或修改本项目文件；保持同一项目，不另建项目。`;
-        if (!preparation.value.prompt.includes(scope))
-          preparation.value.prompt += '\n\n' + scope;
+        // A cached executed prompt is historical evidence and must not be rewritten.
+        if (!cached.claude)
+          preparation.value.prompt = withProjectScope(
+            preparation.value.prompt,
+            task.projectSeries.directory,
+          );
       }
       cached.prepare = preparation;
       persist();
@@ -911,10 +916,10 @@ try {
           throw Error('自动新项目首题必须是 0-1 代码生成');
         if (existsSync(path.join(repoPath, projectSeries.directory)))
           throw Error('新项目目标目录已存在');
-        generated.value.prompt +=
-          '\n项目目录：' +
-          projectSeries.directory +
-          '。在该目录从零实现，后续题沿用同一项目；不修改目录外的现有业务。';
+        generated.value.prompt = withProjectScope(
+          generated.value.prompt,
+          projectSeries.directory,
+        );
         if (
           history.some(
             (t) =>

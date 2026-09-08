@@ -11,7 +11,6 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 export function verifyScoreEvidence(value, workDir, dir) {
   const roots = [realpathSync(workDir), realpathSync(dir)];
-  const descriptions = [];
   for (let i = 0; i < 5; i++) {
     const ref = value.evidenceRefs[i],
       match = ref.match(/^(.*):(\d+)$/);
@@ -24,14 +23,11 @@ export function verifyScoreEvidence(value, workDir, dir) {
     const line = Number(match[2]),
       total = readFileSync(file, 'utf8').split('\n').length;
     if (line < 1 || line > total) throw Error('评分引用行号不存在：' + ref);
-    descriptions.push(
-      `触发节点：${value.when[i]}；实际行为：${value.behavior[i]}；影响：${value.impact[i]}；正确做法：${value.expected[i]}；证据：${file}:${line}。${(value.rawDescriptions || value.descriptions)[i]}`,
-    );
   }
   return {
     ...value,
     rawDescriptions: value.rawDescriptions || value.descriptions,
-    descriptions,
+    descriptions: value.descriptions,
     evidenceVerified: true,
   };
 }
@@ -61,8 +57,14 @@ export function createEvidenceArchive({
   add(tracePath, 'claude.jsonl');
   const native = path.join(dir, turnId + '.native.jsonl');
   if (existsSync(native)) add(native, 'claude-native.jsonl');
-  for (const [key, value] of Object.entries(automation))
+  for (const [key, value] of Object.entries(automation)) {
     if (value?.tracePath) add(value.tracePath, key + '.jsonl');
+    if (value?.writingRevision?.originalTracePath)
+      add(
+        value.writingRevision.originalTracePath,
+        key + '.before-writing.jsonl',
+      );
+  }
   // Freeze every cited file before any later Claude round changes the workspace.
   const citations = [],
     captured = new Map();

@@ -101,7 +101,12 @@ test('evidence verifies locations and archive hashes, includes new code and list
       ]),
     );
     value.evidenceRefs = Array(5).fill(trace + ':1');
+    value.descriptions = Array(5).fill(
+      '已经生成基础代码。测试没有运行，运行结果未验证。',
+    );
     const verified = verifyScoreEvidence(value, dir, dir);
+    assert.deepEqual(verified.descriptions, value.descriptions);
+    assert.deepEqual(verified.when, value.when);
     assert.deepEqual(
       verifyScoreEvidence(verified, dir, dir).descriptions,
       verified.descriptions,

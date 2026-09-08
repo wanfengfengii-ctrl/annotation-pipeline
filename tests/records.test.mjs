@@ -46,7 +46,13 @@ test('截图字段完整有序，AI 与实际提交来源分开，Excel 文本�
       source: 'codex',
       reviewer: 'Codex',
       scores: [1, 2, 3, 4, 5],
-      descriptions: ['a', 'b', 'c', 'd', 'e'],
+      descriptions: [
+        '筛选已经实现。切换状态后仍停在原页码，需要重置页码并补上对应测试。',
+        'b',
+        'c',
+        'd',
+        'e',
+      ],
       other: '无',
     },
     automation: {
@@ -75,6 +81,8 @@ test('截图字段完整有序，AI 与实际提交来源分开，Excel 文本�
   const sheet = strFromU8(zip['xl/worksheets/sheet1.xml']);
   assert.ok(!sheet.includes('<f>'));
   assert.match(sheet, /t="inlineStr"/);
+  assert.ok(sheet.includes(turn.review.descriptions[0]));
+  assert.equal(row.values[13], turn.review.descriptions[0]);
   assert.match(sheet, /&lt;&amp;&quot;/);
   assert.match(sheet, /<c r="M2" s="2"><v>1<\/v><\/c>/);
   assert.match(strFromU8(zip['xl/worksheets/sheet2.xml']), /未经人工确认/);

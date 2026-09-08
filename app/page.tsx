@@ -1328,6 +1328,17 @@ function TurnPanel({
                   {d} · {r.review!.scores[i]} / 5
                 </h3>
                 <p className="sub">{r.review!.descriptions[i]}</p>
+                {r.review!.evidenceRefs?.[i] && (
+                  <details className="sub">
+                    <summary>查看评分依据</summary>
+                    <p>
+                      {r.review!.when?.[i]} · {r.review!.behavior?.[i]}
+                    </p>
+                    <p>{r.review!.impact?.[i]}</p>
+                    <p>{r.review!.expected?.[i]}</p>
+                    <p className="mono">{r.review!.evidenceRefs[i]}</p>
+                  </details>
+                )}
               </div>
             ))}
           </div>
