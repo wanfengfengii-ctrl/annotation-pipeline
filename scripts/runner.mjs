@@ -1,4 +1,5 @@
 import { installScaffold } from './project-scaffold.mjs';
+import { createRunnerApi } from './runner-api.mjs';
 import { continuationContext } from '../lib/round-context.mjs';
 import {
   seriesVersion,
@@ -109,20 +110,7 @@ const initialCodePublisher = new InitialCodePublisher();
 const codexVersion = command('codex', ['--version'], root);
 let github = githubStatus(),
   githubChecked = Date.now();
-async function api(body) {
-  const r = await fetch(base + '/api/runner', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(20000),
-  });
-  const j = await r.json();
-  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
-  return j;
-}
+const api = createRunnerApi({ base, token });
 let schedulerStatus = {};
 const beat = () =>
   api({
