@@ -9,6 +9,7 @@ import { workflow, scoreInstructions, nextDecision } from '../lib/workflow.mjs';
 import { withProjectScope } from '../lib/writing-style.mjs';
 import { harnessInstructions } from '../lib/harness.mjs';
 import { DockerRuntime, dockerStatus } from './docker-runtime.mjs';
+import { permissionIssues } from '../lib/permission-audit.mjs';
 import {
   containerCapacity,
   validDockerSnapshot,
@@ -304,12 +305,13 @@ async function execute({ task, turn }) {
           jobToken: turn.jobToken,
           stage,
         });
-        const container = await containers.ensure(task);
+        const container = await containers.ensure(task, turn);
         task = {
           ...task,
           workDir: container.workDir,
           container: containers.public(container),
           snapshot: container.snapshot,
+          sessionId: container.sessionId,
         };
         result.container = containers.public(container);
       }
@@ -485,6 +487,8 @@ async function execute({ task, turn }) {
         automation,
       };
       if (!result.success) throw new Error(result.error || 'Claude 执行失败');
+      if (permissionIssues(result).length)
+        throw Error(permissionIssues(result).join('；'));
       // A completed call with invalid runtime context must not be replayed on retry.
 
       const score = await step(
@@ -553,7 +557,8 @@ async function execute({ task, turn }) {
             harness: result.harness || 'Claude Code',
             container: result.container,
             traceExport: result.traceExport,
-            roundNumber: task.turns.findIndex((x) => x.id === turn.id) + 1,
+            permissionAudit: result.permissionAudit,
+            roundNumber: turn.roundNumber || 1,
             usage: '内部 AI 评测数据，不作为原项目人工标注',
             taskId: task.id,
             turnId: turn.id,

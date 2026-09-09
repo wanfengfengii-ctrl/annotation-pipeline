@@ -79,7 +79,13 @@ export function recordRow(
     r.sessionId || '',
     r.promptId || '',
     roundNumber(t, r),
-    t.snapshot || '',
+    r.container?.sourceSnapshot
+      ? r.container.snapshot +
+        '\n代码快照：' +
+        r.container.sourceSnapshot.manifestPath +
+        '#sha256:' +
+        r.container.sourceSnapshot.sha256
+      : r.container?.snapshot || t.snapshot || '',
     r.tracePath || '',
     t.reproducibility || '',
     r.harness || t.harness || 'Claude Code',

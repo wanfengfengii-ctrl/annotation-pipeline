@@ -6,6 +6,20 @@ import {
 } from './human-review.ts';
 import type { RecordMetadata } from './record-metadata.ts';
 import { validDockerSnapshot } from './container-policy.mjs';
+import { permissionIssues } from './permission-audit.mjs';
+export type PermissionAudit = {
+  version: string;
+  passed: boolean;
+  modeVerified: boolean;
+  mode: string;
+  scope: string;
+  toolCalls: number;
+  tools: string[];
+  denialCount: number;
+  findings: { file: string; line: number; tool: string; kind: string }[];
+  traceSha256?: string;
+  checkedAt: string;
+};
 export type TraceExport = {
   verified: boolean;
   path: string;
@@ -15,6 +29,17 @@ export type TraceExport = {
   exportedAt: string;
 };
 export type ContainerRecord = {
+  questionId?: string;
+  sourceSnapshot?: {
+    turnId: string;
+    manifestPath: string;
+    sha256: string;
+    files: number;
+    importedAfterStartup: boolean;
+    omitted: unknown[];
+  };
+  permissionPreflight?: { passed: boolean; tools: string[]; checkedAt: string };
+  permissionAudit?: PermissionAudit;
   taskId: string;
   name: string;
   containerId?: string;
@@ -61,6 +86,8 @@ export type Review = {
   artifactFindings?: string;
 };
 export type Turn = {
+  questionRootId?: string;
+  permissionAudit?: PermissionAudit;
   container?: ContainerRecord;
   traceExport?: TraceExport;
   roundNumber?: number;
@@ -205,6 +232,19 @@ export function issues(t: Task, r: Turn) {
   if (!validSnapshot(t.snapshot))
     e.push('缺少不可变环境快照（镜像摘要或完整 GitHub Commit）');
   if (r.container && !r.traceExport?.verified) e.push('完整容器轨迹未导出核验');
+  if (r.container) {
+    e.push(...permissionIssues(r));
+    if (
+      r.sessionId &&
+      t.turns?.some(
+        (other) =>
+          other.sessionId === r.sessionId &&
+          other.permissionAudit &&
+          !other.permissionAudit.passed,
+      )
+    )
+      e.push('同一原题会话的后续轨迹出现权限异常，需重新采集');
+  }
   if (!t.harnessVersion || !t.os) e.push('缺少客户端版本或操作系统');
   if (!r.sessionId || !r.promptId)
     e.push('缺少 SessionID 或原始用户消息 PromptID');
@@ -243,7 +283,11 @@ export function status(t: Task) {
     return '待提交';
   return t.turns.length ? '可继续交互' : '待开始';
 }
-export function csv(tasks: Task[], source: 'primary' | 'human' = 'primary') {
+export function csv(
+  tasks: Task[],
+  source: 'primary' | 'human' = 'primary',
+  day?: string,
+) {
   const headers = [
     '任务名称',
     '任务类型',
@@ -271,6 +315,7 @@ export function csv(tasks: Task[], source: 'primary' | 'human' = 'primary') {
       .filter(
         (r) =>
           !r.excluded &&
+          (!day || businessDate(r.finishedAt || r.createdAt) === day) &&
           !(source === 'human' ? humanIssues(t, r) : issues(t, r)).length,
       )
       .map((original) => {

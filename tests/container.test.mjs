@@ -111,6 +111,9 @@ class Fake extends DockerRuntime {
     if (this.failExport) throw Error('export mismatch');
     return { verified: true, files: 1 };
   }
+  permissionAudit() {
+    return { passed: true };
+  }
   async publish(s) {
     this.save(s);
   }

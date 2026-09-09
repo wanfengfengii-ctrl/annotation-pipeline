@@ -68,6 +68,7 @@ export async function POST(req: Request) {
         status: 'queued',
         createdAt: new Date().toISOString(),
       });
+    if (task.turns[0]) task.turns[0].questionRootId = task.turns[0].id;
     if (!task.repoPath.startsWith('/'))
       throw new Error('仓库路径需为本机绝对路径');
     await db()

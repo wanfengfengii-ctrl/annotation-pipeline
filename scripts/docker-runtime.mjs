@@ -8,11 +8,17 @@ import {
   lstatSync,
   realpathSync,
   renameSync,
+  chmodSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import {
+  auditPermissionTraces,
+  verifyPermissionPreflight,
+} from '../lib/permission-audit.mjs';
+import { questionRoot, priorQuestionTurn } from '../lib/question-session.mjs';
 import {
   containerImage,
   containerPolicyVersion,
@@ -213,6 +219,7 @@ export class DockerRuntime {
       m.length !== 1 ||
       m[0].Type !== 'bind' ||
       m[0].Destination !== '/workspace' ||
+      m[0].RW !== true ||
       realpathSync(m[0].Source) !== realpathSync(s.workDir) ||
       c.HostConfig.Privileged ||
       c.HostConfig.RestartPolicy.Name !== 'no' ||
@@ -222,14 +229,34 @@ export class DockerRuntime {
       throw Error('容器身份或隔离配置不匹配，已停止操作');
     return c;
   }
-  async ensure(task) {
+  async ensure(task, turn) {
+    const questionId = questionRoot(task, turn);
+    let rotating = false;
     let s = this.load(task.id);
+    if (s && (s.questionId || task.turns?.[0]?.id) !== questionId) {
+      if (turn.continuationOf) throw Error('不能将原题继续关联到其他容器');
+      await this.close(task.id);
+      s = this.load(task.id);
+      if (s.status !== 'removed') throw Error('上一题容器尚未完成归档清理');
+      writeFileSync(
+        path.join(
+          path.dirname(this.file(task.id)),
+          'container-' + (s.questionId || task.turns[0].id) + '.json',
+        ),
+        JSON.stringify(s, null, 2),
+        { mode: 0o600 },
+      );
+      s = null;
+      rotating = true;
+    }
     if (s) {
+      if (s.permissionAudit && !s.permissionAudit.passed)
+        throw Error('本会话权限核验未通过，原始轨迹已保留，需新建任务重新采集');
       if (s.status === 'removed')
-        throw Error('此项目容器已结束，请创建新任务；不恢复旧会话');
+        throw Error('此题容器已结束，请创建新任务；不恢复旧会话');
       const c = this.owned(s);
       if (!c.State.Running)
-        throw Error('此项目容器已停止，只能导出归档，不能重启旧任务');
+        throw Error('此题容器已停止，只能导出归档，不能重启旧任务');
       s.containerId = c.Id;
       await this.attach(s, !s.bootstrapped);
       s.harnessVersion ||= this.command([
@@ -239,15 +266,17 @@ export class DockerRuntime {
         '--version',
       ]);
       s.os ||= this.command(['exec', s.containerId, 'uname', '-sr']);
+      this.importPriorQuestion(s, task, turn);
+      s.permissionPreflight = this.permissionPreflight(s);
       await this.publish(s);
       return s;
     }
-    if (task.sessionId || task.workDir)
+    if (!rotating && (task.sessionId || task.workDir))
       throw Error('旧版宿主机会话不能迁移续跑，请创建新的容器任务');
     const status = dockerStatus();
     if (!status.ready) throw Error(status.reason);
     const dir = path.dirname(this.file(task.id)),
-      workDir = path.join(dir, 'workspace');
+      workDir = path.join(dir, 'questions', questionId, 'workspace');
     mkdirSync(workDir, { recursive: true });
     if (
       lstatSync(workDir).isSymbolicLink() ||
@@ -264,6 +293,7 @@ export class DockerRuntime {
     s = {
       policyVersion: containerPolicyVersion,
       taskId: task.id,
+      questionId,
       name: 'annotation-' + task.id,
       image: containerImage,
       imageId: status.imageId,
@@ -321,8 +351,97 @@ export class DockerRuntime {
       '--version',
     ]);
     s.os = this.command(['exec', s.containerId, 'uname', '-sr']);
+    s.permissionPreflight = this.permissionPreflight(s);
+    this.importPriorQuestion(s, task, turn);
+    s.permissionPreflight = this.permissionPreflight(s);
     await this.publish(s);
     return s;
+  }
+  importPriorQuestion(s, task, turn) {
+    const previous = priorQuestionTurn(task, turn);
+    if (!previous || turn.continuationOf || s.sourceSnapshot) return;
+    if (
+      !previous.permissionAudit?.passed ||
+      (previous.sessionId &&
+        task.turns.some(
+          (r) =>
+            r.sessionId === previous.sessionId &&
+            r.permissionAudit &&
+            !r.permissionAudit.passed,
+        ))
+    )
+      throw Error('上一题缺少合格的权限核验，不能导入其代码');
+    const evidence = path.join(
+      path.dirname(this.file(task.id)),
+      previous.id + '.evidence',
+    );
+    const manifestPath = path.join(evidence, 'manifest.json');
+    const manifestBytes = readFileSync(manifestPath);
+    const manifest = JSON.parse(manifestBytes);
+    if (
+      (manifest.omitted || []).some(
+        (f) =>
+          !['版本库内部文件或可重新安装的依赖/缓存', '敏感配置文件'].includes(
+            f.reason,
+          ),
+      )
+    )
+      throw Error('上一题代码快照存在无法自动恢复的排除项，需处理后再出新题');
+    const files = manifest.files.filter((f) => f.name.startsWith('workspace/'));
+    if (!files.length) throw Error('上一题没有可核验的代码快照');
+    const sourceHash = hash(manifestBytes);
+    if (s.importing && s.importing !== sourceHash)
+      throw Error('导入中的代码快照发生变化');
+    if (!s.importing && readdirSync(s.workDir).length)
+      throw Error('导入前新题工作区必须为空');
+    s.importing = sourceHash;
+    this.save(s);
+    for (const f of files) {
+      const rel = f.name.slice('workspace/'.length);
+      const dest = path.resolve(s.workDir, rel),
+        src = path.resolve(evidence, f.name);
+      if (
+        !dest.startsWith(s.workDir + path.sep) ||
+        !src.startsWith(evidence + path.sep) ||
+        !lstatSync(src).isFile() ||
+        lstatSync(src).isSymbolicLink()
+      )
+        throw Error('代码快照路径无效');
+      const data = readFileSync(src);
+      if (hash(data) !== f.sha256) throw Error('上一题代码快照哈希不匹配');
+      mkdirSync(path.dirname(dest), { recursive: true, mode: 0o700 });
+      writeFileSync(dest, data, { mode: (f.mode || 0o600) | 0o600 });
+      chmodSync(dest, (f.mode || 0o600) | 0o600);
+    }
+    delete s.importing;
+    s.sourceSnapshot = {
+      turnId: previous.id,
+      manifestPath,
+      sha256: hash(manifestBytes),
+      files: files.length,
+      omitted: manifest.omitted || [],
+      importedAt: new Date().toISOString(),
+      importedAfterStartup: true,
+    };
+    this.save(s);
+  }
+  permissionPreflight(s) {
+    this.owned(s);
+    // This does not consume a model prompt or change any model/client configuration.
+    const script = `const fs=require('fs'),crypto=require('crypto');let args=null;for(const id of fs.readdirSync('/proc').filter(x=>/^\\d+$/.test(x))){try{const a=fs.readFileSync('/proc/'+id+'/cmdline','utf8').split('\\0');if(a.includes('--dangerously-skip-permissions')){args=a;break;}}catch{}}if(!args)throw Error('Claude 免审批进程不存在');const arg=k=>args[args.indexOf(k)+1];const settings=JSON.parse(arg('--settings')||'{}');const mcp=JSON.parse(arg('--mcp-config')||'{}');const file='/workspace/.permission-check-'+crypto.randomUUID();let writable=false;try{fs.writeFileSync(file,'check',{flag:'wx'});writable=fs.readFileSync(file,'utf8')==='check';}finally{try{fs.unlinkSync(file);}catch{}}console.log(JSON.stringify({skipPermissions:args.includes('--dangerously-skip-permissions'),settingsIsolated:args.includes('--setting-sources')&&arg('--setting-sources')==='',hooksIsolated:args.includes('--safe-mode')&&!settings.hooks&&!settings.permissions?.deny?.length,mcpIsolated:args.includes('--strict-mcp-config')&&Object.keys(mcp.mcpServers||{}).length===0,workspaceWritable:writable,tools:(arg('--tools')||'').split(','),checkedAt:new Date().toISOString()}));`;
+    return verifyPermissionPreflight(
+      JSON.parse(this.command(['exec', s.containerId, 'node', '-e', script])),
+    );
+  }
+  permissionAudit(traceExport) {
+    const manifest = JSON.parse(readFileSync(traceExport.manifestPath, 'utf8'));
+    const files = manifest.files
+      .filter((f) => f.name.endsWith('.jsonl'))
+      .map((f) => ({
+        name: f.name,
+        content: readFileSync(path.join(traceExport.path, f.name), 'utf8'),
+      }));
+    return { ...auditPermissionTraces(files), traceSha256: traceExport.sha256 };
   }
   async attach(s, fresh = false) {
     let live = this.live.get(s.taskId);
@@ -461,7 +580,7 @@ export class DockerRuntime {
     };
   }
   async execute(task, turn, reserve) {
-    const s = await this.ensure(task);
+    const s = await this.ensure(task, turn);
     if (s.results?.[turn.id])
       return { ...s.results[turn.id], container: this.public(s) };
     if (
@@ -520,6 +639,7 @@ export class DockerRuntime {
           throw Error('同一容器的会话 ID 发生变化');
         s.sessionId = native.sessionId;
         const traceExport = await this.export(s, turn.id);
+        const permissionAudit = this.permissionAudit(traceExport);
         const dir = path.dirname(this.file(task.id)),
           tracePath = path.join(dir, turn.id + '.jsonl');
         writeFileSync(tracePath, native.content, { mode: 0o600 });
@@ -529,9 +649,13 @@ export class DockerRuntime {
           { mode: 0o600 },
         );
         const result = {
-          success: !native.error,
+          success: !native.error && permissionAudit.passed,
           output: native.output,
-          error: native.error ? 'Claude 原始轨迹报告调用错误' : '',
+          error: !permissionAudit.passed
+            ? '完整会话存在权限拒绝或未确认免审批模式；原始轨迹保留，需新建任务重新采集'
+            : native.error
+              ? 'Claude 原始轨迹报告调用错误'
+              : '',
           sessionId: native.sessionId,
           promptId: native.promptId,
           model: native.model,
@@ -542,13 +666,16 @@ export class DockerRuntime {
           snapshot: s.snapshot,
           tracePath,
           traceExport,
+          permissionAudit,
           claudeCallCount: p.count,
-          executionOutcome: native.error ? 'error' : 'complete',
+          executionOutcome:
+            native.error || !permissionAudit.passed ? 'error' : 'complete',
           finishedAt: new Date().toISOString(),
         };
         s.results[turn.id] = result;
         delete s.pending;
         s.traceExport = traceExport;
+        s.permissionAudit = permissionAudit;
         await this.publish(s);
         return { ...result, container: this.public(s) };
       }

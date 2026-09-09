@@ -38,8 +38,17 @@ try {
     (t) => t.turns.length === 10 && t.turns.every((r) => r.status === 'review'),
     180000,
   );
-  assert.equal(new Set(t.turns.map((r) => r.sessionId)).size, 1);
+  assert.equal(new Set(t.turns.map((r) => r.sessionId)).size, 10);
   assert.equal(new Set(t.turns.map((r) => r.promptId)).size, 10);
+  assert.equal(new Set(t.turns.map((r) => r.container.workDir)).size, 10);
+  assert.ok(
+    t.turns.every((r) => r.roundNumber === 1 && r.permissionAudit.passed),
+  );
+  assert.ok(
+    t.turns
+      .slice(1)
+      .every((r) => r.container.sourceSnapshot.importedAfterStartup),
+  );
   assert.equal(
     calls(f).filter((e) => e.name === 'claude' && e.event === 'start').length,
     10,

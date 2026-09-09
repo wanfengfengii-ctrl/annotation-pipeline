@@ -1,4 +1,6 @@
 // Injectable test boundary: never launches Docker or a real model.
+import { questionRoot } from '../../lib/question-session.mjs';
+import { permissionAuditVersion } from '../../lib/permission-audit.mjs';
 import { DockerRuntime } from '../../scripts/docker-runtime.mjs';
 import {
   containerImage,
@@ -13,13 +15,25 @@ os.totalmem = () => 32 * 2 ** 30;
 os.freemem = () => 16 * 2 ** 30;
 os.loadavg = () => [1, 1, 1];
 os.platform = () => 'fixture';
-DockerRuntime.prototype.ensure = async function (task) {
+DockerRuntime.prototype.ensure = async function (task, turn) {
   let s = this.load(task.id);
+  const questionId = questionRoot(task, turn);
+  if (s && s.questionId !== questionId) {
+    await this.close(task.id);
+    s = null;
+  }
   if (!s) {
-    const workDir = path.join(this.root, task.id, 'workspace');
+    const workDir = path.join(
+      this.root,
+      task.id,
+      'questions',
+      questionId,
+      'workspace',
+    );
     mkdirSync(workDir, { recursive: true });
     s = {
       taskId: task.id,
+      questionId,
       name: 'annotation-' + task.id,
       status: 'running',
       image: containerImage,
@@ -32,15 +46,16 @@ DockerRuntime.prototype.ensure = async function (task) {
     this.save(s);
   }
   if (s.status !== 'running') throw Error('fixture container stopped');
+  this.importPriorQuestion(s, task, turn);
   await this.publish(s);
   return s;
 };
 DockerRuntime.prototype.execute = async function (task, turn, reserve) {
-  const s = await this.ensure(task);
+  const s = await this.ensure(task, turn);
   if (s.results[turn.id]) return s.results[turn.id];
   const quota = await reserve(turn.id, s.sessionId);
   if (!quota.allowed) throw Error('10 call cap');
-  s.sessionId ||= 'fixture-session-' + task.id;
+  s.sessionId ||= 'fixture-session-' + s.questionId;
   appendFileSync(
     process.env.FIXTURE_LOG,
     JSON.stringify({
@@ -53,7 +68,7 @@ DockerRuntime.prototype.execute = async function (task, turn, reserve) {
     }) + '\n',
   );
   await new Promise((r) => setTimeout(r, 300));
-  const count = Object.keys(s.results).length + 1;
+  const count = task.turns.findIndex((r) => r.id === turn.id) + 1;
   writeFileSync(path.join(s.workDir, '.fixture-count'), String(count));
   const project = task.projectSeries?.directory || 'project';
   mkdirSync(path.join(s.workDir, project), { recursive: true });
@@ -75,6 +90,17 @@ DockerRuntime.prototype.execute = async function (task, turn, reserve) {
       '\n',
   );
   const result = {
+    permissionAudit: {
+      version: permissionAuditVersion,
+      passed: true,
+      modeVerified: true,
+      mode: 'bypassPermissions',
+      denialCount: 0,
+      findings: [],
+      tools: [],
+      toolCalls: 0,
+      traceSha256: 'a'.repeat(64),
+    },
     success: true,
     workDir: s.workDir,
     sessionId: s.sessionId,

@@ -5,6 +5,13 @@ export type RecordMetadata = {
   parentRecord2: string;
 };
 export function roundNumber(t: Task, r: Turn): number | '' {
+  if (r.questionRootId) {
+    const index = t.turns?.findIndex((x) => x.id === r.id) ?? -1;
+    if (index >= 0)
+      return t.turns
+        .slice(0, index + 1)
+        .filter((x) => x.questionRootId === r.questionRootId).length;
+  }
   if (
     Number.isInteger(r.roundNumber) &&
     r.roundNumber! >= 1 &&

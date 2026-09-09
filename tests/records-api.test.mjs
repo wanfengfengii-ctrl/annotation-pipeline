@@ -1,5 +1,6 @@
 // Synthetic API fixtures only. Stop the real runner and use an empty queue.
 import assert from 'node:assert/strict';
+import { permissionAuditVersion } from '../lib/permission-audit.mjs';
 import {
   containerImage,
   containerPolicyVersion,
@@ -101,6 +102,13 @@ try {
           files: 1,
           sha256: 'a'.repeat(64),
         },
+        permissionAudit: {
+          version: permissionAuditVersion,
+          passed: true,
+          modeVerified: true,
+          denialCount: 0,
+          traceSha256: 'a'.repeat(64),
+        },
         ...extra,
       });
     for (let n = 1; n <= (i === 0 ? 10 : 1); n++) {
@@ -162,6 +170,19 @@ try {
     await assert.rejects(
       () => finish({ success: true, contextCheck: { ready: false } }),
       /上下文/,
+    );
+    await assert.rejects(
+      () =>
+        finish({
+          success: true,
+          permissionAudit: {
+            version: permissionAuditVersion,
+            passed: false,
+            modeVerified: true,
+            denialCount: 5,
+          },
+        }),
+      /权限/,
     );
     await finish({
       success: true,
@@ -278,6 +299,64 @@ try {
   assert.equal((await records({ exports: 'never' })).total, 0);
   assert.equal((await exportFile({ ...filter, exports: 'never' })).status, 400);
   assert.equal((await records({ exports: 'exact', count: 2 })).total, 12);
+  // A subsequent failure contaminates its entire question session, including old batches.
+  const clean = await latest(ids[9]);
+  await api(
+    '/api/tasks/' + clean.id,
+    {
+      action: 'enqueue',
+      prompt: '继续',
+      category: '0-1 代码生成',
+      difficulty: '困难',
+      revision: clean.revision,
+    },
+    'PATCH',
+  );
+  const { job: continuation } = await run({ action: 'claim', capacity: 1 });
+  assert.equal(continuation.turn.questionRootId, clean.turns[0].questionRootId);
+  assert.equal(continuation.turn.roundNumber, 2);
+  await run({
+    action: 'stage',
+    taskId: clean.id,
+    turnId: continuation.turn.id,
+    jobToken: continuation.turn.jobToken,
+    stage: 'claude',
+  });
+  await run({
+    action: 'reserve-claude',
+    taskId: clean.id,
+    turnId: continuation.turn.id,
+    jobToken: continuation.turn.jobToken,
+    sessionId: clean.sessionId,
+    attemptId: 'denial-check',
+  });
+  await run({
+    action: 'finish',
+    taskId: clean.id,
+    turnId: continuation.turn.id,
+    jobToken: continuation.turn.jobToken,
+    success: false,
+    sessionId: clean.sessionId,
+    container: clean.container,
+    permissionAudit: {
+      version: permissionAuditVersion,
+      passed: false,
+      modeVerified: true,
+      denialCount: 1,
+    },
+    error: 'synthetic permission-rule denial',
+  });
+  const invalid = await records({ query: clean.sessionId });
+  assert.ok(invalid.rows.every((r) => !r.eligible));
+  assert.equal(
+    (await exportFile({ ...filter, query: clean.sessionId })).status,
+    400,
+  );
+  assert.equal(
+    (await exportFile(filter, 'page', id)).status,
+    400,
+    'old batch must not bypass a later permission denial',
+  );
   console.log(
     'Records API passed: 30 fields, 12 records on two pages, exact filters, XLSX/CSV, export scope, idempotent concurrent retries, ten-call failure budget and session lock.',
   );

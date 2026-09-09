@@ -1,5 +1,7 @@
 import { validateSeries, claudeCallCount } from '@/lib/project-series.mjs';
 import { validateContainerRecord } from '@/lib/container-policy.mjs';
+import { questionRoot } from '@/lib/question-session.mjs';
+import { permissionIssues } from '@/lib/permission-audit.mjs';
 import { roundNumber } from '@/lib/record-metadata';
 import { nextDecision, dailyMix } from '@/lib/workflow.mjs';
 import { candidateDigest, assertPolicyAudit } from '@/lib/task-policy.mjs';
@@ -144,6 +146,7 @@ export async function POST(req: Request) {
           },
         ],
       };
+      task.turns[0].questionRootId = task.turns[0].id;
       // One SQL statement guards concurrent replenishment, daily quota and duplicate receipts.
       const inserted = await db()
         .prepare(`INSERT INTO tasks(id,data,created_at) SELECT ?,?,?
@@ -194,6 +197,12 @@ export async function POST(req: Request) {
           continue;
         const r = item.turns.find((r: any) => r.status === 'queued');
         if (!r) continue;
+        r.questionRootId ||= questionRoot(item, r);
+        r.roundNumber = item.turns
+          .slice(0, item.turns.indexOf(r) + 1)
+          .filter(
+            (x: Turn) => questionRoot(item, x) === r.questionRootId,
+          ).length;
         item.automationMode = 'codex';
         r.status = 'running';
         r.startedAt = new Date().toISOString();
@@ -246,6 +255,10 @@ export async function POST(req: Request) {
       const container = validateContainerRecord(b.container, item.task.id);
       if (item.task.container && item.task.container.name !== container.name)
         throw Error('不能切换任务容器');
+      if (item.task.container?.questionId !== container.questionId) {
+        if (container.sessionId) item.task.sessionId = container.sessionId;
+        else delete item.task.sessionId;
+      }
       item.task.container = container;
       item.task.workDir = container.workDir;
       await save(item.task, item.revision);
@@ -326,6 +339,8 @@ export async function POST(req: Request) {
           throw Error('任务容器发生变化');
         if (b.success && !b.traceExport?.verified)
           throw Error('容器完整轨迹尚未导出核验');
+        if (b.success && permissionIssues(b).length)
+          throw Error(permissionIssues(b).join('；'));
         if (
           item.task.sessionId &&
           b.sessionId &&
@@ -335,6 +350,7 @@ export async function POST(req: Request) {
         item.task.container = container;
         r.container = container;
         r.traceExport = b.traceExport;
+        r.permissionAudit = b.permissionAudit;
       }
       r.status = b.success ? 'review' : 'failed';
       r.roundNumber ||= roundNumber(item.task, r) || undefined;
@@ -444,10 +460,13 @@ export async function POST(req: Request) {
             '本轮已归档；后续出题待重试：' + r.automation.nextError;
         if (decision) {
           item.task.automationNotice = decision.notice;
-          if (decision.prompt)
+          if (decision.prompt) {
+            const id = crypto.randomUUID();
+            const continued = 'continuationOf' in decision;
             item.task.turns.push({
-              roundNumber: item.task.turns.length + 1,
-              id: crypto.randomUUID(),
+              roundNumber: continued ? (r.roundNumber || 1) + 1 : 1,
+              questionRootId: continued ? r.questionRootId || r.id : id,
+              id,
               prompt: decision.prompt,
               ...('continuationOf' in decision && 'evaluationPrompt' in decision
                 ? {
@@ -464,6 +483,7 @@ export async function POST(req: Request) {
               createdAt: new Date().toISOString(),
               autoFollowup: true,
             });
+          }
         }
       }
       await save(item.task, item.revision);

@@ -50,6 +50,7 @@ export function createEvidenceArchive({
     writeFileSync(path.join(stageDir, name), data, { mode: 0o600 });
     manifest.push({
       name,
+      mode: lstatSync(src).mode & 0o777,
       bytes: data.length,
       sha256: createHash('sha256').update(data).digest('hex'),
     });
@@ -144,17 +145,21 @@ export function createEvidenceArchive({
       rel = path.relative(workDir, src);
     if (src.startsWith(stageDir + path.sep)) continue;
     const info = lstatSync(src);
-    if (
-      rel.startsWith('..') ||
-      path.isAbsolute(rel) ||
-      !info.isFile() ||
+    const sensitive =
       /(^|\/)(\.env[^/]*|\.claude|\.codex|credentials[^/]*|[^/]*\.(pem|key|p12))($|\/)/i.test(
         rel,
-      ) ||
+      );
+    let reason;
+    if (rel.startsWith('..') || path.isAbsolute(rel) || !info.isFile())
+      reason = '非普通文件或无效路径';
+    else if (sensitive) reason = '敏感配置文件';
+    else if (
       info.size > 10 * 1024 * 1024 ||
       total + info.size > 32 * 1024 * 1024
-    ) {
-      omitted.push({ name, reason: '路径、敏感文件类型或归档大小限制' });
+    )
+      reason = '代码归档大小限制';
+    if (reason) {
+      omitted.push({ name, reason });
       continue;
     }
     add(src, 'workspace/' + rel);

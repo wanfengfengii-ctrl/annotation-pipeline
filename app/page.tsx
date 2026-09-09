@@ -707,7 +707,7 @@ export default function Home() {
                 <p>
                   本机执行器调用 Claude
                   CLI，不指定模型，沿用用户及项目配置。首轮从已推送的干净 Git
-                  提交创建独立工作区；后续轮次恢复同一会话。
+                  每道独立题目新建容器；同题继续沿用当前会话。
                 </p>
                 <p>
                   执行器：{online ? '在线' : '离线'} ·{' '}
@@ -1372,6 +1372,38 @@ function TurnPanel({
           </div>
           <p className="sub">{r.review.other}</p>
         </section>
+      )}
+      {r.container && (
+        <details className="section">
+          <summary>
+            本题容器与权限 ·{' '}
+            {r.permissionAudit?.passed ? '免审批已核验' : '待核验或存在异常'}
+          </summary>
+          <p className="sub">独立题目使用新容器，同题继续保留当前会话。</p>
+          <p className="sub mono">
+            {r.container.containerId || r.container.name}
+          </p>
+          {r.container.sourceSnapshot && (
+            <p className="sub">
+              已在启动后导入上一题代码快照，共{' '}
+              {r.container.sourceSnapshot.files} 个文件；排除{' '}
+              {r.container.sourceSnapshot.omitted.length} 项依赖、缓存或配置。
+            </p>
+          )}
+          <p className="sub">
+            启动预检：
+            {r.container.permissionPreflight?.passed ? '通过' : '未记录'} ·
+            原始轨迹权限拒绝：{r.permissionAudit?.denialCount ?? '未核验'} 次
+          </p>
+          <p className="sub">
+            已调用工具：{r.permissionAudit?.tools?.join('、') || '未记录'}
+          </p>
+          {r.permissionAudit?.findings?.map((f, i) => (
+            <p className="issue mono" key={i}>
+              {f.tool} · {f.kind} · {f.file}:{f.line}
+            </p>
+          ))}
+        </details>
       )}
       {r.contextCheck && (
         <details className="section">

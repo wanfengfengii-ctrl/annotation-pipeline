@@ -33,8 +33,6 @@ export async function PATCH(
       if (!r) throw Error('轮次不存在');
       updateRecordMetadata(t, r, b.metadata);
     } else if (b.action === 'enqueue') {
-      if (t.container && t.container.status !== 'running')
-        throw Error('项目容器已结束，请创建新任务，不能恢复旧会话');
       if (!t.container && t.sessionId)
         throw Error('旧版宿主机会话仅保留记录，请创建新的容器任务');
       if (t.closed || pending(t) || !canAddTurn(t))
@@ -49,6 +47,8 @@ export async function PATCH(
         throw Error('先处理未完成的轮次，避免后续代码覆盖待评分产物');
       const previous = t.turns.at(-1);
       const continuing = isContinuation(b.prompt);
+      if (continuing && t.container?.status !== 'running')
+        throw Error('原题容器已结束，不能恢复旧会话');
       if (continuing && (!previous || previous.excluded))
         throw Error('没有可继续的有效轮次');
       if (continuing) {
@@ -62,9 +62,13 @@ export async function PATCH(
           (t.turns.length > 0 && b.category === '0-1 代码生成'))
       )
         throw Error('项目首题须为 0-1，后续题须基于已有项目');
+      const turnId = crypto.randomUUID();
       t.turns.push({
-        roundNumber: t.turns.length + 1,
-        id: crypto.randomUUID(),
+        roundNumber: continuing ? (previous!.roundNumber || 1) + 1 : 1,
+        questionRootId: continuing
+          ? previous!.questionRootId || previous!.id
+          : turnId,
+        id: turnId,
         prompt: text(b.prompt, 'Prompt', 80000),
         ...(continuing
           ? {

@@ -1,8 +1,9 @@
 import { selectRecords } from '@/db/records';
 import { recordFilter, type RecordRow } from '@/lib/record-fields';
 import { xlsx, recordsCsv } from '@/lib/xlsx';
+import { permissionIssues } from '@/lib/permission-audit.mjs';
 import { all, failure, db, protect, text } from '@/db/store';
-import { csv, businessDate, type Turn } from '@/lib/pipeline';
+import { csv, type Task } from '@/lib/pipeline';
 export async function GET(req: Request) {
   try {
     const day = new URL(req.url).searchParams.get('day');
@@ -12,17 +13,7 @@ export async function GET(req: Request) {
     const source = new URL(req.url).searchParams.get('source');
     if (source && source !== 'human') throw Error('导出来源无效');
     return new Response(
-      csv(
-        day
-          ? tasks.map((t) => ({
-              ...t,
-              turns: t.turns.filter(
-                (r: Turn) => businessDate(r.finishedAt || r.createdAt) === day,
-              ),
-            }))
-          : tasks,
-        source === 'human' ? 'human' : 'primary',
-      ),
+      csv(tasks, source === 'human' ? 'human' : 'primary', day || undefined),
       {
         headers: {
           'Content-Type': 'text/csv; charset=utf-8',
@@ -100,6 +91,32 @@ export async function POST(req: Request) {
       .bind(id)
       .all<{ snapshot: string }>();
     const rows = saved.results.map((x) => JSON.parse(x.snapshot) as RecordRow);
+    // A later denial in the same session also invalidates a saved batch download.
+    // Retain the original batch bytes and export counts; do not rewrite its history.
+    const current = await db()
+      .prepare(
+        'SELECT DISTINCT t.id,t.data FROM tasks t JOIN export_items e ON e.task_id=t.id WHERE e.batch_id=?',
+      )
+      .bind(id)
+      .all<{ id: string; data: string }>();
+    const tasks = new Map(
+      current.results.map((t) => [t.id, JSON.parse(t.data) as Task]),
+    );
+    for (const row of rows) {
+      const task = tasks.get(row.taskId),
+        turn = task?.turns.find((r) => r.id === row.turnId);
+      if (
+        turn?.container &&
+        (permissionIssues(turn).length ||
+          task?.turns.some(
+            (r) =>
+              r.sessionId === turn.sessionId &&
+              r.permissionAudit &&
+              !r.permissionAudit.passed,
+          ))
+      )
+        throw Error('该批次包含权限核验未通过的会话，原记录已保留，请重新采集');
+    }
     return new Response(
       format === 'xlsx'
         ? (xlsx(rows, id) as unknown as BodyInit)
