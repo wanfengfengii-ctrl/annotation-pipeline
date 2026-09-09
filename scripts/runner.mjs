@@ -8,6 +8,7 @@ import {
   canAddTurn,
   sessionTurns,
   projectCounts,
+  repairBatchInstructions,
 } from '../lib/project-series.mjs';
 import { workflow, scoreInstructions, nextDecision } from '../lib/workflow.mjs';
 import { questionIssues } from '../lib/writing-style.mjs';
@@ -227,6 +228,7 @@ async function execute({ task, turn }) {
       stage: name,
     });
     if (name === 'runtime-running') return;
+    if (name === 'next') prompt += '\n' + repairBatchInstructions();
     if (['score', 'project-next', 'next', 'delivery'].includes(name)) {
       prompt +=
         '\n独立运行验收（不得将其工具调用归为 Claude 的行为）：' +

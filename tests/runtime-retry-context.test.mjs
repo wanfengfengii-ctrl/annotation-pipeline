@@ -256,3 +256,103 @@ test('new planning receives untrusted historical feedback and must run fresh che
     'blocked',
   );
 });
+
+test('planning preserves dependency provenance and counts original tests from native results', async (t) => {
+  const f = fixture(t);
+  const sourcePath = path.join(f.context.workDir, 'app.js');
+  const sourceBefore = readFileSync(sourcePath);
+  const stop = Error('Inspect dependency planning before execution');
+  const capabilities = {
+    commands: Object.fromEntries(
+      [
+        'bash',
+        'node',
+        'npm',
+        'python3',
+        'pip',
+        'pip3',
+        'apt-get',
+        'apk',
+        'dnf',
+        'yum',
+        'chromium',
+        'chromium-browser',
+        'google-chrome',
+        'firefox',
+      ].map((name) => [name, ['bash', 'node', 'npm'].includes(name)]),
+    ),
+    pythonModules: null,
+  };
+  await assert.rejects(
+    verifyRuntime({
+      ...f.context,
+      turnId: 'turn.attempt-5',
+      browserCache: null,
+      retryContext: null,
+      docker: async (args, options = {}) => {
+        const output =
+          args[0] === 'run' ? JSON.stringify(capabilities) : 'removed';
+        if (options.logPath) writeFileSync(options.logPath, output);
+        return {
+          exitCode: 0,
+          timedOut: false,
+          limited: false,
+          output,
+          logPath: options.logPath,
+          logSha256: hash(output),
+        };
+      },
+      step: async (stage, instruction) => {
+        assert.equal(stage, 'runtime-plan');
+        assert.match(
+          instruction,
+          /已确认 npm ci 因原产物 package\.json 与锁文件错配/,
+        );
+        assert.match(instruction, /完整项目复制到 \/tmp 的独立目录/);
+        assert.match(
+          instruction,
+          /npm install --no-save --package-lock=false --ignore-scripts/,
+        );
+        assert.match(
+          instruction,
+          /禁止修改原项目或副本的源码、原测试、package\.json 和锁文件/,
+        );
+        assert.match(
+          instruction,
+          /安装前后必须核对这些原有文件的 SHA-256 不变/,
+        );
+        assert.match(instruction, /实际安装版本满足原声明范围及 Node 版本条件/);
+        assert.match(instruction, /实际测试数大于 0、跳过数为 0/);
+        assert.match(
+          instruction,
+          /保留清单错配及原 npm ci 失败日志，作为交付缺陷证据/,
+        );
+        assert.match(instruction, /不得声称锁文件干净安装通过/);
+        assert.match(instruction, /测试仍未执行或被跳过，保持 blocked/);
+        assert.match(
+          instruction,
+          /测试框架的真实结构化结果，或原生汇总与退出码/,
+        );
+        assert.match(
+          instruction,
+          /不要用匹配单行 test 名称加 \.\.\. ok 的正则推测数量/,
+        );
+        assert.match(
+          instruction,
+          /unittest 的测试文档字符串可把名称、说明和结果拆成多行/,
+        );
+        assert.match(
+          instruction,
+          /TestResult\.testsRun、failures、errors、skipped 及 wasSuccessful\(\)/,
+        );
+        assert.match(instruction, /保持原测试入口或原发现范围/);
+        assert.match(instruction, /不虚构预期测试数/);
+        assert.match(instruction, /未取得真实结果仍按 blocked 处理/);
+        throw stop;
+      },
+    }),
+    (error) => error === stop,
+  );
+  assert.deepEqual(readFileSync(sourcePath), sourceBefore);
+  assert.equal(reuseRuntimeVerification(f.report, f.context), null);
+});

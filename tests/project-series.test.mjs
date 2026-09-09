@@ -11,7 +11,13 @@ import {
   canRepair,
   sessionTurns,
   shouldFinishSession,
+  repairDecision,
 } from '../lib/project-series.mjs';
+import { runtimeVersion } from '../lib/runtime-verification.mjs';
+import {
+  assertQuestionAudit,
+  questionRules,
+} from '../lib/question-writing.mjs';
 const root = (id, category = '0-1 代码生成') => ({
   id,
   questionRootId: id,
@@ -167,4 +173,120 @@ test('An unconfirmed third interaction survives automatic cleanup until resolved
   third.recoveryBlocked = true;
   assert.equal(shouldFinishSession(task), false);
   assert.equal(shouldFinishSession({ turns: [] }), false);
+});
+test('Four verified defects can be split into two audited repair batches while preserving the original evidence and two-round cap', () => {
+  const ids = ['timeline', 'scene', 'moves', 'clock'];
+  const report = {
+    version: runtimeVersion,
+    executed: true,
+    status: 'bugs',
+    reportPath: '/fixture/runtime/report.json',
+    reportSha256: 'a'.repeat(64),
+    checks: ids.map((id) => ({
+      id,
+      kind: 'reproduction',
+      outcome: 'reproduced',
+      exitCode: 1,
+      logPath: '/fixture/runtime/' + id + '.log',
+      logSha256: 'b'.repeat(64),
+      requirement: '保留原有换景流程',
+      codeEvidence: 'app.js:1',
+    })),
+  };
+  const original = JSON.stringify(report);
+  const first = {
+    ...root('a'),
+    automation: {
+      runtimeVersion,
+      questionRuleVersion: questionRules.version,
+      runtimeVerification: report,
+    },
+  };
+  const task = { turns: [first] };
+  const prompt =
+    '网页时间轴拖动后，动作开始时间仍停在12秒，拉伸后的时长也还是24秒，把这两处改好，让拖动结果显示为17秒、拉伸结果显示为28秒，动作详情和时间轴上的数字要一起更新。先选中要调整的动作，再拖动位置、拉伸长度，回到详情查看，整个过程继续沿用现有页面和操作方式。预演前进到12秒或选到25秒时，舞台已经变化，时间文字和滑块却仍显示0，把它们与舞台时间、当前事件高亮同步。改完再前进、回退和重新选择时间，检查这些控件始终指向同一个时刻，不要改动已经保存的动作安排。';
+  const audit = {
+    questionCompliant: true,
+    questionChecks: Object.keys(questionRules.criteria).map(
+      (id) => id + '：正文有相应已有操作和要求',
+    ),
+    workflowFeatures: [
+      '选中动作',
+      '拖动位置',
+      '拉伸长度',
+      '查看动作详情',
+      '前进与回退预演',
+      '选择预演时刻',
+    ],
+    businessDetails: [
+      '时间轴拖拉结果与详情同步',
+      '时间文字和滑块与舞台时间同步',
+    ],
+  };
+  assert.doesNotThrow(() => assertQuestionAudit(audit));
+  assert.throws(
+    () =>
+      assertQuestionAudit({
+        ...audit,
+        businessDetails: [
+          ...audit.businessDetails,
+          '场景出入口隔离',
+          '连续搬运位置正确',
+        ],
+      }),
+    /businessDetails/,
+  );
+  const batchOne = repairDecision(task, first, {
+    prompt,
+    reason: '先修同一时间操作流程',
+    repairCheckIds: ['timeline', 'clock'],
+  });
+  assert.equal(batchOne.repairOf, first.id);
+  assert.equal(batchOne.questionRootId, first.id);
+  const second = {
+    ...root('b', 'Bug 修复'),
+    ...batchOne,
+    automation: {
+      ...first.automation,
+      runtimeVerification: {
+        ...report,
+        checks: report.checks.map((c) =>
+          ['timeline', 'clock'].includes(c.id)
+            ? { ...c, outcome: 'passed', exitCode: 0 }
+            : { ...c },
+        ),
+      },
+    },
+  };
+  task.turns.push(second);
+  const nextPrompt =
+    '第一幕的出入口移到(139,317)后，第二幕也跟着移动了，把场景之间的布局分开保存。先切到第一幕调整出入口，再切到第二幕查看，第二幕应继续保留(60,300)，返回第一幕还能看到刚才的位置。接着在原来的动作编辑页给同一沙发安排两次不重叠的搬运，逐步前进和回退检查舞台位置。现在到10秒时，沙发被后一次动作的起点覆盖，状态也变成等待，请按当前时刻显示正在发生的搬运，间歇停在前一次终点。交换两条动作的存放顺序后再看相同时刻，位置与状态应保持一致，别改动其他物件的安排。';
+  assert.throws(
+    () =>
+      repairDecision(task, second, {
+        prompt: nextPrompt,
+        repairCheckIds: ['timeline'],
+      }),
+    /已复现/,
+  );
+  const batchTwo = repairDecision(task, second, {
+    prompt: nextPrompt,
+    reason: '新验收仍复现另外两项',
+    repairCheckIds: ['scene', 'moves'],
+  });
+  assert.equal(batchTwo.repairOf, second.id);
+  task.turns.push({
+    ...root('c', 'Bug 修复'),
+    ...batchTwo,
+    automation: second.automation,
+  });
+  assert.equal(canRepair(task, task.turns.at(-1)), false);
+  assert.equal(
+    repairDecision(task, task.turns.at(-1), {
+      prompt: nextPrompt,
+      repairCheckIds: ['scene'],
+    }).finishSession,
+    true,
+  );
+  assert.equal(JSON.stringify(report), original);
 });

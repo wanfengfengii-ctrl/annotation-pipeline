@@ -187,7 +187,7 @@ test('Runtime planning receives measured capabilities and Bash contract after is
         assert.match(instruction, /不要无条件执行 npm ci/);
         assert.match(instruction, /不修改源码、依赖清单或锁文件/);
         assert.match(instruction, /保留不一致和安装失败证据/);
-        assert.match(instruction, /受影响的自带测试未执行/);
+        assert.match(instruction, /自带测试执行状态，尚未运行时明确写未执行/);
         assert.match(instruction, /不强制所有项目使用 Playwright/);
         assert.match(instruction, /playwright install --only-shell chromium/);
         assert.match(
