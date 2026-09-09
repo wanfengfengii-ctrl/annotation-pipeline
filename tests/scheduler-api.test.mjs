@@ -3,7 +3,7 @@ import { rules, candidateDigest } from '../lib/task-policy.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fingerprint } from '../scripts/scheduler.mjs';
-const base = process.env.PIPELINE_API_URL || 'http://localhost:3000';
+import { base } from './fixtures/test-server.mjs';
 const token = readFileSync('.dev.vars', 'utf8').match(
   /^RUNNER_TOKEN=(.+)$/m,
 )[1];

@@ -93,7 +93,9 @@ npx tsc --noEmit
 npm run build
 ```
 
-`tests/flow.test.mjs` 使用假 CLI 和可注入的 Docker 适配器，验证完整十轮、评分断点重试、禁出拦截及归档清理，不调用真实模型。`tests/container.test.mjs` 覆盖原生消息解析、额度、导出失败保留、重试不重发和清理顺序。集成测试默认连接独立的 localhost:3001 测试数据库，不使用真实作业队列。
+`tests/flow.test.mjs` 使用假 CLI 和可注入的 Docker 适配器，验证 32 条对话、22 个会话、评分断点重试、禁出拦截及归档清理，不调用真实模型。`tests/container.test.mjs` 覆盖原生消息解析、额度响应丢失、终端确认丢失、导出失败保留、重试不重发和清理顺序。所有接口测试共用 `tests/fixtures/test-server.mjs`，只允许独立的 localhost:3001 测试数据库，拒绝正式服务和远程地址。
+
+最新流程检查见 [系统检查与修复](docs/system-audit-2026-09-09.md)。`tests/lifecycle-api.test.mjs` 验证第三轮失败恢复、结束会话拦截、零容量、逐轮环境等级和排除后的补题状态。
 
 `tests/scheduler-api.test.mjs` 验证原子领取、幂等补充、额度与暂停；`tests/scheduler-flow.test.mjs` 使用假 CLI、独立容器适配器和模拟的 16 GiB Docker，验证并行隔离与空队列补充。运行需独立测试数据库，不能连接正在运行的真实任务队列。`RUNNER_WORK_ROOT` 可为测试指定隔离的执行器存储目录。
 

@@ -604,6 +604,10 @@ export class DockerRuntime {
       };
       s.pending = p;
       this.save(s);
+    }
+    // Reservation receipts are idempotent. A network failure here happened before
+    // terminal input, so recover the same receipt before sending anything.
+    if (p.phase === 'reserved') {
       const quota = await reserve(p.attemptId, s.sessionId);
       if (!quota.allowed) {
         delete s.pending;

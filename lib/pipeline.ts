@@ -101,6 +101,7 @@ export type Review = {
   artifactFindings?: string;
 };
 export type Turn = {
+  reproducibility?: string;
   sessionFinished?: boolean;
   questionRootId?: string;
   repairOf?: string;
@@ -348,7 +349,7 @@ export function csv(
           r.harness || t.harness || 'Claude Code',
           r.harnessVersion || t.harnessVersion,
           r.os || t.os,
-          t.reproducibility,
+          r.reproducibility || t.reproducibility,
           t.snapshot,
           r.prompt,
           r.sessionId,

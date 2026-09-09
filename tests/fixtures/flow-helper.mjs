@@ -7,8 +7,9 @@ import {
   copyFileSync,
 } from 'node:fs';
 import path from 'node:path';
+import { base } from './test-server.mjs';
+export { base };
 const root = process.cwd();
-export const base = process.env.PIPELINE_API_URL || 'http://localhost:3001';
 export async function api(route, body, method = 'POST') {
   const r = await fetch(base + route, {
     method,

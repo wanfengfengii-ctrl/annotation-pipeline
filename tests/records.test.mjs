@@ -63,6 +63,12 @@ test('实际工作簿字段完整有序，AI 与实际提交来源分开，Excel
     },
   };
   const row = recordRow(task, turn, 'ai');
+  assert.equal(
+    recordRow(task, { ...turn, reproducibility: '有外部依赖，未容器化' }, 'ai')
+      .values[6],
+    '有外部依赖，未容器化',
+  );
+  assert.equal(row.values[6], '无外部依赖');
   assert.equal(row.eligible, true);
   assert.equal(row.values.length, 30);
   assert.deepEqual(row.values.slice(24, 27), [

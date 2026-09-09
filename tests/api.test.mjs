@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const token = readFileSync('.dev.vars', 'utf8').match(
   /^RUNNER_TOKEN=(.+)$/m,
 )[1];
-const base = 'http://localhost:3000';
+import { base } from './fixtures/test-server.mjs';
 async function call(route, body, method = 'POST', auth = false) {
   const res = await fetch(base + route, {
     method,

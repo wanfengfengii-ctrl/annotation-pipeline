@@ -14,7 +14,7 @@ export function capacityFor(
     Math.min(4, Math.floor(cores / 2), Math.floor((totalGB - 8) / 6)),
   );
   const maximum = Math.min(hardwareLimit, requested);
-  const memorySlots = Math.max(1, Math.floor((availableGB - 2) / 3));
+  const memorySlots = Math.max(0, Math.floor((availableGB - 2) / 3));
   const loadSlots =
     load >= cores * 1.2
       ? 1
@@ -24,7 +24,7 @@ export function capacityFor(
   return {
     recommended,
     hardwareLimit,
-    effective: Math.max(1, Math.min(maximum, memorySlots, loadSlots)),
+    effective: Math.max(0, Math.min(maximum, memorySlots, loadSlots)),
     reason:
       memorySlots < maximum
         ? '可回收内存偏低'

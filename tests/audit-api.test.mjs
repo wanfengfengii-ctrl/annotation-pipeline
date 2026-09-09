@@ -1,10 +1,11 @@
+import { base } from './fixtures/test-server.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 const token = readFileSync('.dev.vars', 'utf8').match(
   /^RUNNER_TOKEN=(.+)$/m,
 )[1];
 async function api(route, body, method = 'POST', auth = false) {
-  const r = await fetch('http://localhost:3000' + route, {
+  const r = await fetch(base + route, {
     method,
     headers: {
       'content-type': 'application/json',

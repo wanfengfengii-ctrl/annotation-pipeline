@@ -11,7 +11,9 @@ test('M1 Pro resource admission reserves memory and reduces new starts under loa
   assert.equal(capacityFor(m).effective, 3);
   assert.equal(capacityFor({ ...m, load: 10 }).effective, 2);
   assert.equal(capacityFor({ ...m, load: 13 }).effective, 1);
-  assert.equal(capacityFor({ ...m, availableGB: 4 }).effective, 1);
+  assert.equal(capacityFor({ ...m, availableGB: 5 }).effective, 1);
+  assert.equal(capacityFor({ ...m, availableGB: 4 }).effective, 0);
+  assert.equal(capacityFor({ ...m, availableGB: 1 }).effective, 0);
   assert.equal(capacityFor(m, 1).effective, 1);
 });
 test('supply waits for sources, queue, budget, cooldown and repeated execution failures', () => {

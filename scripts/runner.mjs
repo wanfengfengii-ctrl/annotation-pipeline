@@ -887,11 +887,16 @@ try {
       );
       const resource = resources(context.config.concurrency);
       const docker = dockerStatus();
+      const hostCapacity = resource.effective;
       resource.effective = containerCapacity(docker, resource.effective);
       resource.recommended = containerCapacity(docker, resource.recommended);
-      resource.reason = docker.ready
-        ? '同时按宿主机与 Docker 虚拟机资源限制'
-        : docker.reason;
+      resource.reason = !docker.ready
+        ? docker.reason
+        : resource.effective === 0
+          ? hostCapacity === 0
+            ? '宿主机可用内存不足，暂停领取新任务'
+            : 'Docker 资源不足，暂停领取新任务'
+          : '同时按宿主机与 Docker 虚拟机资源限制';
       const readySources = docker.ready ? context.repos : [];
       schedulerStatus = {
         ...resource,
@@ -918,12 +923,14 @@ try {
           : null,
         supply: generating
           ? 'Codex 正在生成任务'
-          : (context.repos.length && !readySources.length
-              ? docker.reason
-              : null) ||
-            supplyDecision(context, supplyState) ||
-            supplyState.lastResult ||
-            '等待补充',
+          : resource.effective === 0
+            ? resource.reason
+            : (context.repos.length && !readySources.length
+                ? docker.reason
+                : null) ||
+              supplyDecision(context, supplyState) ||
+              supplyState.lastResult ||
+              '等待补充',
         nextAt: supplyState.nextAt || null,
       };
       await beat();

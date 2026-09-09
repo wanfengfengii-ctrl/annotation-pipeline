@@ -93,7 +93,7 @@ export function recordRow(
           r.container.scaffoldSnapshot.sha256
         : r.container?.snapshot || t.snapshot || '',
     r.tracePath || '',
-    t.reproducibility || '',
+    r.reproducibility || t.reproducibility || '',
     r.harness || t.harness || 'Claude Code',
     r.harnessVersion || t.harnessVersion || '',
     r.os || t.os || '',

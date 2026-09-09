@@ -118,6 +118,62 @@ class Fake extends DockerRuntime {
     this.save(s);
   }
 }
+test('A lost quota response retries the same reservation and sends the prompt once', async () => {
+  const rt = new Fake(mkdtempSync(path.join(tmpdir(), 'quota-retry-'))),
+    task = { id: randomUUID() },
+    turn = { id: randomUUID(), prompt: 'original' },
+    attempts = new Set();
+  let writes = 0,
+    requests = 0;
+  rt.live.set(task.id, {
+    child: {
+      stdin: {
+        write(data) {
+          if (data === '\r') return;
+          writes++;
+          rt.current = files(events(turn.prompt));
+        },
+      },
+    },
+  });
+  const reserve = async (id) => {
+    attempts.add(id);
+    if (++requests === 1) throw Error('quota response lost');
+    return { allowed: true, count: attempts.size };
+  };
+  await assert.rejects(rt.execute(task, turn, reserve), /quota response lost/);
+  assert.equal(writes, 0);
+  // Fail immediately if a retry waits on a prompt it never sent.
+  rt.shouldStop = () => !rt.current;
+  const result = await rt.execute(task, turn, reserve);
+  assert.equal(result.promptId, 'user');
+  assert.equal(result.claudeCallCount, 1);
+  assert.equal(requests, 2);
+  assert.equal(writes, 1);
+});
+test('A lost terminal acknowledgement never resends a potentially accepted prompt', async () => {
+  const rt = new Fake(mkdtempSync(path.join(tmpdir(), 'terminal-ack-'))),
+    task = { id: randomUUID() },
+    turn = { id: randomUUID(), prompt: 'original' };
+  let writes = 0,
+    reserves = 0;
+  rt.live.set(task.id, {
+    child: {
+      stdin: {
+        write() {
+          writes++;
+          rt.current = files(events(turn.prompt));
+          throw Error('terminal acknowledgement lost');
+        },
+      },
+    },
+  });
+  const reserve = async () => ({ allowed: true, count: ++reserves });
+  await assert.rejects(rt.execute(task, turn, reserve), /acknowledgement lost/);
+  assert.equal((await rt.execute(task, turn, reserve)).promptId, 'user');
+  assert.equal(writes, 1);
+  assert.equal(reserves, 1);
+});
 test('Three prompts use one session; cache/export retries never send an extra prompt', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'container-unit-')),
     rt = new Fake(root),

@@ -1,3 +1,4 @@
+import { base } from './fixtures/test-server.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { draftFromAI } from '../lib/human-review.ts';
@@ -6,7 +7,7 @@ const token = readFileSync('.dev.vars', 'utf8').match(
   )[1],
   ids = [];
 async function api(route, body, method = 'POST', auth = false) {
-  const res = await fetch('http://localhost:3000' + route, {
+  const res = await fetch(base + route, {
     method,
     headers: {
       'content-type': 'application/json',
@@ -172,9 +173,7 @@ try {
     'needs_revision',
   );
   await confirm('finalize', { draft: d });
-  const csv = await (
-    await fetch('http://localhost:3000/api/export?source=human')
-  ).text();
+  const csv = await (await fetch(base + '/api/export?source=human')).text();
   assert.match(csv, /人工复核（已有 AI 评估）/);
   assert.match(csv, /__HUMAN_CONFIRM_API__/);
   await confirm('receipt', {

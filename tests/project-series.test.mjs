@@ -10,6 +10,7 @@ import {
   projectCounts,
   canRepair,
   sessionTurns,
+  shouldFinishSession,
 } from '../lib/project-series.mjs';
 const root = (id, category = '0-1 代码生成') => ({
   id,
@@ -127,4 +128,43 @@ test('Weighted fresh questions respect accumulated counts and exclude standalone
     reserved: {},
   });
   assert.equal(c, '代码理解');
+});
+test('Completed sessions and mismatched containers cannot accept manual Bug follow-ups', () => {
+  const turn = { ...root('a'), sessionFinished: true };
+  const task = {
+    turns: [turn],
+    container: { status: 'running', questionId: 'a' },
+  };
+  assert.equal(canRepair(task, turn), false);
+  turn.sessionFinished = false;
+  assert.equal(canRepair(task, turn), true);
+  task.container.questionId = 'another';
+  assert.equal(canRepair(task, turn), false);
+  task.container.questionId = 'a';
+  task.closed = true;
+  assert.equal(canRepair(task, turn), false);
+});
+test('An unconfirmed third interaction survives automatic cleanup until resolved or explicitly excluded', () => {
+  const first = root('a'),
+    second = { ...root('b', 'Bug 修复'), questionRootId: 'a', repairOf: 'a' },
+    third = {
+      ...root('c', 'Bug 修复'),
+      questionRootId: 'a',
+      repairOf: 'b',
+      status: 'failed',
+    },
+    task = { turns: [first, second, third] };
+  assert.equal(shouldFinishSession(task), false);
+  third.claudeAttempts = Array(8).fill('attempt');
+  assert.equal(shouldFinishSession(task), false);
+  third.status = 'running';
+  assert.equal(shouldFinishSession(task), false);
+  third.status = 'review';
+  assert.equal(shouldFinishSession(task), true);
+  third.status = 'failed';
+  third.excluded = true;
+  assert.equal(shouldFinishSession(task), true);
+  third.recoveryBlocked = true;
+  assert.equal(shouldFinishSession(task), false);
+  assert.equal(shouldFinishSession({ turns: [] }), false);
 });

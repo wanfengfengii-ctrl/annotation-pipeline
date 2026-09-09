@@ -10,7 +10,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const token = readFileSync('.dev.vars', 'utf8').match(
   /^RUNNER_TOKEN=(.+)$/m,
 )[1];
-const base = process.env.PIPELINE_API_URL || 'http://localhost:3000';
+import { base } from './fixtures/test-server.mjs';
 const ids = [],
   batches = [];
 async function request(route, body, method = 'POST', auth = false) {
