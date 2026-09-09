@@ -2,6 +2,10 @@
 import { questionRoot } from '../../lib/question-session.mjs';
 import { permissionAuditVersion } from '../../lib/permission-audit.mjs';
 import { DockerRuntime } from '../../scripts/docker-runtime.mjs';
+import {
+  runtimeBrowserCache,
+  browserCacheMount,
+} from '../../scripts/runtime-browser-cache.mjs';
 import { InitialCodePublisher } from '../../scripts/initial-code-snapshot.mjs';
 import {
   initialCodeVersion,
@@ -15,6 +19,36 @@ import {
 import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { createHash } from 'node:crypto';
+runtimeBrowserCache.ensure = async ({ imageId, cacheRoot }) => {
+  const root = path.join(cacheRoot, 'fixture-browser-tools');
+  mkdirSync(root, { recursive: true });
+  const manifestPath = path.join(root, 'ready.json');
+  const logPath = path.join(root, 'build.log');
+  const manifest = JSON.stringify({
+    source: 'fixture',
+    imageId,
+    toolVersion: '1.55.0',
+  });
+  const log = 'synthetic browser cache preparation\n';
+  writeFileSync(manifestPath, manifest);
+  writeFileSync(logPath, log);
+  return {
+    root,
+    imageId,
+    platform: 'linux/arm64',
+    toolVersion: '1.55.0',
+    manifestPath,
+    manifestSha256: createHash('sha256').update(manifest).digest('hex'),
+    preparation: {
+      logPath,
+      logSha256: createHash('sha256').update(log).digest('hex'),
+    },
+    mountPath: browserCacheMount,
+    modulePath: browserCacheMount + '/tools/node_modules/playwright',
+    browsersPath: browserCacheMount + '/browsers',
+  };
+};
 os.cpus = () => Array(10).fill({ model: 'fixture' });
 os.totalmem = () => 32 * 2 ** 30;
 os.freemem = () => 16 * 2 ** 30;

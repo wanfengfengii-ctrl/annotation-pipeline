@@ -156,6 +156,7 @@ test('Runtime planning receives measured capabilities and Bash contract after is
   const calls = [];
   await assert.rejects(
     verifyRuntime({
+      browserCache: null,
       dir,
       workDir,
       turnId: 'turn',
@@ -189,7 +190,10 @@ test('Runtime planning receives measured capabilities and Bash contract after is
         assert.match(instruction, /受影响的自带测试未执行/);
         assert.match(instruction, /不强制所有项目使用 Playwright/);
         assert.match(instruction, /playwright install --only-shell chromium/);
-        assert.match(instruction, /系统依赖安装与浏览器二进制下载拆成不同 setup/);
+        assert.match(
+          instruction,
+          /系统依赖安装与浏览器二进制下载拆成不同 setup/,
+        );
         assert.match(instruction, /为实际业务 acceptance 留出时间预算/);
         assert.equal(calls.length, 2);
         assert.equal(calls[1][0], 'rm');
@@ -252,6 +256,7 @@ test('Probe failures leave capabilities unknown, skip planning and always attemp
     const calls = [];
     await assert.rejects(
       verifyRuntime({
+        browserCache: null,
         dir,
         workDir,
         turnId: 'turn',
@@ -607,7 +612,27 @@ test('Setup dependency failure remains blocked with bound probe evidence and unt
     };
   mkdirSync(workDir);
   writeFileSync(path.join(workDir, 'app.py'), 'print(1)\n');
+  const toolsRoot = path.join(dir, 'cache');
+  mkdirSync(toolsRoot);
+  writeFileSync(path.join(toolsRoot, 'ready.json'), '{}');
+  writeFileSync(path.join(toolsRoot, 'build.log'), 'cache smoke passed');
+  const browserCache = {
+    root: toolsRoot,
+    imageId: 'sha256:' + 'a'.repeat(64),
+    platform: 'linux/arm64',
+    toolVersion: '1.55.0',
+    mountPath: '/opt/annotation-runtime-tools',
+    modulePath: '/opt/annotation-runtime-tools/tools/node_modules/playwright',
+    browsersPath: '/opt/annotation-runtime-tools/browsers',
+    manifestPath: path.join(toolsRoot, 'ready.json'),
+    manifestSha256: dockerResult('{}').logSha256,
+    preparation: {
+      logPath: path.join(toolsRoot, 'build.log'),
+      logSha256: dockerResult('cache smoke passed').logSha256,
+    },
+  };
   const report = await verifyRuntime({
+    browserCache,
     dir,
     workDir,
     turnId: 'turn',
@@ -628,8 +653,21 @@ test('Setup dependency failure remains blocked with bound probe evidence and unt
         );
       return dockerResult('container', options);
     },
-    step: async (stage) => {
+    step: async (stage, instruction) => {
       if (stage === 'runtime-running') return;
+      if (stage === 'runtime-plan') {
+        assert.match(instruction, /Playwright 1\.55\.0/);
+        assert.match(instruction, /不在题目内重新下载/);
+        assert.match(instruction, /只读缓存不能安装、更新或清理/);
+        assert.doesNotMatch(
+          instruction,
+          /优先通过 npm 在 \/tmp 下的独立目录安装 Playwright/,
+        );
+        assert.doesNotMatch(
+          instruction,
+          /playwright install --only-shell chromium/,
+        );
+      }
       const tracePath = path.join(dir, stage + '.jsonl');
       writeFileSync(tracePath, '{}\n');
       return {
@@ -654,6 +692,35 @@ test('Setup dependency failure remains blocked with bound probe evidence and unt
   });
   assert.equal(report.status, 'blocked');
   assert.deepEqual(report.environmentProbe.capabilities, probeCapabilities);
+  const start = calls.find((args) =>
+    args.includes('annotation.verification=true'),
+  );
+  assert(
+    start.includes(
+      `type=bind,source=${toolsRoot},target=/opt/annotation-runtime-tools,readonly`,
+    ),
+  );
+  assert(
+    start.includes(
+      'PLAYWRIGHT_BROWSERS_PATH=/opt/annotation-runtime-tools/browsers',
+    ),
+  );
+  for (const [fileKey, hashKey] of [
+    ['recordPath', 'recordSha256'],
+    ['manifestPath', 'manifestSha256'],
+    ['buildLogPath', 'buildLogSha256'],
+  ]) {
+    const evidence = report.environmentProbe.browserCache;
+    assert(
+      evidence[fileKey].startsWith(path.dirname(report.reportPath) + path.sep),
+    );
+    assert.equal(
+      createHash('sha256')
+        .update(readFileSync(evidence[fileKey]))
+        .digest('hex'),
+      evidence[hashKey],
+    );
+  }
   assert.equal(report.checks.length, 1);
   assert.equal(report.checks[0].outcome, 'blocked');
   assert.equal(calls.filter((args) => args[0] === 'exec').length, 1);

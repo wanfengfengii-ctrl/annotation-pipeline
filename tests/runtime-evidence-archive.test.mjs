@@ -155,3 +155,106 @@ test('runtime archive rejects missing diagnosis views', (t) => {
   f.runtime.diagnosisEvidence.logs = [];
   assert.throws(f.archive, /诊断行号证据与验收日志数量不符/);
 });
+
+function addBrowserCache(t, f) {
+  const sharedRoot = mkdtempSync(path.join(tmpdir(), 'runtime-tool-cache-'));
+  t.after(() => rmSync(sharedRoot, { recursive: true, force: true }));
+  writeFileSync(path.join(sharedRoot, 'headless_shell'), 'browser binary');
+  const files = [
+    {
+      field: 'record',
+      name: 'usage.json',
+      bytes: Buffer.from(
+        JSON.stringify({ source: sharedRoot, readOnly: true }),
+      ),
+    },
+    {
+      field: 'manifest',
+      name: 'ready.json',
+      bytes: Buffer.from(
+        JSON.stringify({
+          smoke: {
+            passed: true,
+            toolVersion: '1.55.0',
+            browserVersion: 'fixture',
+          },
+          files: [{ path: 'headless_shell', sha256: hash('browser binary') }],
+        }),
+      ),
+    },
+    {
+      field: 'buildLog',
+      name: 'build.log',
+      bytes: Buffer.from(
+        'download 10%\rdownload 100%\nBROWSER_CACHE_SMOKE_PASSED\n',
+      ),
+    },
+  ];
+  const cache = { toolVersion: '1.55.0', platform: 'linux/arm64' };
+  for (const file of files) {
+    file.path = path.join(f.dir, 'browser-cache.' + file.name);
+    writeFileSync(file.path, file.bytes);
+    cache[file.field + 'Path'] = file.path;
+    cache[file.field + 'Sha256'] = hash(file.bytes);
+  }
+  f.runtime.environmentProbe.browserCache = cache;
+  // The report describes the exact task-local snapshots used by the archive.
+  const report = JSON.stringify(f.runtime);
+  writeFileSync(f.runtime.reportPath, report);
+  f.runtime.reportSha256 = hash(report);
+  return { cache, files, sharedRoot };
+}
+
+test('runtime archive freezes browser cache usage, ready proof and build log without binaries', (t) => {
+  const f = fixture(t),
+    browser = addBrowserCache(t, f);
+  const archive = f.archive();
+  const extract = (name) =>
+    execFileSync('tar', ['-xOzf', archive.archivePath, name]);
+  const manifest = JSON.parse(extract('manifest.json'));
+  const entries = manifest.files.filter((file) =>
+    file.name.startsWith('runtime/browser-cache/'),
+  );
+  assert.equal(entries.length, 3);
+  assert(!manifest.files.some((file) => file.name.includes('headless_shell')));
+  for (const file of browser.files) {
+    const name = 'runtime/browser-cache/' + file.name;
+    assert.deepEqual(extract(name), file.bytes);
+    assert.equal(
+      entries.find((entry) => entry.name === name).sha256,
+      hash(file.bytes),
+    );
+    assert.deepEqual(readFileSync(file.path), file.bytes);
+  }
+  assert.equal(
+    JSON.parse(extract('runtime/browser-cache/ready.json')).smoke.passed,
+    true,
+  );
+});
+
+for (const field of ['record', 'manifest', 'buildLog']) {
+  test('runtime archive rejects changed browser cache ' + field, (t) => {
+    const f = fixture(t),
+      { cache } = addBrowserCache(t, f);
+    writeFileSync(cache[field + 'Path'], 'modified cache evidence');
+    assert.throws(f.archive, /交付证据摘要不一致/);
+  });
+}
+
+test('runtime archive does not accept shared cache paths instead of task-local snapshots', (t) => {
+  const f = fixture(t),
+    { cache, files, sharedRoot } = addBrowserCache(t, f);
+  cache.manifestPath = path.join(sharedRoot, 'ready.json');
+  writeFileSync(
+    cache.manifestPath,
+    files.find((file) => file.field === 'manifest').bytes,
+  );
+  assert.throws(f.archive, /独立验收附加证据无效/);
+});
+
+test('runtime archive rejects browser cache use without build evidence', (t) => {
+  const f = fixture(t),
+    { cache } = addBrowserCache(t, f);
+  delete cache.buildLogSha256;
+  assert.throws(f.archive, /独立验收附加证据无效/);
+});

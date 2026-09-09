@@ -141,6 +141,15 @@ export function createEvidenceArchive({
         'runtime/environment-probe.log',
         probe.logSha256,
       );
+      if (probe.browserCache) {
+        const cache = probe.browserCache;
+        for (const [file, sha256, name] of [
+          [cache.recordPath, cache.recordSha256, 'usage.json'],
+          [cache.manifestPath, cache.manifestSha256, 'ready.json'],
+          [cache.buildLogPath, cache.buildLogSha256, 'build.log'],
+        ])
+          addRuntimeEvidence(file, 'runtime/browser-cache/' + name, sha256);
+      }
     }
     if (runtime.diagnosisEvidence) {
       const { logs } = runtime.diagnosisEvidence;

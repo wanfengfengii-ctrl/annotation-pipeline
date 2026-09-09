@@ -47,6 +47,7 @@ import {
   verifyRuntime,
   reuseRuntimeVerification,
 } from './runtime-verification.mjs';
+import { runtimeRetryContext } from './runtime-retry-context.mjs';
 import {
   runtimeVersion,
   runtimeRepairEvidence,
@@ -722,6 +723,11 @@ async function execute({ task, turn }) {
         (await verifyRuntime({
           ...runtimeContext,
           turnId: turn.id + '.attempt-' + cached.attempt,
+          retryContext: runtimeRetryContext(cached.runtimeVerification, {
+            ...runtimeContext,
+            taskId: task.id,
+            turnId: turn.id,
+          }),
           step,
           onChild,
         }));
