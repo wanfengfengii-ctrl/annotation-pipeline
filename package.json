@@ -13,6 +13,7 @@
     "format": "oxfmt",
     "db:generate": "drizzle-kit generate",
     "runner": "node scripts/runner.mjs",
+    "api:local": "node scripts/local-api.mjs",
     "context:check": "node scripts/context-check.mjs",
     "db:local": "wrangler d1 execute DB --local --config wrangler.local.json --file drizzle/0000_dusty_viper.sql"
   },

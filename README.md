@@ -20,6 +20,8 @@ npm run runner
 
 打开 http://localhost:3000。填写任务目标、本机 Git 仓库绝对路径，点击“创建并启动流水线”。Codex 自动识别题型、难度、技术栈及验收条件，生成交给 Claude 的 Prompt。后续可追加目标，同项目 0-1 和 Feature 各最多十题，每会话最多初始题加两轮 Bug 修复；失败的 Claude 调用和已排除轮次仍占额度，不能靠重试或排除绕过上限。
 
+常驻运行已构建的页面服务时，使用 `API_WORK_ROOT=/原仓库绝对路径 API_RELEASE_DIR=/包含dist的不可变发布目录 npm run api:local`。服务沿用原仓库 `.wrangler/state` 数据库，关闭开发调试代理、文件监听和热更新，避免无人连接 DevTools 时调试代理持续缓存网络响应。监护每 10 秒检查一次本机接口，连续三次失败后只重启自己启动的 API 进程；首次启动有 60 秒宽限，连续故障按 10 秒至 5 分钟退避。已有外部服务或未知端口占用时不会接管或终止它。状态和锁位于 `.runner/local-api.json` 与 `.runner/local-api.lock`，不影响 Claude 终端与作业容器。
+
 每道独立题目由可见 Mac Terminal 启动交互式 Claude，新建容器，绑定全新且完全为空的 `.runner/<task-id>/questions/<question-id>/workspace` 到 `/workspace`。容器启动后，首题由 Codex 生成并安装最小项目骨架，后续题从上一题已核验的归档导入代码，记录来源清单和 SHA-256；不会导入 CLI 配置。只有 Bug 修复使用当前交互进程，最多两轮修复，合计三条对话，每会话累计调用最多十次。容器不使用 `--rm`，不 start/restart、不使用 continue/resume 参数。
 
 ## 自动补充与并发
