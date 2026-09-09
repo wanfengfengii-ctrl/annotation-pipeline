@@ -5,17 +5,31 @@ export function db() {
 }
 export async function all() {
   const { results } = await db()
-    .prepare('SELECT data, revision FROM tasks ORDER BY created_at DESC')
-    .all<{ data: string; revision: number }>();
-  return results.map((r) => ({ ...JSON.parse(r.data), revision: r.revision }));
+    .prepare(
+      "SELECT t.data, t.revision, printf('nyh-%05d', n.sequence) project_name FROM tasks t JOIN project_names n ON n.task_id=t.id ORDER BY t.created_at DESC",
+    )
+    .all<{ data: string; revision: number; project_name: string }>();
+  return results.map((r) => ({
+    ...JSON.parse(r.data),
+    projectName: r.project_name,
+    revision: r.revision,
+  }));
 }
 export async function get(id: string) {
   const row = await db()
-    .prepare('SELECT data, revision FROM tasks WHERE id=?')
+    .prepare(
+      "SELECT t.data, t.revision, printf('nyh-%05d', n.sequence) project_name FROM tasks t JOIN project_names n ON n.task_id=t.id WHERE t.id=?",
+    )
     .bind(id)
-    .first<{ data: string; revision: number }>();
+    .first<{ data: string; revision: number; project_name: string }>();
   return row
-    ? { task: JSON.parse(row.data) as Task, revision: row.revision }
+    ? {
+        task: {
+          ...JSON.parse(row.data),
+          projectName: row.project_name,
+        } as Task,
+        revision: row.revision,
+      }
     : null;
 }
 export async function save(task: Task, revision: number) {

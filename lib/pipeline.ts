@@ -171,6 +171,7 @@ export type Turn = {
   };
 };
 export type Task = {
+  projectName?: string;
   initialCodeSnapshots?: Record<
     string,
     {

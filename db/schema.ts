@@ -51,3 +51,9 @@ export const exportItems = sqliteTable(
     index('export_items_turn_idx').on(t.taskId, t.turnId),
   ],
 );
+
+// Stable project numbers survive task edits and are never reused after deletion.
+export const projectNames = sqliteTable('project_names', {
+  sequence: integer('sequence').primaryKey({ autoIncrement: true }),
+  taskId: text('task_id').notNull().unique(),
+});

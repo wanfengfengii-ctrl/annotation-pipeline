@@ -183,7 +183,7 @@ export function recordRow(
   return {
     taskId: t.id,
     turnId: r.id,
-    title: t.title,
+    title: t.projectName ? `${t.projectName} · ${t.title}` : t.title,
     values,
     source,
     exportCount,

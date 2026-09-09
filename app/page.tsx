@@ -279,7 +279,7 @@ export default function Home() {
   const filtered = tasks.filter(
     (t) =>
       (!query ||
-        `${t.title} ${t.stack} ${t.repoPath}`
+        `${t.projectName || ''} ${t.title} ${t.stack} ${t.repoPath}`
           .toLowerCase()
           .includes(query.toLowerCase())) &&
       (filter === '全部状态' || status(t) === filter),
@@ -502,10 +502,10 @@ export default function Home() {
                             className="row-title"
                             onClick={() => setSelected(t.id)}
                           >
-                            {t.title}
+                            {t.projectName || t.title}
                           </button>
                           <div className="sub">
-                            {t.category} · {recordStack(t.stack)} ·{' '}
+                            {t.title} · {t.category} · {recordStack(t.stack)} ·{' '}
                             {t.difficulty}
                           </div>
                         </TableCell>
@@ -616,7 +616,7 @@ export default function Home() {
                       .map(({ t, r }) => (
                         <TableRow key={r.id}>
                           <TableCell>
-                            {t.title}
+                            {t.projectName || t.title}
                             <p className="sub">
                               {recordRound(roundNumber(t, r))} · {r.category}
                             </p>
@@ -664,7 +664,9 @@ export default function Home() {
                     {turns.map(({ t, r }) => (
                       <TableRow key={r.id}>
                         <TableCell>
-                          <span className="row-title">{t.title}</span>
+                          <span className="row-title">
+                            {t.projectName || t.title}
+                          </span>
                           <div className="sub">
                             第 {t.turns.indexOf(r) + 1} 次交互 · {r.category}
                           </div>
@@ -974,10 +976,10 @@ function TaskDetail({
     <div className="detail">
       <p className="eyebrow">TASK / {t.id.slice(0, 8)}</p>
       <SheetTitle style={{ fontSize: 24, marginTop: 12, marginRight: 30 }}>
-        {t.title}
+        {t.projectName || t.title}
       </SheetTitle>
       <SheetDescription className="sub">
-        {recordStack(t.stack)} · {t.category} · {t.difficulty}
+        {t.title} · {recordStack(t.stack)} · {t.category} · {t.difficulty}
       </SheetDescription>
       <div className="actions" style={{ margin: '16px 0' }}>
         <Badge value={status(t)} />

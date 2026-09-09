@@ -1,5 +1,5 @@
 import { seriesVersion } from '@/lib/project-series.mjs';
-import { all, db, failure, protect, text } from '@/db/store';
+import { all, get, db, failure, protect, text } from '@/db/store';
 import { categories, difficulties, type Task } from '@/lib/pipeline';
 export async function GET() {
   try {
@@ -77,7 +77,7 @@ export async function POST(req: Request) {
       .prepare('INSERT INTO tasks(id,data,created_at) VALUES(?,?,?)')
       .bind(task.id, JSON.stringify(task), task.createdAt)
       .run();
-    return Response.json({ task }, { status: 201 });
+    return Response.json({ task: (await get(task.id))!.task }, { status: 201 });
   } catch (e) {
     return failure(e);
   }
