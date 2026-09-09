@@ -3,7 +3,18 @@ import type { Task } from '@/lib/pipeline';
 export function db() {
   return (env as unknown as { DB: D1Database }).DB;
 }
+export async function ensureProjectNames() {
+  // Allocate missing legacy names atomically in creation order. Existing mappings
+  // are never rewritten, including after edits, retries or task deletion.
+  await db()
+    .prepare(`INSERT INTO project_names(task_id)
+    SELECT id FROM tasks WHERE NOT EXISTS
+    (SELECT 1 FROM project_names WHERE task_id=tasks.id)
+    ORDER BY created_at ASC, id ASC`)
+    .run();
+}
 export async function all() {
+  await ensureProjectNames();
   const { results } = await db()
     .prepare(
       "SELECT t.data, t.revision, printf('nyh-%05d', n.sequence) project_name FROM tasks t JOIN project_names n ON n.task_id=t.id ORDER BY t.created_at DESC",
@@ -16,6 +27,7 @@ export async function all() {
   }));
 }
 export async function get(id: string) {
+  await ensureProjectNames();
   const row = await db()
     .prepare(
       "SELECT t.data, t.revision, printf('nyh-%05d', n.sequence) project_name FROM tasks t JOIN project_names n ON n.task_id=t.id WHERE t.id=?",

@@ -1,5 +1,13 @@
 import { seriesVersion } from '@/lib/project-series.mjs';
-import { all, get, db, failure, protect, text } from '@/db/store';
+import {
+  all,
+  get,
+  ensureProjectNames,
+  db,
+  failure,
+  protect,
+  text,
+} from '@/db/store';
 import { categories, difficulties, type Task } from '@/lib/pipeline';
 export async function GET() {
   try {
@@ -73,6 +81,7 @@ export async function POST(req: Request) {
     if (task.turns[0]) task.turns[0].questionRootId = task.turns[0].id;
     if (!task.repoPath.startsWith('/'))
       throw new Error('仓库路径需为本机绝对路径');
+    await ensureProjectNames();
     await db()
       .prepare('INSERT INTO tasks(id,data,created_at) VALUES(?,?,?)')
       .bind(task.id, JSON.stringify(task), task.createdAt)

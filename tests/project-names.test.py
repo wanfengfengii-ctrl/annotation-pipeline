@@ -15,6 +15,7 @@ class ProjectNamesTest(unittest.TestCase):
                 c.execute('CREATE TABLE tasks(id TEXT PRIMARY KEY, created_at TEXT, data TEXT)')
                 c.executemany('INSERT INTO tasks VALUES(?,?,?)', [('later','2026-09-10','{}'),('first','2026-09-09','{}')])
                 c.executescript((ROOT / 'drizzle/0003_certain_rogue.sql').read_text())
+                c.execute("INSERT INTO project_names(task_id) SELECT id FROM tasks WHERE NOT EXISTS (SELECT 1 FROM project_names WHERE task_id=tasks.id) ORDER BY created_at,id")
                 self.assertEqual(c.execute("SELECT task_id, printf('nyh-%05d',sequence) FROM project_names ORDER BY sequence").fetchall(), [('first','nyh-00001'),('later','nyh-00002')])
             def create(i):
                 with sqlite3.connect(db, timeout=10) as c:
