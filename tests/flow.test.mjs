@@ -67,6 +67,11 @@ try {
   );
   assert.equal(t.turns.flatMap((r) => r.claudeAttempts).length, 32);
   assert.equal(calls(f).filter((e) => e.name === 'scaffold').length, 1);
+  assert.equal(
+    calls(f).filter((e) => e.name === 'snapshot').length,
+    22,
+    '独立会话核验一次初始快照，评分重试和同会话 Bug 追问不拿产物重新比较骨架',
+  );
   assert.deepEqual(
     ['0-1 代码生成', 'Feature 迭代', 'Bug 修复', '代码理解', '代码重构'].map(
       (c) => t.turns.slice(0, 26).filter((r) => r.category === c).length,

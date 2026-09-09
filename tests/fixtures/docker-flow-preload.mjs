@@ -150,6 +150,14 @@ DockerRuntime.prototype.environmentEvidence = function (task, turn) {
     source: 'synthetic fixture',
     taskId: task.id,
     questionId: s.questionId,
+    containerId: s.questionId,
+    imageId: s.imageId,
+    snapshot: s.snapshot,
+    workDir: s.workDir,
+    mount: { source: s.workDir, destination: '/workspace', writable: true },
+    isolationVerified: true,
+    permissionPreflight: { passed: true },
+    terminalIdentity: s.terminalIdentity,
     running: true,
   };
 };

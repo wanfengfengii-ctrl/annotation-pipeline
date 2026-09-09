@@ -44,7 +44,7 @@ test('规则升级保留正在终端执行的原题，旧题不追溯套格式�
   );
 });
 
-test('题目使用编号标题和一至两段正文，不追加项目路径；点评保留独立格式', () => {
+test('题目使用无编号的项目名称和一至两段正文，不追加项目路径；点评保留独立格式', () => {
   const prompt = fixture.question();
   const checked = checkWriting('prepare', {
     prompt: '“' + prompt + '”',
@@ -71,16 +71,18 @@ test('首题、准备、迭代和 Bug 追问统一检查长度、段落、语气
   for (const stage of ['generate', 'prepare', 'next', 'project-next']) {
     assert.deepEqual(
       checkWriting(stage, {
-        prompt: fixture.question(12),
+        prompt: fixture.question('投递结果对照工作台'),
         action: 'repair',
         reason: '现有结果与预期不一致',
       }).issues,
       [],
     );
     for (const prompt of [
+      '1、' + fixture.question(),
+      '第十二题 ' + fixture.question(),
       '只有一个概念',
-      '1、项目\n短需求',
-      '1、项目\n' + '需'.repeat(261),
+      '项目\n短需求',
+      '项目\n' + '需'.repeat(261),
       fixture.question().replace('网页工作台', '网页工作台，可能需要'),
       fixture.question().replace('网页工作台', '网页工作台，竟然'),
       fixture.question().replace('网页工作台', '网页工作台“联调”'),
@@ -100,7 +102,8 @@ test('首题、准备、迭代和 Bug 追问统一检查长度、段落、语气
     assert.match(writingInstructions(stage), /Feature/);
   }
   for (const n of [180, 260])
-    assert.deepEqual(questionIssues('1、测试\n' + '需'.repeat(n)), []);
+    assert.deepEqual(questionIssues('测试\n' + '需'.repeat(n)), []);
+  assert.deepEqual(questionIssues(fixture.question('3D 展示方案对照台')), []);
   assert.ok(
     checkWriting('project-next', {
       action: 'complete',

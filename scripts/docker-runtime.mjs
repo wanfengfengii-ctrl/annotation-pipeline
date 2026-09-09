@@ -24,6 +24,7 @@ import {
   verifyPermissionPreflight,
 } from '../lib/permission-audit.mjs';
 import { questionRoot, priorQuestionTurn } from '../lib/question-session.mjs';
+import { terminalConfirmation } from '../lib/terminal-confirmation.mjs';
 import {
   containerImage,
   containerPolicyVersion,
@@ -661,6 +662,8 @@ export class DockerRuntime {
       if (!this.owned(s).State.Running)
         throw Error('容器交互已退出，保留容器供导出；不恢复或重发题目');
       const native = readNativeTurn(this.native(s), turn.prompt, p.previousIds);
+      if (!native?.complete)
+        await this.confirmLocalCommand(s, task, turn, native);
       if (native?.complete) {
         if (s.sessionId && s.sessionId !== native.sessionId)
           throw Error('同一容器的会话 ID 发生变化');
@@ -712,6 +715,64 @@ export class DockerRuntime {
     throw Error(
       '本轮未确认结束；已保留容器和调用额度，重试只核对原交互，不重发题目',
     );
+  }
+  async confirmLocalCommand(s, task, turn, native) {
+    const live = this.live.get(s.taskId);
+    if (!live || live.child.exitCode !== null) return;
+    const candidate = terminalConfirmation(
+      live.output,
+      native,
+      task.projectSeries?.directory,
+    );
+    if (!candidate) return;
+    const records = (s.terminalConfirmations ||= {});
+    if (records[candidate.toolUseId]) return; // Persist-before-input prevents duplicate confirmations on restart.
+    const record = (records[candidate.toolUseId] = {
+      toolUseId: candidate.toolUseId,
+      commandSha256: hash(candidate.command),
+      source: 'runner / existing Mac Terminal',
+      rule: 'local-compound-command-v1',
+      reason: candidate.reason,
+      status: candidate.allowed ? 'reserved' : 'needs_review',
+      detectedAt: new Date().toISOString(),
+    });
+    await this.publish(s);
+    if (!candidate.allowed) return;
+    this.owned(s);
+    if (!this.permissionPreflight(s).passed)
+      throw Error('确认前权限预检未通过');
+    // Re-read both UI and native evidence immediately before selecting the
+    // visible first option. Never choose the persistent “don't ask again” item.
+    const current = readNativeTurn(
+      this.native(s),
+      turn.prompt,
+      s.pending?.previousIds || [],
+    );
+    const check = terminalConfirmation(
+      live.output,
+      current,
+      task.projectSeries?.directory,
+    );
+    if (
+      !check?.allowed ||
+      check.toolUseId !== candidate.toolUseId ||
+      hash(check.command) !== record.commandSha256
+    ) {
+      record.status = 'screen_changed';
+      await this.publish(s);
+      return;
+    }
+    try {
+      await live.child.stdin.write('\r');
+      record.status = 'confirmed';
+      record.confirmedAt = new Date().toISOString();
+      record.choice = 'Yes / this command only';
+    } catch (e) {
+      record.status = 'input_unconfirmed';
+      await this.publish(s);
+      throw e;
+    }
+    await this.publish(s);
   }
   async close(taskId) {
     const s = this.load(taskId);

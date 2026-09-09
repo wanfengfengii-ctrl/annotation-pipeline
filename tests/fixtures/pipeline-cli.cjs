@@ -119,13 +119,13 @@ process.stdin.on('end', () => {
     },
     generate: {
       title: '__DOCKER_AUTO__' + Date.now(),
-      prompt: question(1, 'Synthetic independent project'),
+      prompt: question('Synthetic independent project'),
       category: '0-1 代码生成',
       difficulty: '中等',
       stack: 'fixture',
     },
     prepare: {
-      prompt: question(count + 1, 'Synthetic prepared goal ' + count),
+      prompt: question('Synthetic prepared goal ' + count),
       category:
         JSON.parse(fs.readFileSync(schema, 'utf8')).properties.category
           ?.enum?.[0] || '代码测试',
@@ -188,7 +188,7 @@ process.stdin.on('end', () => {
       prompt:
         process.env.FIXTURE_STOP_PROJECT || !cats[count]
           ? '无'
-          : question(count + 1, 'Synthetic project round ' + (count + 1)),
+          : question('Synthetic project round ' + (count + 1)),
       category: cats[count] || 'Feature 迭代',
       difficulty: '中等',
       reason: 'synthetic file evidence',

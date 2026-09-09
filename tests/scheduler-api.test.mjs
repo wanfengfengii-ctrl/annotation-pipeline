@@ -144,7 +144,7 @@ try {
       version: '2026-09-08.project1',
       directory: 'projects/p-' + crypto.randomUUID(),
     },
-    prompt: fixture.question(1, 'Synthetic generated task'),
+    prompt: fixture.question('Synthetic generated task'),
     tracePath: '/synthetic/generate.jsonl',
     fingerprint: fingerprint(draft.repoPath, 'Synthetic generated task'),
   };
@@ -168,7 +168,7 @@ try {
       await run({
         ...payload,
         fingerprint: fingerprint(draft.repoPath, 'next'),
-        prompt: fixture.question(1, 'next'),
+        prompt: fixture.question('next'),
       })
     ).skipped,
     'nonempty queue must block supply',
@@ -178,7 +178,7 @@ try {
     ...payload,
     title: '__SCHEDULER_TEST__auto2',
     fingerprint: fingerprint(draft.repoPath, 'next'),
-    prompt: fixture.question(1, 'next'),
+    prompt: fixture.question('next'),
   });
   remember({ id: second.taskId });
   await finish((await run({ action: 'claim', capacity: 3 })).job);
@@ -187,7 +187,7 @@ try {
       await run({
         ...payload,
         fingerprint: fingerprint(draft.repoPath, 'third'),
-        prompt: fixture.question(1, 'third'),
+        prompt: fixture.question('third'),
       })
     ).skipped,
     'daily quota must hold',
@@ -198,7 +198,7 @@ try {
       await run({
         ...payload,
         fingerprint: fingerprint(draft.repoPath, 'paused'),
-        prompt: fixture.question(1, 'paused'),
+        prompt: fixture.question('paused'),
       })
     ).skipped,
   );

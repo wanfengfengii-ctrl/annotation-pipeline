@@ -116,7 +116,7 @@ export async function POST(req: Request) {
         requireQuestionStyle: true,
       });
       if (typeof b.prompt !== 'string' || questionIssues(b.prompt).length)
-        throw Error('自动题目不符合当前编号、正文长度或表达要求');
+        throw Error('自动题目不符合当前标题、正文长度或表达要求');
       if (b.difficulty !== b.policyAudit.value.assessedDifficulty)
         throw Error('题目难度与独立审核等级不一致');
       const now = new Date().toISOString(),

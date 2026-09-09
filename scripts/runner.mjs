@@ -12,6 +12,7 @@ import { workflow, scoreInstructions, nextDecision } from '../lib/workflow.mjs';
 import { questionIssues } from '../lib/writing-style.mjs';
 import { questionRules } from '../lib/question-writing.mjs';
 import { questionCacheState } from '../lib/question-cache.mjs';
+import { resumeInitialSnapshot } from '../lib/snapshot-resume.mjs';
 import { harnessInstructions } from '../lib/harness.mjs';
 import { DockerRuntime, dockerStatus } from './docker-runtime.mjs';
 import { permissionIssues } from '../lib/permission-audit.mjs';
@@ -248,7 +249,7 @@ async function execute({ task, turn }) {
 本轮产物轨迹：${result.tracePath}
 本轮评分：${JSON.stringify(result.review)}
 已有题目（禁止实质重复）：${JSON.stringify(task.turns.map((r) => ({ category: r.category, prompt: r.requestedPrompt || r.prompt })))}
-读取真实项目目录和测试/错误轨迹，有具体缺陷且当前会话未达到两轮修复时才 action=repair、category=Bug 修复，这会在当前终端追问。不能把未完成的新功能或截断续写改叫 Bug，不生成 action=continue。基础可用后 action=advance，独立新题必须使用已按比例分配的 ${allocatedCategory || '无新题额度，应结束项目'} 类别，不能自行切换类别；新建此前不存在的功能算 0-1，修改已有能力算 Feature。同项目这两类各最多十题。理解与重构按 7:7:10:1:1 的累计目标选择。projectEvidence 写实际文件、现象和新功能与现有功能的边界；baseComplete 反映实际状态。修复达到两轮仍未解决时 needs_input，不换新窗口规避修复上限；所有任务充分覆盖或题额用完时 complete。新题编号为 ${task.turns.length + 1}，prompt 按编号＋项目名称、180 至 260 字正文和 1 至 2 个自然段输出。修复说明真实现象与预期，迭代说明已有能力与本次变化，不使用模板或编造人工检查经历。结束时 prompt 写无。`,
+读取真实项目目录和测试/错误轨迹，有具体缺陷且当前会话未达到两轮修复时才 action=repair、category=Bug 修复，这会在当前终端追问。不能把未完成的新功能或截断续写改叫 Bug，不生成 action=continue。基础可用后 action=advance，独立新题必须使用已按比例分配的 ${allocatedCategory || '无新题额度，应结束项目'} 类别，不能自行切换类别；新建此前不存在的功能算 0-1，修改已有能力算 Feature。同项目这两类各最多十题。理解与重构按 7:7:10:1:1 的累计目标选择。projectEvidence 写实际文件、现象和新功能与现有功能的边界；baseComplete 反映实际状态。修复达到两轮仍未解决时 needs_input，不换新窗口规避修复上限；所有任务充分覆盖或题额用完时 complete。prompt 以项目名称开头，不加编号，按项目名称、180 至 260 字正文和 1 至 2 个自然段输出。修复说明真实现象与预期，迭代说明已有能力与本次变化，不使用模板或编造人工检查经历。结束时 prompt 写无。`,
         result.workDir,
         { allocation: { category: allocatedCategory } },
       );
@@ -261,7 +262,7 @@ async function execute({ task, turn }) {
     ) {
       const next = await step(
         'next',
-        `只读判断是否需要下一轮。会话最初目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}\n本轮原始目标：${turn.requestedPrompt || turn.prompt}\n完整验收任务：${result.evaluationPrompt}\n轨迹：${result.tracePath}\n产物目录：${result.workDir}\n本轮评价：${JSON.stringify(result.review)}\n执行结果类型：${result.executionOutcome || 'complete'}\n仅对本题未完成部分或已发现 Bug 提出具体修复，不增加无关功能。需要用户凭据、付费、外部访问或关键决策时 needs_input。完成时 complete；截断未完成时 needs_input；已证实产物问题且本会话未到两轮修复时 repair。prompt 必须是可执行的下一轮完整指令，complete/needs_input 时写“无”。reason 给出实际依据。每个会话最多初始题加两轮 Bug 修复，共三条对话，累计调用最多十次。新题编号为 ${task.turns.length + 1}。Bug prompt 同样按编号、项目名称和 180 至 260 字的 1 至 2 段正文输出，围绕现有网页流程说明具体问题及预期，不增加无关功能，不允许只写继续。`,
+        `只读判断是否需要下一轮。会话最初目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}\n本轮原始目标：${turn.requestedPrompt || turn.prompt}\n完整验收任务：${result.evaluationPrompt}\n轨迹：${result.tracePath}\n产物目录：${result.workDir}\n本轮评价：${JSON.stringify(result.review)}\n执行结果类型：${result.executionOutcome || 'complete'}\n仅对本题未完成部分或已发现 Bug 提出具体修复，不增加无关功能。需要用户凭据、付费、外部访问或关键决策时 needs_input。完成时 complete；截断未完成时 needs_input；已证实产物问题且本会话未到两轮修复时 repair。prompt 必须是可执行的下一轮完整指令，complete/needs_input 时写“无”。reason 给出实际依据。每个会话最多初始题加两轮 Bug 修复，共三条对话，累计调用最多十次。Bug prompt 不加编号，同样按项目名称和 180 至 260 字的 1 至 2 段正文输出，围绕现有网页流程说明具体问题及预期，不增加无关功能，不允许只写继续。`,
         result.workDir,
       );
       if (
@@ -385,7 +386,7 @@ async function execute({ task, turn }) {
       });
       preparation = await step(
         'prepare',
-        `${seriesPrompt(task)}\n本题已分配分类：${turn.category}，category 必须保持该值，准备阶段不能更换题型。\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n当前容器内工作目录固定为 /workspace，容器已启动，项目骨架或上题归档代码已准备好，宿主机参考仓库不在容器里。0-1 在该项目内实现全新功能，Feature 迭代现有能力。请读取当前任务目录，准备交给 Claude 的任务 prompt、分类、难度、技术栈和验收条件。题目编号为 ${index + 1}，正文用 180 至 260 字自然描述网页业务，原始题目措辞不是格式模板。保留业务目标和必要边界，不擅自增加业务需求；当前目录、权限、评测来源和技术实现细节不附加到 prompt。详细验收步骤放入 acceptance，正文保留用户可见的验收行为。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions()}`,
+        `${seriesPrompt(task)}\n本题已分配分类：${turn.category}，category 必须保持该值，准备阶段不能更换题型。\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n当前容器内工作目录固定为 /workspace，容器已启动，项目骨架或上题归档代码已准备好，宿主机参考仓库不在容器里。0-1 在该项目内实现全新功能，Feature 迭代现有能力。请读取当前任务目录，准备交给 Claude 的任务 prompt、分类、难度、技术栈和验收条件。题目首行只写项目名称，不加编号，正文用 180 至 260 字自然描述网页业务，原始题目措辞不是格式模板。保留业务目标和必要边界，不擅自增加业务需求；当前目录、权限、评测来源和技术实现细节不附加到 prompt。详细验收步骤放入 acceptance，正文保留用户可见的验收行为。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions()}`,
         task.workDir || task.repoPath,
         { allocation: { category: turn.category } },
       );
@@ -475,13 +476,32 @@ async function execute({ task, turn }) {
         JSON.stringify(environmentEvidence, null, 2),
         { mode: 0o600 },
       );
-      const snap = await step(
-        'snapshot',
-        `只读检查容器任务的环境证据：${JSON.stringify(container)}。执行器已在本阶段开始前通过 Docker CLI 实时核验容器身份、镜像、运行状态、唯一工作区挂载和隔离配置，任一项不符会由程序直接中止。脱敏核验文件：${environmentPath}，内容：${JSON.stringify(environmentEvidence)}。你的只读环境不能访问 Docker socket，不执行 Docker、容器控制、终端探测或其他运行环境命令；容器实时状态引用执行器核验结果，不重复探测。你负责读取当前绑定挂载目录及初始代码清单，核对代码摘要、依赖声明和启动说明。容器从指定镜像和空 /workspace 启动，再导入系统准备的项目骨架或上题冻结的代码；初始代码以 scaffoldSnapshot 或 sourceSnapshot 证据为准。ready 表示环境及初始代码证据是否可用于开始本题，不表示业务功能已完成。首题骨架的 NotImplementedError 和跳过的占位测试属于预期，不因此拒绝环境就绪；不在此阶段启动业务服务或运行验收测试。不要要求根目录有 Git，不得修改、提交或推送。head 返回镜像摘要，remote 返回镜像名称。environmentLevel 只能是 ${workflow.environmentLevels.join('；')}。列出依赖、启动方法和真实核验范围；镜像固定不代表外部服务及后续下载的依赖已经冻结，不得编造运行结果。`,
-        task.workDir || cached.claude.workDir,
-      );
-      snap.environmentEvidence = environmentEvidence;
-      snap.environmentEvidencePath = environmentPath;
+      const runtimeState = containers.load(task.id);
+      const alreadySent =
+        cached.claude?.success ||
+        runtimeState?.results?.[turn.id] ||
+        (runtimeState?.pending?.turnId === turn.id &&
+          runtimeState.pending.phase === 'sent');
+      const preserveInitialSnapshot = alreadySent || !!turn.repairOf;
+      const initialSnapshot =
+        cached.snapshot ||
+        (turn.repairOf &&
+          task.turns.find((r) => r.id === turn.repairOf)?.automation?.snapshot);
+      const snap = preserveInitialSnapshot
+        ? resumeInitialSnapshot(
+            initialSnapshot,
+            environmentEvidence,
+            environmentPath,
+          )
+        : await step(
+            'snapshot',
+            `只读检查容器任务的环境证据：${JSON.stringify(container)}。执行器已在本阶段开始前通过 Docker CLI 实时核验容器身份、镜像、运行状态、唯一工作区挂载和隔离配置，任一项不符会由程序直接中止。脱敏核验文件：${environmentPath}，内容：${JSON.stringify(environmentEvidence)}。你的只读环境不能访问 Docker socket，不执行 Docker、容器控制、终端探测或其他运行环境命令；容器实时状态引用执行器核验结果，不重复探测。你负责读取当前绑定挂载目录及初始代码清单，核对代码摘要、依赖声明和启动说明。容器从指定镜像和空 /workspace 启动，再导入系统准备的项目骨架或上题冻结的代码；初始代码以 scaffoldSnapshot 或 sourceSnapshot 证据为准。ready 表示环境及初始代码证据是否可用于开始本题，不表示业务功能已完成。首题骨架的 NotImplementedError 和跳过的占位测试属于预期，不因此拒绝环境就绪；不在此阶段启动业务服务或运行验收测试。不要要求根目录有 Git，不得修改、提交或推送。head 返回镜像摘要，remote 返回镜像名称。environmentLevel 只能是 ${workflow.environmentLevels.join('；')}。列出依赖、启动方法和真实核验范围；镜像固定不代表外部服务及后续下载的依赖已经冻结，不得编造运行结果。`,
+            task.workDir || cached.claude.workDir,
+          );
+      if (!preserveInitialSnapshot) {
+        snap.environmentEvidence = environmentEvidence;
+        snap.environmentEvidencePath = environmentPath;
+      }
       if (!snap.value.ready)
         throw Error('Codex 环境检查未通过：' + snap.value.notes.join('；'));
       // The reference repository is never mounted into the container or presented as its initial state.
@@ -828,7 +848,7 @@ try {
           dir: supplyDir,
           turnId: randomUUID(),
           onChild: track,
-          prompt: `Codex 负责先生成通用项目骨架，再设计该项目首个全新功能，Claude 在可见终端中实现该功能。首题 category 必须为 0-1 代码生成。只读分析当前仓库，仅将其作为出题参考，Claude 在新容器 /workspace 中已准备好的最小骨架上工作，容器不可访问参考仓库。在相对目录 ${projectSeries.directory} 的项目骨架内设计此前不存在的全新功能，不修改该目录外业务。完整首题应交付能运行的全新功能及验证方法，后续在同项目继续出全新功能、Feature 迭代、真实 Bug 修复、理解和重构题，目标比例 7:7:10:1:1；0-1 与 Feature 各最多十题。出题范围：${context.config.scope}\n今日已完成及排队题型分布：${JSON.stringify(context.mix)}。新项目首题始终为 0-1；类型分布在同项目的后续题中调节。\n${policyInstructions()}\n不要重复或改写已有题目：${JSON.stringify(history)}\n禁止依赖其他自动任务的改动。不要提出需要外部付费、发布、推送或外部消息的任务。不执行此任务，只返回具体任务目标和验收要求。title 使用简洁项目名称，最多 200 字；prompt 从 1、项目名称 开始，正文 180 至 260 字、1 至 2 段；stack 最多 300 字，只记录适合业务的建议，不把实现偏好强加为题目限制。`,
+          prompt: `Codex 负责先生成通用项目骨架，再设计该项目首个全新功能，Claude 在可见终端中实现该功能。首题 category 必须为 0-1 代码生成。只读分析当前仓库，仅将其作为出题参考，Claude 在新容器 /workspace 中已准备好的最小骨架上工作，容器不可访问参考仓库。在相对目录 ${projectSeries.directory} 的项目骨架内设计此前不存在的全新功能，不修改该目录外业务。完整首题应交付能运行的全新功能及验证方法，后续在同项目继续出全新功能、Feature 迭代、真实 Bug 修复、理解和重构题，目标比例 7:7:10:1:1；0-1 与 Feature 各最多十题。出题范围：${context.config.scope}\n今日已完成及排队题型分布：${JSON.stringify(context.mix)}。新项目首题始终为 0-1；类型分布在同项目的后续题中调节。\n${policyInstructions()}\n不要重复或改写已有题目：${JSON.stringify(history)}\n禁止依赖其他自动任务的改动。不要提出需要外部付费、发布、推送或外部消息的任务。不执行此任务，只返回具体任务目标和验收要求。title 使用简洁项目名称，最多 200 字；prompt 从项目名称开始，不加编号，正文 180 至 260 字、1 至 2 段；stack 最多 300 字，只记录适合业务的建议，不把实现偏好强加为题目限制。`,
         });
         if (generated.value.category !== '0-1 代码生成')
           throw Error('自动新项目首题必须是 0-1 代码生成');
