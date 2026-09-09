@@ -3,6 +3,12 @@ const body =
 const question = (title = 'Webhook 投递联调台') => `${title}\n\n${body}`;
 const repair = (record = 1) =>
   `现在事件${record}重新发送后，列表已经显示成功，展开详情却还是上一次失败的内容，切换筛选再回来也没有更新。把这里改好，发送完成后列表状态、详情中的请求响应和时间轴要对应同一次尝试，刷新页面后也能看到一致的结果，之前失败的记录继续保留，能单独展开查看。\n\n另外，正在发送时再点一次按钮，会出现两条一样的尝试记录。发送还没结束时先禁用按钮，并在旁边显示正在发送；如果失败了，显示具体原因并恢复按钮，让用户修改事件内容后重新发送。检查保存样例、切换筛选和回看历史结果这几个操作，别让这次修改影响原来的流程。`;
+const categoryQuestion = (category, record = 1) =>
+  category === '0-1 代码生成'
+    ? question('Synthetic project round ' + record)
+    : category === 'Bug 修复'
+      ? repair(record)
+      : body.replace('帮助他们定位', `帮助他们核对第${record}组样例并定位`);
 const questionAudit = {
   questionCompliant: true,
   questionChecks: [
@@ -25,4 +31,4 @@ const questionAudit = {
   ],
   businessDetails: ['相同事件返回原记录', '同标识不同内容提示冲突并另存'],
 };
-module.exports = { question, repair, body, questionAudit };
+module.exports = { question, repair, categoryQuestion, body, questionAudit };

@@ -301,7 +301,7 @@ async function execute({ task, turn }) {
 本轮产物轨迹：${result.tracePath}
 本轮评分：${JSON.stringify(result.review)}
 已有题目（禁止实质重复）：${JSON.stringify(task.turns.map((r) => ({ category: r.category, prompt: r.requestedPrompt || r.prompt })))}
-读取真实项目目录和测试/错误轨迹，有具体缺陷且当前会话未达到两轮修复时才 action=repair、category=Bug 修复，这会在当前终端追问。不能把未完成的新功能或截断续写改叫 Bug，不生成 action=continue。基础可用后 action=advance，独立新题必须使用已按比例分配的 ${allocatedCategory || '无新题额度，应结束项目'} 类别，不能自行切换类别；新建此前不存在的功能算 0-1，修改已有能力算 Feature。同项目这两类各最多十题。理解与重构按 7:7:10:1:1 的累计目标选择。projectEvidence 写实际文件、现象和新功能与现有功能的边界；baseComplete 反映实际状态。修复达到两轮仍未解决时 needs_input，不换新窗口规避修复上限；所有任务充分覆盖或题额用完时 complete。独立新题的 prompt 以项目名称开头，不加编号；Bug 修复不写项目名称或标题，直接像同事接着聊项目一样说明哪里出了问题、什么条件下发生、希望怎么改，不重新介绍面向人群，不用落实、核验、既有语义等正式表达。正文统一为 180 至 260 字、1 至 2 个自然段，保留真实复现数值和预期，迭代说明已有能力与本次变化，不使用模板或编造人工检查经历。结束时 prompt 写无。`,
+读取真实项目目录和测试/错误轨迹，有具体缺陷且当前会话未达到两轮修复时才 action=repair、category=Bug 修复，这会在当前终端追问。不能把未完成的新功能或截断续写改叫 Bug，不生成 action=continue。基础可用后 action=advance，独立新题必须使用已按比例分配的 ${allocatedCategory || '无新题额度，应结束项目'} 类别，不能自行切换类别；新建此前不存在的功能算 0-1，修改已有能力算 Feature。同项目这两类各最多十题。理解与重构按 7:7:10:1:1 的累计目标选择。projectEvidence 写实际文件、现象和新功能与现有功能的边界；baseComplete 反映实际状态。修复达到两轮仍未解决时 needs_input，不换新窗口规避修复上限；所有任务充分覆盖或题额用完时 complete。只有 0-1 代码生成的 prompt 以项目名称开头，不加编号；Feature、Bug、理解、重构及其他题型不写项目名称或标题，直接写正文。Bug 修复直接像同事接着聊项目一样说明哪里出了问题、什么条件下发生、希望怎么改，不重新介绍面向人群，不用落实、核验、既有语义等正式表达。正文统一为 180 至 260 字、1 至 2 个自然段，保留真实复现数值和预期，迭代说明已有能力与本次变化，不使用模板或编造人工检查经历。结束时 prompt 写无。`,
         result.workDir,
         { allocation: { category: allocatedCategory } },
       );
@@ -486,7 +486,7 @@ async function execute({ task, turn }) {
       });
       preparation = await step(
         'prepare',
-        `${seriesPrompt(task)}\n本题已分配分类：${turn.category}，category 必须保持该值，准备阶段不能更换题型。\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n当前容器内工作目录固定为 /workspace，容器已启动，项目骨架或上题归档代码已准备好，宿主机参考仓库不在容器里。0-1 在该项目内实现全新功能，Feature 迭代现有能力。请读取当前任务目录，准备交给 Claude 的任务 prompt、分类、难度、技术栈和验收条件。${turn.category === 'Bug 修复' ? 'Bug 修复不写项目名称、标题或编号，直接从问题现象开始，用同事聊天的口吻说明发生条件、实际结果和希望怎么改，不重新介绍面向人群，保留真实数值，不用落实、核验、既有语义等正式表达' : '题目首行只写项目名称，不加编号'}，正文用 180 至 260 字自然描述业务，界面要求按下述适用范围执行，原始题目措辞不是格式模板。保留业务目标和必要边界，不擅自增加业务需求；当前目录、权限、评测来源和技术实现细节不附加到 prompt。acceptance 只放实际可执行的验收条件，不混入出题审核、难度分析或待补信息；正文保留用户可见的验收行为。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions(questionContext)}`,
+        `${seriesPrompt(task)}\n本题已分配分类：${turn.category}，category 必须保持该值，准备阶段不能更换题型。\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n当前容器内工作目录固定为 /workspace，容器已启动，项目骨架或上题归档代码已准备好，宿主机参考仓库不在容器里。0-1 在该项目内实现全新功能，Feature 迭代现有能力。请读取当前任务目录，准备交给 Claude 的任务 prompt、分类、难度、技术栈和验收条件。${turn.category === 'Bug 修复' ? 'Bug 修复不写项目名称、标题或编号，直接从问题现象开始，用同事聊天的口吻说明发生条件、实际结果和希望怎么改，不重新介绍面向人群，保留真实数值，不用落实、核验、既有语义等正式表达' : turn.category === '0-1 代码生成' ? '题目首行只写项目名称，不加编号' : '本题不写项目名称、标题或编号，直接写需求正文'}，正文用 180 至 260 字自然描述业务，界面要求按下述适用范围执行，原始题目措辞不是格式模板。保留业务目标和必要边界，不擅自增加业务需求；当前目录、权限、评测来源和技术实现细节不附加到 prompt。acceptance 只放实际可执行的验收条件，不混入出题审核、难度分析或待补信息；正文保留用户可见的验收行为。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions(questionContext)}`,
         task.workDir || task.repoPath,
         { allocation: { category: turn.category }, questionContext },
       );

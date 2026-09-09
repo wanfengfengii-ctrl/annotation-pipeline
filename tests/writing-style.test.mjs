@@ -181,7 +181,7 @@ test('仅已执行历史题的同会话真实修复继承界面范围，新题�
     assert(policy.includes(category));
 });
 
-test('题目使用无编号的项目名称和一至两段正文，不追加项目路径；点评保留独立格式', () => {
+test('0-1 题目使用无编号的项目名称和一至两段正文，点评保留独立格式', () => {
   const prompt = fixture.question();
   const checked = checkWriting('prepare', {
     prompt: '“' + prompt + '”',
@@ -204,13 +204,13 @@ test('题目使用无编号的项目名称和一至两段正文，不追加项�
   assert.match(writingInstructions('score'), /一段/);
 });
 
-test('独立新题检查项目名称、长度、段落、语气和编排信息', () => {
+test('0-1 新题检查项目名称、长度、段落、语气和编排信息', () => {
   for (const stage of ['generate', 'prepare', 'next', 'project-next']) {
     assert.deepEqual(
       checkWriting(stage, {
         prompt: fixture.question('投递结果对照工作台'),
         action: 'advance',
-        category: 'Feature 迭代',
+        category: '0-1 代码生成',
         reason: '现有结果与预期不一致',
       }).issues,
       [],
@@ -232,7 +232,7 @@ test('独立新题检查项目名称、长度、段落、语气和编排信息',
         checkWriting(stage, {
           prompt,
           action: 'advance',
-          category: 'Feature 迭代',
+          category: '0-1 代码生成',
           reason: '现有结果与预期不一致',
         }).issues.length,
         stage + ': ' + prompt,
@@ -251,6 +251,59 @@ test('独立新题检查项目名称、长度、段落、语气和编排信息',
     }).issues.length,
   );
   assert.ok(proseIssues(fixture.body).length, '点评仍不允许分段');
+});
+
+test('除 0-1 外所有类型只接受正文，第一段参与长度与语气检查', () => {
+  for (const category of [
+    'Feature 迭代',
+    'Bug 修复',
+    '代码理解',
+    '代码重构',
+    '工程化',
+    '代码测试',
+  ]) {
+    const prompt = fixture.categoryQuestion(category);
+    const parts = questionParts(prompt, { category });
+    assert.equal(parts.title, '', category);
+    assert.equal(parts.paragraphs.length, 2, category);
+    assert.equal(
+      parts.bodyLength,
+      [...prompt.replace(/\s/g, '')].length,
+      category,
+    );
+    for (const stage of ['prepare', 'project-next']) {
+      const value = {
+        prompt,
+        category,
+        action: category === 'Bug 修复' ? 'repair' : 'advance',
+        reason: '本轮已有明确目标',
+      };
+      assert.deepEqual(checkWriting(stage, value).issues, [], category);
+      for (const invalid of [
+        '项目名称\n' + prompt,
+        '项目名称\n' + prompt.replace(/\n+/g, ''),
+        '可能需要' + prompt,
+        '1、' + prompt,
+        '短正文。',
+        '需'.repeat(261),
+      ])
+        assert.ok(
+          checkWriting(stage, { ...value, prompt: invalid }).issues.length,
+          category + ': ' + invalid,
+        );
+    }
+    const policy = policyInstructions({ category });
+    assert.match(
+      policy,
+      category === 'Bug 修复'
+        ? /language：Bug 修复没有项目名称或标题/
+        : /language：本题没有项目名称、标题或编号/,
+    );
+  }
+  assert.ok(
+    questionIssues(fixture.body, { category: '0-1 代码生成' }).length,
+    '0-1 仍然需要标题',
+  );
 });
 
 test('Bug 准备和追问直接用口语正文，拒绝项目标题和正式措辞', () => {
@@ -367,7 +420,7 @@ process.stdin.on('data', c=>input+=c); process.stdin.on('end',()=>{
   fs.appendFileSync(${JSON.stringify(path.join(dir, 'calls'))}, 'call\\n');
   const revised=out.includes('.writing.');
   const mode=fs.existsSync(${JSON.stringify(path.join(dir, 'mode'))})?fs.readFileSync(${JSON.stringify(path.join(dir, 'mode'))},'utf8'):'';
-  const value={prompt:revised&&mode!=='invalid'?${JSON.stringify(fixture.question())}:'可能需要加上订单筛选',category:revised&&mode==='changed'?'Bug 修复':'Feature 迭代',difficulty:'中等',stack:'TypeScript',acceptance:['切换状态重置页码','空列表测试']};
+  const value={prompt:revised&&mode!=='invalid'?${JSON.stringify(fixture.categoryQuestion('Feature 迭代'))}:'可能需要加上订单筛选',category:revised&&mode==='changed'?'Bug 修复':'Feature 迭代',difficulty:'中等',stack:'TypeScript',acceptance:['切换状态重置页码','空列表测试']};
   fs.writeFileSync(out,JSON.stringify(value)); console.log(JSON.stringify({type:'thread.started',thread_id:'fixture'}));
 });`,
       { mode: 0o700 },
@@ -381,7 +434,7 @@ process.stdin.on('data', c=>input+=c); process.stdin.on('end',()=>{
       onChild() {},
     };
     const result = await codexStage({ ...options, turnId: 'good' });
-    assert.equal(result.value.prompt, fixture.question());
+    assert.equal(result.value.prompt, fixture.categoryQuestion('Feature 迭代'));
     assert.deepEqual(result.value.acceptance, [
       '切换状态重置页码',
       '空列表测试',
