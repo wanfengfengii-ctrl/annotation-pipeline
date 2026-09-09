@@ -195,9 +195,67 @@ export function createEvidenceArchive({
     add(runtime.plan.tracePath, 'runtime/plan.jsonl');
     add(runtime.diagnosis.tracePath, 'runtime/diagnosis.jsonl');
   }
+  if (automation.scoreRetryContext) {
+    const expected = new Map([
+      ['previous-score.json', 'score.json'],
+      ['previous-score.events.jsonl', 'score.events.jsonl'],
+      ['previous-delivery.json', 'delivery.json'],
+      ['previous-delivery.events.jsonl', 'delivery.events.jsonl'],
+    ]);
+    const artifacts = automation.scoreRetryContext.artifacts;
+    if (!Array.isArray(artifacts) || artifacts.length !== expected.size)
+      throw Error('评分重试证据必须包含四份完整审核附件');
+    const seen = new Set();
+    const escapedTurnId = turnId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    for (const artifact of artifacts) {
+      const suffix = expected.get(artifact?.name);
+      if (
+        !suffix ||
+        seen.has(artifact.name) ||
+        typeof artifact.path !== 'string'
+      )
+        throw Error('评分重试附件名称无效或重复');
+      seen.add(artifact.name);
+      const relative = path.relative(
+        path.resolve(dir),
+        path.resolve(artifact.path),
+      );
+      if (!relative || relative.startsWith('..') || path.isAbsolute(relative))
+        throw Error('评分重试附件必须位于本任务目录');
+      // Never package a private runner receipt, including a receipt disguised
+      // behind a symlink or an attachment name that says it is a score.
+      let component = path.resolve(dir);
+      for (const part of relative.split(path.sep)) {
+        component = path.join(component, part);
+        if (
+          part.endsWith('.result.json') ||
+          lstatSync(component).isSymbolicLink()
+        )
+          throw Error('评分重试附件不能引用私有回执或符号链接');
+      }
+      const sourceName = new RegExp(
+        '^' +
+          escapedTurnId +
+          '\\.attempt-[1-9]\\d*\\.' +
+          suffix.replaceAll('.', '\\.') +
+          '$',
+      );
+      if (
+        !sourceName.test(path.basename(artifact.path)) ||
+        !sourceName.test(path.basename(realpathSync(artifact.path)))
+      )
+        throw Error('评分重试附件与当前轮次或审核类型不匹配');
+      addRuntimeEvidence(
+        artifact.path,
+        'score-retry/' + artifact.name,
+        artifact.sha256,
+      );
+    }
+  }
   const native = path.join(dir, turnId + '.native.jsonl');
   if (existsSync(native)) add(native, 'claude-native.jsonl');
   for (const [key, value] of Object.entries(automation)) {
+    if (key === 'scoreRetryContext') continue;
     if (value?.tracePath) add(value.tracePath, key + '.jsonl');
     if (value?.writingRevision?.originalTracePath)
       add(

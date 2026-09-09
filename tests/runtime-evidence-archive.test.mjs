@@ -6,6 +6,7 @@ import {
   readFileSync,
   writeFileSync,
   rmSync,
+  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -74,8 +75,158 @@ function fixture(t, { probe = true, diagnosis = true } = {}) {
     workDir,
   };
   const archive = () => createEvidenceArchive(args);
-  return { dir, runtime, raw, numbered, probeBytes, archive };
+  return { dir, runtime, raw, numbered, probeBytes, args, archive };
 }
+
+function addScoreRetry(f) {
+  const artifacts = [
+    ['previous-score.json', 'score.json'],
+    ['previous-score.events.jsonl', 'score.events.jsonl'],
+    ['previous-delivery.json', 'delivery.json'],
+    ['previous-delivery.events.jsonl', 'delivery.events.jsonl'],
+  ].map(([name, suffix]) => {
+    const bytes = Buffer.from(
+      suffix.endsWith('.jsonl')
+        ? '{"type":"item.completed","text":"此前审核\\r\\n原始事件"}\n'
+        : '{"summary":"此前审核结果，保留原始字节"}\r\n',
+    );
+    const file = path.join(f.dir, f.args.turnId + '.attempt-7.' + suffix);
+    writeFileSync(file, bytes);
+    return { name, path: file, sha256: hash(bytes) };
+  });
+  f.args.automation.scoreRetryContext = { artifacts };
+  return artifacts;
+}
+
+test('score retry archive preserves exactly four whitelisted prior audit files without private receipts', (t) => {
+  const f = fixture(t);
+  const artifacts = addScoreRetry(f);
+  const originals = artifacts.map((artifact) => readFileSync(artifact.path));
+  writeFileSync(
+    path.join(f.dir, 'turn.result.json'),
+    '{"jobToken":"private-receipt-token"}',
+  );
+  // Only the four explicit artifacts are archive inputs. Generic trace fields
+  // on retry context must not cause duplicate or private files to be packaged.
+  f.args.automation.scoreRetryContext.tracePath = path.join(
+    f.dir,
+    'turn.result.json',
+  );
+  f.args.automation.scoreRetryContext.writingRevision = {
+    originalTracePath: path.join(f.dir, 'turn.result.json'),
+  };
+  const archive = f.archive();
+  const extract = (name) =>
+    execFileSync('tar', ['-xOzf', archive.archivePath, name]);
+  const manifest = JSON.parse(extract('manifest.json'));
+  assert.equal(
+    manifest.files.filter((file) => file.name.startsWith('score-retry/'))
+      .length,
+    4,
+  );
+  for (const [index, artifact] of artifacts.entries()) {
+    const name = 'score-retry/' + artifact.name;
+    assert.deepEqual(extract(name), originals[index]);
+    assert.deepEqual(readFileSync(artifact.path), originals[index]);
+    const entry = manifest.files.find((file) => file.name === name);
+    assert.equal(entry.sha256, artifact.sha256);
+    assert.equal(entry.bytes, originals[index].length);
+  }
+  assert.ok(
+    manifest.files.every((file) => !file.name.endsWith('.result.json')),
+  );
+  for (const item of manifest.files)
+    assert.equal(
+      extract(item.name).includes(Buffer.from('private-receipt-token')),
+      false,
+    );
+});
+
+for (const [label, change, pattern] of [
+  [
+    'changed bytes',
+    (artifacts) => writeFileSync(artifacts[0].path, 'changed'),
+    /摘要不一致/,
+  ],
+  ['missing hash', (artifacts) => delete artifacts[0].sha256, /附加证据无效/],
+  [
+    'unknown name',
+    (artifacts) => {
+      artifacts[0].name = 'private-receipt.json';
+    },
+    /名称无效/,
+  ],
+  [
+    'duplicate name',
+    (artifacts) => {
+      artifacts[1].name = artifacts[0].name;
+    },
+    /名称无效或重复/,
+  ],
+  ['missing attachment', (artifacts) => artifacts.pop(), /四份完整/],
+  [
+    'extra attachment',
+    (artifacts) => artifacts.push({ ...artifacts[0] }),
+    /四份完整/,
+  ],
+  [
+    'cross-turn score',
+    (artifacts, f) => {
+      const file = path.join(f.dir, 'other-turn.attempt-7.score.json');
+      writeFileSync(file, readFileSync(artifacts[0].path));
+      artifacts[0].path = file;
+    },
+    /当前轮次或审核类型/,
+  ],
+  [
+    'score mislabeled as delivery',
+    (artifacts) => {
+      artifacts[2].path = artifacts[0].path;
+      artifacts[2].sha256 = artifacts[0].sha256;
+    },
+    /当前轮次或审核类型/,
+  ],
+  [
+    'private receipt labeled as score',
+    (artifacts, f) => {
+      const file = path.join(f.dir, 'turn.result.json');
+      const bytes = '{"jobToken":"private-token"}';
+      writeFileSync(file, bytes);
+      artifacts[0].path = file;
+      artifacts[0].sha256 = hash(bytes);
+    },
+    /私有回执/,
+  ],
+  [
+    'symlink disguising receipt as score',
+    (artifacts, f) => {
+      const file = path.join(f.dir, 'turn.result.json');
+      const bytes = '{"jobToken":"private-token"}';
+      writeFileSync(file, bytes);
+      rmSync(artifacts[0].path);
+      symlinkSync(file, artifacts[0].path);
+      artifacts[0].sha256 = hash(bytes);
+    },
+    /私有回执或符号链接/,
+  ],
+]) {
+  test('score retry archive rejects ' + label, (t) => {
+    const f = fixture(t);
+    const artifacts = addScoreRetry(f);
+    change(artifacts, f);
+    assert.throws(f.archive, pattern);
+  });
+}
+
+test('score retry archive rejects another task directory even with a matching filename and hash', (t) => {
+  const f = fixture(t);
+  const other = fixture(t);
+  const artifacts = addScoreRetry(f);
+  const file = path.join(other.dir, path.basename(artifacts[0].path));
+  writeFileSync(file, readFileSync(artifacts[0].path));
+  artifacts[0].path = file;
+  assert.throws(f.archive, /本任务目录/);
+});
 
 test('runtime archive preserves and hashes probe, raw log, and LF view bytes', (t) => {
   const f = fixture(t);

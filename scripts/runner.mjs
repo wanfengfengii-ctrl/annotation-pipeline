@@ -51,6 +51,7 @@ import {
   reuseRuntimeVerification,
 } from './runtime-verification.mjs';
 import { runtimeRetryContext } from './runtime-retry-context.mjs';
+import { scoreRetryContext } from './score-retry-context.mjs';
 import {
   submittedPolicyEvidence,
   submittedPolicyInstructions,
@@ -263,6 +264,8 @@ async function execute({ task, turn }) {
         regressionScoringInstructions(
           automation.runtimeVerification?.regressionContext,
         );
+    if (name === 'score' && automation.scoreRetryContext)
+      prompt += '\n' + automation.scoreRetryContext.instructions;
     if (
       ['runtime-plan', 'runtime-diagnose', 'score', 'delivery'].includes(name)
     )
@@ -733,7 +736,12 @@ async function execute({ task, turn }) {
       if (permissionIssues(result).length)
         throw Error(permissionIssues(result).join('；'));
       // A completed call with invalid runtime context must not be replayed on retry.
-
+      const previousScoreContext = scoreRetryContext(cached, {
+        dir,
+        taskId: task.id,
+        turnId: turn.id,
+        workDir: result.workDir,
+      });
       delete cached.score;
       delete cached.delivery;
       delete cached.next;
@@ -796,6 +804,14 @@ async function execute({ task, turn }) {
           reportSha256: reused.reportSha256,
           inputsAndSourceVerified: true,
         };
+      // Feedback applies only to the same verified runtime and source. A newly
+      // executed report requires an independent assessment of its own evidence.
+      if (
+        previousScoreContext &&
+        previousScoreContext.runtimeReportPath === reused?.reportPath &&
+        previousScoreContext.runtimeReportSha256 === reused?.reportSha256
+      )
+        automation.scoreRetryContext = previousScoreContext;
       cached.runtimeVerification = automation.runtimeVerification;
       persist();
       if (automation.runtimeVerification.status === 'blocked')
