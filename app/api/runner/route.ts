@@ -9,7 +9,10 @@ import { questionRoot } from '@/lib/question-session.mjs';
 import { terminalIssues } from '@/lib/terminal-policy.mjs';
 import { permissionIssues } from '@/lib/permission-audit.mjs';
 import { roundNumber } from '@/lib/record-metadata';
-import { validateInitialCodeSnapshot } from '@/lib/initial-code-snapshot.mjs';
+import {
+  resolveInitialSnapshotContainer,
+  validateInitialCodeSnapshot,
+} from '@/lib/initial-code-snapshot.mjs';
 import { nextDecision, dailyMix } from '@/lib/workflow.mjs';
 import { candidateDigest, assertPolicyAudit } from '@/lib/task-policy.mjs';
 import { questionIssues } from '@/lib/writing-style.mjs';
@@ -33,13 +36,14 @@ export async function POST(req: Request) {
       const item = await get(text(b.taskId, '任务', 100));
       if (!item) throw Error('任务不存在');
       const root = item.task.turns.find((r) => r.id === b.questionId);
-      const container =
-        root?.container ||
-        (item.task.container?.questionId === root?.id
-          ? item.task.container
-          : undefined);
-      if (!root || questionRoot(item.task, root) !== root.id || !container)
+      if (!root || questionRoot(item.task, root) !== root.id)
         throw Error('初始快照必须属于实际原题容器');
+      const container = resolveInitialSnapshotContainer(
+        item.task.id,
+        root.id,
+        root.container,
+        item.task.container,
+      );
       const value = validateInitialCodeSnapshot(
         b.snapshot,
         item.task.id,
@@ -380,6 +384,10 @@ export async function POST(req: Request) {
         throw Error('上下文未通过核验，不能标记执行成功');
       if (b.container) {
         const container = validateContainerRecord(b.container, item.task.id);
+        const matchesQuestion =
+          container.questionId === questionRoot(item.task, r);
+        if (b.success && !matchesQuestion)
+          throw Error('执行结果容器不属于本题');
         if (item.task.container && item.task.container.name !== container.name)
           throw Error('任务容器发生变化');
         if (b.success && !b.traceExport?.verified)
@@ -395,9 +403,11 @@ export async function POST(req: Request) {
         )
           throw Error('容器 SessionID 发生变化');
         item.task.container = container;
-        r.container = container;
-        r.traceExport = b.traceExport;
-        r.permissionAudit = b.permissionAudit;
+        if (matchesQuestion) {
+          r.container = container;
+          r.traceExport = b.traceExport;
+          r.permissionAudit = b.permissionAudit;
+        }
       }
       r.status = b.success ? 'review' : 'failed';
       r.roundNumber ||= roundNumber(item.task, r) || undefined;
