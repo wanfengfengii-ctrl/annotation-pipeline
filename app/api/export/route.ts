@@ -1,6 +1,7 @@
 import { selectRecords } from '@/db/records';
 import { recordFilter, type RecordRow } from '@/lib/record-fields';
 import { xlsx, recordsCsv } from '@/lib/xlsx';
+import { exportScope, recordSelection } from '@/lib/record-selection';
 import { terminalIssues } from '@/lib/terminal-policy.mjs';
 import { permissionIssues } from '@/lib/permission-audit.mjs';
 import { all, failure, db, protect, text } from '@/db/store';
@@ -37,8 +38,14 @@ export async function POST(req: Request) {
     if (!/^[a-f0-9-]{36}$/.test(id)) throw Error('导出请求标识无效');
     const filter = recordFilter((b.filter || {}) as Record<string, unknown>),
       format = b.format === 'csv' ? 'csv' : 'xlsx',
-      scope = b.scope === 'page' ? 'page' : 'filtered';
-    const signature = JSON.stringify({ filter, format, scope });
+      scope = exportScope(b.scope),
+      selected = scope === 'selected' ? recordSelection(b.selected) : undefined;
+    const signature = JSON.stringify({
+      filter,
+      format,
+      scope,
+      ...(selected ? { selected } : {}),
+    });
     const existing = await db()
       .prepare('SELECT filter FROM export_batches WHERE id=?')
       .bind(id)
@@ -46,9 +53,13 @@ export async function POST(req: Request) {
     if (existing && existing.filter !== signature)
       throw Error('同一导出请求不能更改筛选条件');
     if (!existing) {
-      const rows = (await selectRecords(filter, scope)).rows.filter(
+      const rows = (await selectRecords(filter, scope, selected)).rows.filter(
         (r) => r.eligible,
       );
+      if (selected && rows.length !== selected.length)
+        throw Error(
+          '勾选记录已变化、未通过校验或不在当前筛选范围内，请刷新后重新勾选；本次未导出',
+        );
       if (!rows.length) throw Error('当前范围没有通过校验的可导出轮次');
       // Build before recording: an invalid Excel field never increments the count.
       if (format === 'xlsx') xlsx(rows, id);

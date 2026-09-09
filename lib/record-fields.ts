@@ -44,7 +44,37 @@ export type RecordRow = {
   lastExportAt: string | null;
   eligible: boolean;
   provenance: string;
+  formatVersion?: 2;
+  originalFields?: {
+    snapshot: string;
+    tracePath: string;
+    os: string;
+    stack: string;
+  };
 };
+export function recordCategory(value: string) {
+  const names: Record<string, string> = {
+    '0-1代码生成': '0-1代码生成',
+    feature迭代: 'feature迭代',
+    bug修复: 'Bug修复',
+  };
+  return names[value.replace(/\s+/g, '').toLowerCase()] || value;
+}
+export function recordOS(value: string) {
+  if (/macos|mac os|darwin|linux/i.test(value)) return 'MacOS/Linux';
+  if (/windows|win32/i.test(value)) return 'Windows';
+  return value;
+}
+export const recordStack = (value: string) =>
+  value
+    .split(/[,，、;；\r\n]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join('、');
+export const snapshotLink = (value: string) =>
+  /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/commit\/[a-f0-9]{40}$/i.test(
+    value,
+  );
 export function shanghaiDate(v?: string) {
   if (!v || isNaN(Date.parse(v))) return '';
   return new Date(Date.parse(v) + 8 * 3600000)
@@ -74,12 +104,8 @@ export function recordRow(
     : !issues(t, r).length && r.automation?.delivery?.value?.passed
       ? 'AI 校验通过（待人工确认）'
       : '待 AI 校验';
-  const base = [
-    r.prompt,
-    r.sessionId || '',
-    r.promptId || '',
-    roundNumber(t, r),
-    r.container?.sourceSnapshot
+  const originalFields = {
+    snapshot: r.container?.sourceSnapshot
       ? r.container.snapshot +
         '\n代码快照：' +
         r.container.sourceSnapshot.manifestPath +
@@ -92,14 +118,24 @@ export function recordRow(
           '#sha256:' +
           r.container.scaffoldSnapshot.sha256
         : r.container?.snapshot || t.snapshot || '',
-    r.tracePath || '',
+    tracePath: r.tracePath || '',
+    os: r.os || t.os || '',
+    stack: r.stack || t.stack || '',
+  };
+  const base = [
+    r.prompt,
+    r.sessionId || '',
+    r.promptId || '',
+    roundNumber(t, r),
+    r.container?.snapshot || t.snapshot || '',
+    originalFields.tracePath.split(/[\\/]/).at(-1) || '',
     r.reproducibility || t.reproducibility || '',
     r.harness || t.harness || 'Claude Code',
     r.harnessVersion || t.harnessVersion || '',
-    r.os || t.os || '',
-    r.category,
+    recordOS(originalFields.os),
+    recordCategory(r.category),
     r.difficulty,
-    r.stack || t.stack || '',
+    recordStack(originalFields.stack),
   ];
   const values: (string | number)[] = [
     ...base,
@@ -127,6 +163,8 @@ export function recordRow(
     source,
     exportCount,
     lastExportAt,
+    formatVersion: 2,
+    originalFields,
     eligible:
       !r.excluded &&
       (human

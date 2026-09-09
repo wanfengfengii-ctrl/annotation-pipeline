@@ -1,9 +1,17 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  recordKey,
+  type RecordIdentity,
+  type ExportScope,
+} from '@/lib/record-selection';
 import { categories } from '@/lib/pipeline';
 import {
   recordHeaders,
+  recordCategory,
+  snapshotLink,
   type RecordFilter,
   type RecordRow,
   type RecordSource,
@@ -29,6 +37,7 @@ export function RecordsTable({
       rows: RecordRow[];
       total: number;
       page: number;
+      pageSize: number;
       totalPages: number;
     } | null>(null),
     [loading, setLoading] = useState(true),
@@ -37,6 +46,10 @@ export function RecordsTable({
     [message, setMessage] = useState(''),
     [refresh, setRefresh] = useState(0),
     [format, setFormat] = useState('xlsx');
+  const [selected, setSelected] = useState<Record<string, RecordIdentity>>({});
+  const selectedCount = Object.keys(selected).length;
+  const pageRows = data?.rows.filter((r) => r.eligible) || [];
+  const checkedOnPage = pageRows.filter((r) => selected[recordKey(r)]).length;
   const pending = useRef<{ signature: string; id: string } | null>(null);
   useEffect(() => {
     const controller = new AbortController();
@@ -56,7 +69,13 @@ export function RecordsTable({
           error?: string;
         };
         if (!r.ok) throw Error(d.error);
+        if (controller.signal.aborted) return;
         setData(d);
+        setSelected((current) => {
+          const next = { ...current };
+          for (const r of d.rows) if (!r.eligible) delete next[recordKey(r)];
+          return next;
+        });
       })
       .catch((e) => {
         if (!controller.signal.aborted) {
@@ -69,13 +88,33 @@ export function RecordsTable({
       });
     return () => controller.abort();
   }, [filter, refresh]);
-  const update = (patch: Partial<RecordFilter>) =>
+  const update = (patch: Partial<RecordFilter>, resetSelection = true) => {
+    setLoading(true);
+    if (resetSelection) setSelected({});
     setFilter((f) => ({ ...f, ...patch, page: 1 }));
-  async function download(scope: 'page' | 'filtered') {
+  };
+  const toggle = (rows: RecordIdentity[], checked: boolean) => {
+    const next = { ...selected };
+    for (const r of rows) {
+      if (checked) next[recordKey(r)] = { taskId: r.taskId, turnId: r.turnId };
+      else delete next[recordKey(r)];
+    }
+    if (Object.keys(next).length > 1000) {
+      setError('每批最多勾选 1000 条，请先导出已勾选记录');
+      return;
+    }
+    setSelected(next);
+  };
+  async function download(scope: ExportScope) {
     setBusy(true);
     setError('');
     setMessage('');
-    const selection = { filter, scope, format },
+    const selection = {
+        filter,
+        scope,
+        format,
+        ...(scope === 'selected' ? { selected: Object.values(selected) } : {}),
+      },
       signature = JSON.stringify(selection);
     if (pending.current?.signature !== signature)
       pending.current = { signature, id: crypto.randomUUID() };
@@ -97,6 +136,7 @@ export function RecordsTable({
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
       pending.current = null;
+      setSelected({});
       setMessage(
         `已生成 ${r.headers.get('X-Export-Count')} 条记录的 ${format.toUpperCase()}，导出次数已记录。`,
       );
@@ -114,12 +154,12 @@ export function RecordsTable({
         <Button
           variant="ghost"
           onClick={() => setRefresh((x) => x + 1)}
-          disabled={loading}
+          disabled={loading || busy}
         >
           刷新
         </Button>
       </div>
-      <div className="record-filters">
+      <fieldset className="record-filters" disabled={busy}>
         <label className="field">
           评分来源
           <select
@@ -146,7 +186,9 @@ export function RecordsTable({
           >
             <option value="">全部类型</option>
             {categories.map((c) => (
-              <option key={c}>{c}</option>
+              <option key={c} value={c}>
+                {recordCategory(c)}
+              </option>
             ))}
           </select>
         </label>
@@ -184,16 +226,34 @@ export function RecordsTable({
             />
           </label>
         )}
-      </div>
+      </fieldset>
       <div className="record-toolbar">
         <label className="field">
           导出格式
-          <select value={format} onChange={(e) => setFormat(e.target.value)}>
+          <select
+            value={format}
+            disabled={busy}
+            onChange={(e) => setFormat(e.target.value)}
+          >
             <option value="xlsx">Excel (.xlsx)</option>
             <option value="csv">CSV（完整长文本）</option>
           </select>
         </label>
         <Button
+          disabled={busy || loading || !selectedCount}
+          onClick={() => download('selected')}
+        >
+          导出勾选记录（{selectedCount}）
+        </Button>
+        <Button
+          variant="ghost"
+          disabled={busy || !selectedCount}
+          onClick={() => setSelected({})}
+        >
+          清空勾选
+        </Button>
+        <Button
+          variant="outline"
           disabled={busy || loading || !data?.rows.some((r) => r.eligible)}
           onClick={() => download('page')}
         >
@@ -223,7 +283,7 @@ export function RecordsTable({
         </p>
       )}
       <p className="record-status sub">
-        左右滚动表格可查看全部字段，长文本可点击展开。
+        表头复选框选择本页可导出记录，翻页保留勾选，修改筛选条件会清空勾选。左右滚动可查看全部字段。
       </p>
       <div
         className="record-scroll"
@@ -235,8 +295,24 @@ export function RecordsTable({
         <table className="record-table">
           <thead>
             <tr>
-              {recordHeaders.map((h) => (
-                <th key={h}>{h}</th>
+              <th className="record-select">
+                <Checkbox
+                  aria-label="选择本页全部可导出记录"
+                  checked={
+                    pageRows.length > 0 && checkedOnPage === pageRows.length
+                  }
+                  indeterminate={
+                    checkedOnPage > 0 && checkedOnPage < pageRows.length
+                  }
+                  disabled={busy || loading || !pageRows.length}
+                  onCheckedChange={(checked) => toggle(pageRows, checked)}
+                />
+              </th>
+              <th className="record-serial">序号</th>
+              {recordHeaders.map((h, i) => (
+                <th key={h} className={i === 0 ? 'record-prompt' : undefined}>
+                  {h}
+                </th>
               ))}
               <th>导出次数</th>
               <th>操作</th>
@@ -244,20 +320,42 @@ export function RecordsTable({
           </thead>
           <tbody>
             {!loading &&
-              data?.rows.map((row) => (
-                <tr key={row.taskId + row.turnId}>
+              data?.rows.map((row, index) => (
+                <tr
+                  key={recordKey(row)}
+                  data-selected={!!selected[recordKey(row)]}
+                >
+                  <td className="record-select">
+                    <Checkbox
+                      aria-label={`选择第 ${(data.page - 1) * data.pageSize + index + 1} 条记录`}
+                      checked={!!selected[recordKey(row)]}
+                      disabled={busy || !row.eligible}
+                      onCheckedChange={(checked) => toggle([row], checked)}
+                    />
+                  </td>
+                  <td className="record-serial">
+                    {(data.page - 1) * data.pageSize + index + 1}
+                  </td>
                   {row.values.map((v, i) => (
-                    <td key={i}>
-                      {String(v).length > 100 ? (
+                    <td
+                      key={i}
+                      className={i === 0 ? 'record-prompt' : undefined}
+                    >
+                      {recordHeaders[i] === '初始环境快照' &&
+                      snapshotLink(String(v)) ? (
+                        <a
+                          href={String(v)}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={String(v)}
+                        >
+                          {String(v)} ↗
+                        </a>
+                      ) : String(v).length > 100 ? (
                         <details>
                           <summary>{String(v).slice(0, 100)}…</summary>
                           <pre>{v}</pre>
                         </details>
-                      ) : recordHeaders[i] === '初始环境快照' &&
-                        String(v).startsWith('https://github.com/') ? (
-                        <a href={String(v)} target="_blank" rel="noreferrer">
-                          {String(v).slice(-40, -32)} ↗
-                        </a>
                       ) : v === 0 || v ? (
                         v
                       ) : (
@@ -298,7 +396,10 @@ export function RecordsTable({
           每页
           <select
             value={filter.pageSize}
-            onChange={(e) => update({ pageSize: Number(e.target.value) })}
+            disabled={busy}
+            onChange={(e) =>
+              update({ pageSize: Number(e.target.value) }, false)
+            }
           >
             {[10, 20, 50, 100].map((n) => (
               <option key={n} value={n}>
@@ -309,7 +410,7 @@ export function RecordsTable({
         </label>
         <Button
           variant="outline"
-          disabled={loading || !data || data.page <= 1}
+          disabled={busy || loading || !data || data.page <= 1}
           onClick={() =>
             setFilter((f) => ({ ...f, page: (data?.page || 1) - 1 }))
           }
@@ -318,7 +419,7 @@ export function RecordsTable({
         </Button>
         <Button
           variant="outline"
-          disabled={loading || !data || data.page >= data.totalPages}
+          disabled={busy || loading || !data || data.page >= data.totalPages}
           onClick={() =>
             setFilter((f) => ({ ...f, page: (data?.page || 1) + 1 }))
           }
@@ -327,9 +428,9 @@ export function RecordsTable({
         </Button>
       </div>
       <p className="sub" style={{ padding: '0 24px 20px' }}>
-        主表与新版试标表使用相同的 30 列；Excel 的“来源与导出记录”工作表单独保留
-        AI /
-        人工来源。轨迹文件列保留本机路径，未自动上传附件；提交人和时间仅来自实际交付登记。
+        导出主表在原有 30 个字段前增加序号，每批从 1 开始；Excel
+        的“来源与导出记录”工作表单独保留 AI /
+        人工来源及原始字段。轨迹列显示实际文件名，完整路径与快照明细保留在来源表中，文件名不代表已上传附件。
       </p>
     </section>
   );

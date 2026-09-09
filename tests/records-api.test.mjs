@@ -1,4 +1,4 @@
-// Synthetic API fixtures only. Stop the real runner and use an empty queue.
+// Synthetic API fixtures only, on an isolated port 3001 database without a runner.
 import assert from 'node:assert/strict';
 import { permissionAuditVersion } from '../lib/permission-audit.mjs';
 import {
@@ -47,13 +47,20 @@ async function exportFile(
   scope = 'filtered',
   id = crypto.randomUUID(),
   format = 'xlsx',
+  selected,
 ) {
   batches.push(id);
   writeFileSync(
     '.runner/records-export-batches',
     JSON.stringify([...new Set(batches)]),
   );
-  return request('/api/export', { requestId: id, filter: f, scope, format });
+  return request('/api/export', {
+    requestId: id,
+    filter: f,
+    scope,
+    format,
+    selected,
+  });
 }
 try {
   await api('/api/scheduler', {
@@ -300,11 +307,92 @@ try {
   const all = await exportFile(filter, 'filtered', crypto.randomUUID(), 'csv');
   assert.equal(all.status, 200);
   assert.equal(all.headers.get('X-Export-Count'), '12');
-  assert.ok((await all.text()).startsWith('"User Prompt","SessionID"'));
+  assert.ok((await all.text()).startsWith('"序号","User Prompt","SessionID"'));
   assert.equal((await records({ exports: 'exact', count: 2 })).total, 12);
+  const selected = [data.rows[0], page2.rows[0]].map(({ taskId, turnId }) => ({
+    taskId,
+    turnId,
+  }));
+  for (const invalid of [
+    [],
+    [selected[0], selected[0]],
+    [selected[0], { taskId: 'missing', turnId: 'missing' }],
+  ]) {
+    assert.equal(
+      (
+        await exportFile(
+          filter,
+          'selected',
+          crypto.randomUUID(),
+          'xlsx',
+          invalid,
+        )
+      ).status,
+      400,
+    );
+  }
+  assert.equal(
+    (
+      await exportFile(
+        { ...filter, category: 'Bug 修复' },
+        'selected',
+        crypto.randomUUID(),
+        'xlsx',
+        selected,
+      )
+    ).status,
+    400,
+  );
+  assert.equal((await exportFile(filter, 'typo')).status, 400);
+  assert.equal(
+    (await records({ exports: 'exact', count: 2 })).total,
+    12,
+    'invalid selections never increase counts',
+  );
+  const selectedId = crypto.randomUUID();
+  const chosen = await exportFile(
+    filter,
+    'selected',
+    selectedId,
+    'csv',
+    selected,
+  );
+  assert.equal(chosen.status, 200, await chosen.clone().text());
+  assert.equal(
+    chosen.headers.get('X-Export-Count'),
+    '2',
+    'selected export spans pages',
+  );
+  const chosenCsv = await chosen.text();
+  assert.ok(
+    chosenCsv.includes('"1","=') === false,
+    'CSV formula protection remains active',
+  );
+  for (const row of [data.rows[0], page2.rows[0]])
+    assert.ok(chosenCsv.includes(row.values[2]));
+  assert.ok(!chosenCsv.includes(data.rows[1].values[2]));
+  assert.equal(
+    (
+      await exportFile(
+        filter,
+        'selected',
+        selectedId,
+        'csv',
+        [...selected].reverse(),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await exportFile(filter, 'selected', selectedId, 'csv', [selected[0]]))
+      .status,
+    400,
+  );
+  assert.equal((await records({ exports: 'exact', count: 3 })).total, 2);
+  assert.equal((await records({ exports: 'exact', count: 2 })).total, 10);
   assert.equal((await records({ exports: 'never' })).total, 0);
   assert.equal((await exportFile({ ...filter, exports: 'never' })).status, 400);
-  assert.equal((await records({ exports: 'exact', count: 2 })).total, 12);
+  assert.equal((await records({ exports: 'exact', count: 2 })).total, 10);
   // A subsequent failure contaminates its entire question session, including old batches.
   const clean = await latest(ids[9]);
   await api(
@@ -355,6 +443,14 @@ try {
   const invalid = await records({ query: clean.sessionId });
   assert.ok(invalid.rows.every((r) => !r.eligible));
   assert.equal(
+    (
+      await exportFile(filter, 'selected', crypto.randomUUID(), 'xlsx', [
+        { taskId: clean.id, turnId: clean.turns[0].id },
+      ])
+    ).status,
+    400,
+  );
+  assert.equal(
     (await exportFile({ ...filter, query: clean.sessionId })).status,
     400,
   );
@@ -364,7 +460,7 @@ try {
     'old batch must not bypass a later permission denial',
   );
   console.log(
-    'Records API passed: 30 fields, 12 records on two pages, exact filters, XLSX/CSV, export scope, idempotent concurrent retries, ten-call failure budget and session lock.',
+    'Records API passed: serial plus 30 fields, 12 records on two pages, selected export, stale/invalid selection rejection, exact counts, XLSX/CSV, idempotent retries and permission gates.',
   );
 } finally {
   await api('/api/scheduler', original);

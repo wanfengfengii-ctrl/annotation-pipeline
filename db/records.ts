@@ -5,9 +5,11 @@ import {
   type RecordRow,
 } from '@/lib/record-fields';
 import type { Task, Turn } from '@/lib/pipeline';
+import type { ExportScope, RecordIdentity } from '@/lib/record-selection';
 export async function selectRecords(
   f: RecordFilter,
-  scope: 'page' | 'filtered' = 'page',
+  scope: ExportScope = 'page',
+  selected: RecordIdentity[] = [],
 ) {
   const conditions = [
       "COALESCE(json_extract(r.value,'$.excluded'),0)=0",
@@ -38,6 +40,12 @@ export async function selectRecords(
   if (f.exports === 'exact') {
     conditions.push('COALESCE(e.n,0)=?');
     args.push(f.count);
+  }
+  if (scope === 'selected') {
+    conditions.push(
+      "EXISTS (SELECT 1 FROM json_each(?) s WHERE json_extract(s.value,'$.taskId')=t.id AND json_extract(s.value,'$.turnId')=json_extract(r.value,'$.id'))",
+    );
+    args.push(JSON.stringify(selected));
   }
   const from = `FROM tasks t,json_each(t.data,'$.turns') r LEFT JOIN (SELECT task_id,turn_id,count(*) n,max(created_at) last_at FROM export_items GROUP BY task_id,turn_id) e ON e.task_id=t.id AND e.turn_id=json_extract(r.value,'$.id') WHERE ${conditions.join(' AND ')}`;
   const total =
