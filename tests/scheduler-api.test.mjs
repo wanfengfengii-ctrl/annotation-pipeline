@@ -1,4 +1,6 @@
 import { rules, candidateDigest } from '../lib/task-policy.mjs';
+import { questionRules } from '../lib/question-writing.mjs';
+import fixture from './fixtures/question.cjs';
 // Run against an empty local test workspace with the real runner stopped.
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -27,10 +29,12 @@ const run = async (b) => {
       policyAudit: {
         engine: 'codex-cli',
         ruleVersion: rules.version,
+        questionRuleVersion: questionRules.version,
         candidateDigest: await candidateDigest(b),
         tracePath: '/synthetic/policy',
         threadId: 'fixture',
         value: {
+          ...fixture.questionAudit,
           simpleFeatures: [],
           difficultyEvidence: ['scope', 'context', 'interaction', 'breadth'],
           assessedDifficulty: '中等',
@@ -140,7 +144,7 @@ try {
       version: '2026-09-08.project1',
       directory: 'projects/p-' + crypto.randomUUID(),
     },
-    prompt: 'Synthetic generated task',
+    prompt: fixture.question(1, 'Synthetic generated task'),
     tracePath: '/synthetic/generate.jsonl',
     fingerprint: fingerprint(draft.repoPath, 'Synthetic generated task'),
   };
@@ -164,7 +168,7 @@ try {
       await run({
         ...payload,
         fingerprint: fingerprint(draft.repoPath, 'next'),
-        prompt: 'next',
+        prompt: fixture.question(1, 'next'),
       })
     ).skipped,
     'nonempty queue must block supply',
@@ -174,7 +178,7 @@ try {
     ...payload,
     title: '__SCHEDULER_TEST__auto2',
     fingerprint: fingerprint(draft.repoPath, 'next'),
-    prompt: 'next',
+    prompt: fixture.question(1, 'next'),
   });
   remember({ id: second.taskId });
   await finish((await run({ action: 'claim', capacity: 3 })).job);
@@ -183,7 +187,7 @@ try {
       await run({
         ...payload,
         fingerprint: fingerprint(draft.repoPath, 'third'),
-        prompt: 'third',
+        prompt: fixture.question(1, 'third'),
       })
     ).skipped,
     'daily quota must hold',
@@ -194,7 +198,7 @@ try {
       await run({
         ...payload,
         fingerprint: fingerprint(draft.repoPath, 'paused'),
-        prompt: 'paused',
+        prompt: fixture.question(1, 'paused'),
       })
     ).skipped,
   );

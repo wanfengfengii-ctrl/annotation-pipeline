@@ -2,6 +2,8 @@
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { questionIssues } from '../lib/writing-style.mjs';
+import { questionRules } from '../lib/question-writing.mjs';
 import {
   fixture,
   api,
@@ -40,6 +42,14 @@ try {
   );
   assert.equal(new Set(t.turns.map((r) => r.sessionId)).size, 22);
   assert.equal(new Set(t.turns.map((r) => r.promptId)).size, 32);
+  for (const r of t.turns) {
+    assert.deepEqual(questionIssues(r.prompt), [], r.category);
+    assert.equal(
+      r.automation.policy.questionRuleVersion,
+      questionRules.version,
+    );
+    assert.equal(r.automation.policy.value.questionCompliant, true);
+  }
   assert.equal(new Set(t.turns.map((r) => r.container.workDir)).size, 22);
   assert.ok(
     t.turns.every((r) => r.roundNumber <= 3 && r.permissionAudit.passed),

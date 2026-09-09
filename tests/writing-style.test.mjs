@@ -6,14 +6,46 @@ import path from 'node:path';
 import {
   checkWriting,
   proseIssues,
-  withProjectScope,
+  questionIssues,
   writingInstructions,
 } from '../lib/writing-style.mjs';
 import { codexStage } from '../scripts/codex-stages.mjs';
+import fixture from './fixtures/question.cjs';
+import { questionCacheState } from '../lib/question-cache.mjs';
+import {
+  questionParts,
+  assertQuestionAudit,
+  questionRules,
+} from '../lib/question-writing.mjs';
 
-test('题目与每项点评允许多个句子的一段话，去外围引号并保留技术字面量', () => {
-  const prompt =
-    '请加上订单筛选，切换状态时回到第一页。保留 `status="pending"` 的接口格式，并补上空列表测试。';
+test('规则升级保留正在终端执行的原题，旧题不追溯套格式，新规则审核不会丢失', () => {
+  const cached = { prepare: { value: { prompt: '历史原题' } } };
+  assert.deepEqual(questionCacheState(cached, { turnId: 'one' }, 'one'), {
+    preserveQuestion: true,
+    questionStyleApplies: false,
+  });
+  assert.equal(cached.prepare.value.prompt, '历史原题');
+  assert.deepEqual(questionCacheState(cached, { turnId: 'other' }, 'one'), {
+    preserveQuestion: false,
+    questionStyleApplies: true,
+  });
+  const executed = {
+    ...cached,
+    claude: { success: true },
+    policy: { questionRuleVersion: questionRules.version },
+  };
+  assert.deepEqual(questionCacheState(executed, null, 'one'), {
+    preserveQuestion: true,
+    questionStyleApplies: true,
+  });
+  assert.throws(
+    () => questionCacheState({}, { turnId: 'one' }, 'one'),
+    /不能重新生成或重发/,
+  );
+});
+
+test('题目使用编号标题和一至两段正文，不追加项目路径；点评保留独立格式', () => {
+  const prompt = fixture.question();
   const checked = checkWriting('prepare', {
     prompt: '“' + prompt + '”',
     acceptance: ['原值'],
@@ -21,16 +53,84 @@ test('题目与每项点评允许多个句子的一段话，去外围引号并�
   assert.deepEqual(checked.issues, []);
   assert.equal(checked.value.prompt, prompt);
   assert.deepEqual(checked.value.acceptance, ['原值']);
-  const scoped = withProjectScope(prompt, 'projects/p-test');
-  assert.deepEqual(proseIssues(scoped), []);
-  assert.equal(withProjectScope(scoped, 'projects/p-test'), scoped);
-  assert.match(scoped, /status="pending"/);
-  assert.match(scoped, /仅在 projects\/p-test 创建或修改/);
+  assert.equal(questionParts(prompt).paragraphs.length, 2);
+  assert.ok(questionParts(prompt).bodyLength <= 260);
+  assert.ok(!checked.value.prompt.includes('projects/'));
   assert.deepEqual(
-    checkWriting('next', { prompt: '继续', reason: '本轮输出被截断' }).issues,
+    checkWriting('next', {
+      action: 'complete',
+      prompt: '无',
+      reason: '本轮已结束',
+    }).issues,
     [],
   );
   assert.match(writingInstructions('score'), /一段/);
+});
+
+test('首题、准备、迭代和 Bug 追问统一检查长度、段落、语气和编排信息', () => {
+  for (const stage of ['generate', 'prepare', 'next', 'project-next']) {
+    assert.deepEqual(
+      checkWriting(stage, {
+        prompt: fixture.question(12),
+        action: 'repair',
+        reason: '现有结果与预期不一致',
+      }).issues,
+      [],
+    );
+    for (const prompt of [
+      '只有一个概念',
+      '1、项目\n短需求',
+      '1、项目\n' + '需'.repeat(261),
+      fixture.question().replace('网页工作台', '网页工作台，可能需要'),
+      fixture.question().replace('网页工作台', '网页工作台，竟然'),
+      fixture.question().replace('网页工作台', '网页工作台“联调”'),
+      fixture.question() + '\n第三段',
+      fixture.question().replace('为需要', '技术栈：为需要'),
+      fixture.question() + '，仅在 /workspace 创建代码。',
+    ])
+      assert.ok(
+        checkWriting(stage, {
+          prompt,
+          action: 'repair',
+          reason: '现有结果与预期不一致',
+        }).issues.length,
+        stage + ': ' + prompt,
+      );
+    assert.match(writingInstructions(stage), /4 至 6/);
+    assert.match(writingInstructions(stage), /Feature/);
+  }
+  for (const n of [180, 260])
+    assert.deepEqual(questionIssues('1、测试\n' + '需'.repeat(n)), []);
+  assert.ok(
+    checkWriting('project-next', {
+      action: 'complete',
+      prompt: fixture.question(),
+      reason: '结束',
+    }).issues.length,
+  );
+  assert.ok(proseIssues(fixture.body).length, '点评仍不允许分段');
+});
+
+test('业务内容审核逐项留证，不允许数量不符、缺少依据或否决结果通过', () => {
+  assert.doesNotThrow(() => assertQuestionAudit(fixture.questionAudit));
+  for (const value of [
+    { ...fixture.questionAudit, questionCompliant: false },
+    { ...fixture.questionAudit, questionChecks: [] },
+    {
+      ...fixture.questionAudit,
+      questionChecks: Array(Object.keys(questionRules.criteria).length).fill(
+        'audience：重复',
+      ),
+    },
+    { ...fixture.questionAudit, workflowFeatures: ['一', '二', '三'] },
+    {
+      ...fixture.questionAudit,
+      workflowFeatures: ['一', '二', '三', '四', '五', '六', '七'],
+    },
+    { ...fixture.questionAudit, businessDetails: [] },
+    { ...fixture.questionAudit, businessDetails: ['重复', '重复'] },
+  ])
+    assert.throws(() => assertQuestionAudit(value), /题目内容审核/);
 });
 
 test('拒绝推测和情绪语气，保留未核验的事实边界而不是机械删词', () => {
@@ -80,7 +180,7 @@ process.stdin.on('data', c=>input+=c); process.stdin.on('end',()=>{
   fs.appendFileSync(${JSON.stringify(path.join(dir, 'calls'))}, 'call\\n');
   const revised=out.includes('.writing.');
   const mode=fs.existsSync(${JSON.stringify(path.join(dir, 'mode'))})?fs.readFileSync(${JSON.stringify(path.join(dir, 'mode'))},'utf8'):'';
-  const value={prompt:revised&&mode!=='invalid'?'加上订单筛选。切换状态时重置页码，并补上空列表测试。':'可能需要加上订单筛选',category:revised&&mode==='changed'?'Bug 修复':'Feature 迭代',difficulty:'中等',stack:'TypeScript',acceptance:['切换状态重置页码','空列表测试']};
+  const value={prompt:revised&&mode!=='invalid'?${JSON.stringify(fixture.question())}:'可能需要加上订单筛选',category:revised&&mode==='changed'?'Bug 修复':'Feature 迭代',difficulty:'中等',stack:'TypeScript',acceptance:['切换状态重置页码','空列表测试']};
   fs.writeFileSync(out,JSON.stringify(value)); console.log(JSON.stringify({type:'thread.started',thread_id:'fixture'}));
 });`,
       { mode: 0o700 },
@@ -94,7 +194,7 @@ process.stdin.on('data', c=>input+=c); process.stdin.on('end',()=>{
       onChild() {},
     };
     const result = await codexStage({ ...options, turnId: 'good' });
-    assert.match(result.value.prompt, /切换状态时重置页码/);
+    assert.equal(result.value.prompt, fixture.question());
     assert.deepEqual(result.value.acceptance, [
       '切换状态重置页码',
       '空列表测试',

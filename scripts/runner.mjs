@@ -9,7 +9,9 @@ import {
   projectCounts,
 } from '../lib/project-series.mjs';
 import { workflow, scoreInstructions, nextDecision } from '../lib/workflow.mjs';
-import { withProjectScope } from '../lib/writing-style.mjs';
+import { questionIssues } from '../lib/writing-style.mjs';
+import { questionRules } from '../lib/question-writing.mjs';
+import { questionCacheState } from '../lib/question-cache.mjs';
 import { harnessInstructions } from '../lib/harness.mjs';
 import { DockerRuntime, dockerStatus } from './docker-runtime.mjs';
 import { permissionIssues } from '../lib/permission-audit.mjs';
@@ -157,8 +159,15 @@ async function execute({ task, turn }) {
     : {};
   const persist = () =>
     writeFileSync(cachePath, JSON.stringify(cached, null, 2), { mode: 0o600 });
+  // A Terminal interaction can outlive its runner. Preserve the exact submitted
+  // prompt on upgrade/reconnect even before Claude has produced a final result.
+  const { preserveQuestion, questionStyleApplies } = questionCacheState(
+    cached,
+    containers.load(task.id)?.pending,
+    turn.id,
+  );
   if (cached.workflowVersion !== workflow.version) {
-    if (!cached.claude) delete cached.prepare;
+    if (!preserveQuestion) delete cached.prepare;
     delete cached.score;
     delete cached.delivery;
     delete cached.next;
@@ -166,7 +175,10 @@ async function execute({ task, turn }) {
   cached.workflowVersion = workflow.version;
   cached.attempt = (cached.attempt || 0) + 1;
   persist();
-  let automation = { workflowVersion: workflow.version };
+  let automation = {
+    workflowVersion: workflow.version,
+    questionRuleVersion: questionRules.version,
+  };
   let preparation = cached.prepare;
   const journal = path.join(dir, turn.id + '.job.json');
   const onChild = (p) => {
@@ -236,7 +248,7 @@ async function execute({ task, turn }) {
 本轮产物轨迹：${result.tracePath}
 本轮评分：${JSON.stringify(result.review)}
 已有题目（禁止实质重复）：${JSON.stringify(task.turns.map((r) => ({ category: r.category, prompt: r.requestedPrompt || r.prompt })))}
-读取真实项目目录和测试/错误轨迹，有具体缺陷且当前会话未达到两轮修复时才 action=repair、category=Bug 修复，这会在当前终端追问。不能把未完成的新功能或截断续写改叫 Bug，不生成 action=continue。基础可用后 action=advance，独立新题必须使用已按比例分配的 ${allocatedCategory || '无新题额度，应结束项目'} 类别，不能自行切换类别；新建此前不存在的功能算 0-1，修改已有能力算 Feature。同项目这两类各最多十题。理解与重构按 7:7:10:1:1 的累计目标选择。projectEvidence 写实际文件、现象和新功能与现有功能的边界；baseComplete 反映实际状态。修复达到两轮仍未解决时 needs_input，不换新窗口规避修复上限；所有任务充分覆盖或题额用完时 complete。prompt 用日常交流的一段话描述目标，修复时说明真实现象与预期，不使用模板或编造人工检查经历。结束时 prompt 写无。`,
+读取真实项目目录和测试/错误轨迹，有具体缺陷且当前会话未达到两轮修复时才 action=repair、category=Bug 修复，这会在当前终端追问。不能把未完成的新功能或截断续写改叫 Bug，不生成 action=continue。基础可用后 action=advance，独立新题必须使用已按比例分配的 ${allocatedCategory || '无新题额度，应结束项目'} 类别，不能自行切换类别；新建此前不存在的功能算 0-1，修改已有能力算 Feature。同项目这两类各最多十题。理解与重构按 7:7:10:1:1 的累计目标选择。projectEvidence 写实际文件、现象和新功能与现有功能的边界；baseComplete 反映实际状态。修复达到两轮仍未解决时 needs_input，不换新窗口规避修复上限；所有任务充分覆盖或题额用完时 complete。新题编号为 ${task.turns.length + 1}，prompt 按编号＋项目名称、180 至 260 字正文和 1 至 2 个自然段输出。修复说明真实现象与预期，迭代说明已有能力与本次变化，不使用模板或编造人工检查经历。结束时 prompt 写无。`,
         result.workDir,
         { allocation: { category: allocatedCategory } },
       );
@@ -249,7 +261,7 @@ async function execute({ task, turn }) {
     ) {
       const next = await step(
         'next',
-        `只读判断是否需要下一轮。会话最初目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}\n本轮原始目标：${turn.requestedPrompt || turn.prompt}\n完整验收任务：${result.evaluationPrompt}\n轨迹：${result.tracePath}\n产物目录：${result.workDir}\n本轮评价：${JSON.stringify(result.review)}\n执行结果类型：${result.executionOutcome || 'complete'}\n仅对本题未完成部分或已发现 Bug 提出具体修复，不增加无关功能。需要用户凭据、付费、外部访问或关键决策时 needs_input。完成时 complete；截断未完成时 needs_input；已证实产物问题且本会话未到两轮修复时 repair。prompt 必须是可执行的下一轮完整指令，complete/needs_input 时写“无”。reason 给出实际依据。每个会话最多初始题加两轮 Bug 修复，共三条对话，累计调用最多十次。Bug prompt 写平淡口语化的一段话，说明具体问题及预期，不允许只写继续。`,
+        `只读判断是否需要下一轮。会话最初目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}\n本轮原始目标：${turn.requestedPrompt || turn.prompt}\n完整验收任务：${result.evaluationPrompt}\n轨迹：${result.tracePath}\n产物目录：${result.workDir}\n本轮评价：${JSON.stringify(result.review)}\n执行结果类型：${result.executionOutcome || 'complete'}\n仅对本题未完成部分或已发现 Bug 提出具体修复，不增加无关功能。需要用户凭据、付费、外部访问或关键决策时 needs_input。完成时 complete；截断未完成时 needs_input；已证实产物问题且本会话未到两轮修复时 repair。prompt 必须是可执行的下一轮完整指令，complete/needs_input 时写“无”。reason 给出实际依据。每个会话最多初始题加两轮 Bug 修复，共三条对话，累计调用最多十次。新题编号为 ${task.turns.length + 1}。Bug prompt 同样按编号、项目名称和 180 至 260 字的 1 至 2 段正文输出，围绕现有网页流程说明具体问题及预期，不增加无关功能，不允许只写继续。`,
         result.workDir,
       );
       if (
@@ -295,6 +307,7 @@ async function execute({ task, turn }) {
       result = structuredClone(cached.completedResult);
       result.jobToken = turn.jobToken;
       automation = result.automation;
+      automation.questionRuleVersion = questionRules.version;
       await safePlan();
     } else {
       if (!cached.claude?.success) {
@@ -324,7 +337,7 @@ async function execute({ task, turn }) {
       ) {
         const scaffold = await step(
           'scaffold',
-          `为项目准备最小骨架。项目目标：${task.title}。技术栈：${task.stack}。只返回目录文件、程序入口、依赖清单、空模块接口、基础配置、测试运行器和最小空页面，不实现题目中的业务流程、领域算法或完整功能。现有路径为空，不需要安装依赖或运行命令。最多 40 个文件、总计 160KB，每个文件使用相对于项目根目录的路径。骨架将作为 Claude 开始前的初始代码，由 Claude 完成真正的全新功能。`,
+          `为项目准备最小骨架。项目目标：${task.title}。技术栈：${task.stack}。只返回目录文件、程序入口、必要依赖清单、空模块接口、基础配置、测试运行器和必需的最小网页入口（能在浏览器打开空页面），选择符合业务的轻量实现，不强制某种架构或数据库；网页入口不能省略，不用命令行界面代替。不实现题目中的业务流程、领域算法或完整功能。现有路径为空，不需要安装依赖或运行命令。最多 40 个文件、总计 160KB，每个文件使用相对于项目根目录的路径。骨架将作为 Claude 开始前的初始代码，由 Claude 完成真正的全新功能。`,
           task.workDir,
         );
         cached.scaffold = scaffold;
@@ -372,7 +385,7 @@ async function execute({ task, turn }) {
       });
       preparation = await step(
         'prepare',
-        `${seriesPrompt(task)}\n本题已分配分类：${turn.category}，category 必须保持该值，准备阶段不能更换题型。\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n当前容器内工作目录固定为 /workspace，容器已启动，项目骨架或上题归档代码已准备好，宿主机参考仓库不在容器里。0-1 在该项目内实现全新功能，Feature 迭代现有能力。请读取当前任务目录，准备交给 Claude 的完整任务 Prompt、分类、难度、技术栈和验收条件。保留用户约束，不擅自增加业务需求。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions()}`,
+        `${seriesPrompt(task)}\n本题已分配分类：${turn.category}，category 必须保持该值，准备阶段不能更换题型。\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n当前容器内工作目录固定为 /workspace，容器已启动，项目骨架或上题归档代码已准备好，宿主机参考仓库不在容器里。0-1 在该项目内实现全新功能，Feature 迭代现有能力。请读取当前任务目录，准备交给 Claude 的任务 prompt、分类、难度、技术栈和验收条件。题目编号为 ${index + 1}，正文用 180 至 260 字自然描述网页业务，原始题目措辞不是格式模板。保留业务目标和必要边界，不擅自增加业务需求；当前目录、权限、评测来源和技术实现细节不附加到 prompt。详细验收步骤放入 acceptance，正文保留用户可见的验收行为。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions()}`,
         task.workDir || task.repoPath,
         { allocation: { category: turn.category } },
       );
@@ -392,14 +405,15 @@ async function execute({ task, turn }) {
         throw Error('Bug 修复只能关联当前会话');
       if (!turn.repairOf && preparation.value.category !== turn.category)
         throw Error('独立题型与已分配额度不一致，需重新出题');
-      if (task.projectSeries && !continuation && !turn.repairOf) {
-        // A cached executed prompt is historical evidence and must not be rewritten.
-        if (!cached.claude)
-          preparation.value.prompt = withProjectScope(
-            preparation.value.prompt,
-            task.projectSeries.directory,
-          );
-      }
+      // The actual prompt stays identical to the checked question. Project
+      // location is already recorded in task.projectSeries and the snapshot.
+      // Executed prompts are immutable historical evidence.
+      if (
+        !preserveQuestion &&
+        !continuation &&
+        questionIssues(preparation.value.prompt).length
+      )
+        throw Error('执行前题目格式校验未通过');
       cached.prepare = preparation;
       persist();
       automation.preparation = preparation;
@@ -425,7 +439,7 @@ async function execute({ task, turn }) {
         .slice(0, 200);
       const audit = await step(
         'policy',
-        `${policyInstructions()}\n轮次上下文：${roundContext}\n独立审核用户原目标与准备后的实际任务，两个都必须合规。若当前输入仅为继续或续写，必须根据前序原始目标判断。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同且难度合格时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
+        `${policyInstructions({ questionStyle: questionStyleApplies })}\n${!questionStyleApplies ? '本题已在终端发送，保留原始题目，不追溯应用新的题目格式与内容标准；questionCompliant 写 false，questionChecks、workflowFeatures、businessDetails 写空数组，allowed 只按原禁出和难度规则判断。' : ''}\n轮次上下文：${roundContext}\n独立审核用户原目标与准备后的实际任务，两个都必须合规。若当前输入仅为继续或续写，必须根据前序原始目标判断。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同且难度合格时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
         task.workDir || task.repoPath,
       );
       audit.proposedDifficulty = candidate.difficulty;
@@ -437,11 +451,14 @@ async function execute({ task, turn }) {
         previousTurnId: previousTurn?.id,
       };
       audit.ruleVersion = rules.version;
+      if (questionStyleApplies)
+        audit.questionRuleVersion = questionRules.version;
       audit.candidateDigest = await candidateDigest(candidate);
       automation.policy = audit;
       assertPolicyAudit(audit, audit.candidateDigest, {
         firstTurn,
         allowFollowupFix,
+        requireQuestionStyle: questionStyleApplies,
       });
       cached.policy = audit;
       persist();
@@ -811,16 +828,12 @@ try {
           dir: supplyDir,
           turnId: randomUUID(),
           onChild: track,
-          prompt: `Codex 负责先生成通用项目骨架，再设计该项目首个全新功能，Claude 在可见终端中实现该功能。首题 category 必须为 0-1 代码生成。只读分析当前仓库，仅将其作为出题参考，Claude 在新容器 /workspace 中已准备好的最小骨架上工作，容器不可访问参考仓库。在相对目录 ${projectSeries.directory} 的项目骨架内设计此前不存在的全新功能，不修改该目录外业务。完整首题应交付能运行的全新功能及验证方法，后续在同项目继续出全新功能、Feature 迭代、真实 Bug 修复、理解和重构题，目标比例 7:7:10:1:1；0-1 与 Feature 各最多十题。出题范围：${context.config.scope}\n今日已完成及排队题型分布：${JSON.stringify(context.mix)}。新项目首题始终为 0-1；类型分布在同项目的后续题中调节。\n${policyInstructions()}\n不要重复或改写已有题目：${JSON.stringify(history)}\n禁止依赖其他自动任务的改动。不要提出需要外部付费、发布、推送或外部消息的任务。不执行此任务，只返回具体任务目标和验收要求。title 最多 200 字、prompt 最多 20000 字、stack 最多 300 字。`,
+          prompt: `Codex 负责先生成通用项目骨架，再设计该项目首个全新功能，Claude 在可见终端中实现该功能。首题 category 必须为 0-1 代码生成。只读分析当前仓库，仅将其作为出题参考，Claude 在新容器 /workspace 中已准备好的最小骨架上工作，容器不可访问参考仓库。在相对目录 ${projectSeries.directory} 的项目骨架内设计此前不存在的全新功能，不修改该目录外业务。完整首题应交付能运行的全新功能及验证方法，后续在同项目继续出全新功能、Feature 迭代、真实 Bug 修复、理解和重构题，目标比例 7:7:10:1:1；0-1 与 Feature 各最多十题。出题范围：${context.config.scope}\n今日已完成及排队题型分布：${JSON.stringify(context.mix)}。新项目首题始终为 0-1；类型分布在同项目的后续题中调节。\n${policyInstructions()}\n不要重复或改写已有题目：${JSON.stringify(history)}\n禁止依赖其他自动任务的改动。不要提出需要外部付费、发布、推送或外部消息的任务。不执行此任务，只返回具体任务目标和验收要求。title 使用简洁项目名称，最多 200 字；prompt 从 1、项目名称 开始，正文 180 至 260 字、1 至 2 段；stack 最多 300 字，只记录适合业务的建议，不把实现偏好强加为题目限制。`,
         });
         if (generated.value.category !== '0-1 代码生成')
           throw Error('自动新项目首题必须是 0-1 代码生成');
         if (existsSync(path.join(repoPath, projectSeries.directory)))
           throw Error('新项目目标目录已存在');
-        generated.value.prompt = withProjectScope(
-          generated.value.prompt,
-          projectSeries.directory,
-        );
         if (
           history.some(
             (t) =>
@@ -848,11 +861,14 @@ try {
         audit.proposedDifficulty = payload.difficulty;
         payload.difficulty = audit.value.assessedDifficulty;
         audit.ruleVersion = rules.version;
+        audit.questionRuleVersion = questionRules.version;
         audit.candidateDigest = await candidateDigest(payload);
         // Persist rejections too, so the UI can explain why nothing was enqueued.
         supplyState.lastAudit = audit;
         saveSupply();
-        assertPolicyAudit(audit, audit.candidateDigest);
+        assertPolicyAudit(audit, audit.candidateDigest, {
+          requireQuestionStyle: true,
+        });
         payload.policyAudit = audit;
         supplyState.pending = payload;
         saveSupply();
@@ -860,6 +876,7 @@ try {
       if (stopping) return;
       if (
         payload.policyAudit?.ruleVersion !== rules.version ||
+        payload.policyAudit?.questionRuleVersion !== questionRules.version ||
         payload.projectSeries?.version !== seriesVersion
       ) {
         delete supplyState.pending;

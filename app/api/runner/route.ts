@@ -11,6 +11,7 @@ import { permissionIssues } from '@/lib/permission-audit.mjs';
 import { roundNumber } from '@/lib/record-metadata';
 import { nextDecision, dailyMix } from '@/lib/workflow.mjs';
 import { candidateDigest, assertPolicyAudit } from '@/lib/task-policy.mjs';
+import { questionIssues } from '@/lib/writing-style.mjs';
 import { schedulerConfig } from '@/db/scheduler';
 import { sources } from '@/lib/scheduler';
 import {
@@ -111,7 +112,11 @@ export async function POST(req: Request) {
       validateSeries(b.projectSeries);
       if (b.category !== '0-1 代码生成')
         throw Error('自动新项目首题必须为 0-1 代码生成');
-      assertPolicyAudit(b.policyAudit, await candidateDigest(b));
+      assertPolicyAudit(b.policyAudit, await candidateDigest(b), {
+        requireQuestionStyle: true,
+      });
+      if (typeof b.prompt !== 'string' || questionIssues(b.prompt).length)
+        throw Error('自动题目不符合当前编号、正文长度或表达要求');
       if (b.difficulty !== b.policyAudit.value.assessedDifficulty)
         throw Error('题目难度与独立审核等级不一致');
       const now = new Date().toISOString(),

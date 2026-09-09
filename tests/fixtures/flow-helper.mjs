@@ -26,6 +26,7 @@ export function fixture(name, extra = {}) {
     runtime = path.join(dir, 'runtime');
   mkdirSync(bin, { recursive: true });
   mkdirSync(runtime);
+  copyFileSync('tests/fixtures/question.cjs', path.join(bin, 'question.cjs'));
   for (const name of ['git', 'gh', 'codex', 'docker', 'claude']) {
     const file = path.join(bin, name);
     copyFileSync('tests/fixtures/pipeline-cli.cjs', file);

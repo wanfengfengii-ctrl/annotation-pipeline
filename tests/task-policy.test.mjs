@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fixture from './fixtures/question.cjs';
+import { questionRules } from '../lib/question-writing.mjs';
 import {
   rules,
   policyInstructions,
@@ -32,6 +34,36 @@ test('policy covers every source family and rejects missing, stale, mismatched o
     },
   };
   assert.doesNotThrow(() => assertPolicyAudit(audit, digest));
+  assert.throws(
+    () => assertPolicyAudit(audit, digest, { requireQuestionStyle: true }),
+    /题目表达规则版本/,
+  );
+  const current = {
+    ...audit,
+    questionRuleVersion: questionRules.version,
+    value: { ...audit.value, ...fixture.questionAudit },
+  };
+  assert.doesNotThrow(() =>
+    assertPolicyAudit(current, digest, { requireQuestionStyle: true }),
+  );
+  assert.throws(
+    () =>
+      assertPolicyAudit(
+        { ...current, value: { ...current.value, questionCompliant: false } },
+        digest,
+      ),
+    /题目内容审核/,
+  );
+  assert.throws(
+    () => assertPolicyAudit({ ...current, questionRuleVersion: 'old' }, digest),
+    /题目表达规则版本/,
+  );
+  assert.ok(
+    !policyInstructions({ questionStyle: false }).includes(
+      questionRules.version,
+    ),
+    '已发出的历史题目不追溯套用新格式',
+  );
   for (const patch of [
     { ruleVersion: 'old' },
     { candidateDigest: 'different' },
