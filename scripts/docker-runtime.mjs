@@ -234,6 +234,37 @@ export class DockerRuntime {
       throw Error('容器身份或隔离配置不匹配，已停止操作');
     return c;
   }
+  environmentEvidence(task, turn) {
+    const s = this.load(task.id);
+    if (!s || s.questionId !== questionRoot(task, turn))
+      throw Error('环境证据与当前题目不匹配');
+    const c = this.owned(s);
+    if (!c.State.Running) throw Error('当前题目容器未运行');
+    // Docker inspect contains authentication in Config.Env. Export only this allowlist.
+    return {
+      version: '2026-09-09.environment1',
+      source: 'runner / Docker CLI inspect',
+      checkedAt: new Date().toISOString(),
+      taskId: s.taskId,
+      questionId: s.questionId,
+      containerId: c.Id,
+      running: c.State.Running,
+      image: s.image,
+      imageId: c.Image,
+      snapshot: s.snapshot,
+      workDir: s.workDir,
+      mount: {
+        source: c.Mounts[0].Source,
+        destination: '/workspace',
+        writable: true,
+      },
+      isolationVerified: true,
+      initialWorkspaceEmpty: s.initialWorkspaceEmpty,
+      os: s.os,
+      terminalIdentity: s.terminalIdentity,
+      permissionPreflight: s.permissionPreflight,
+    };
+  }
   async ensure(task, turn) {
     const questionId = questionRoot(task, turn);
     let rotating = false;

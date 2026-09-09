@@ -142,6 +142,17 @@ DockerRuntime.prototype.execute = async function (task, turn, reserve) {
   );
   return result;
 };
+DockerRuntime.prototype.environmentEvidence = function (task, turn) {
+  const s = this.load(task.id);
+  if (!s || s.questionId !== questionRoot(task, turn) || s.status !== 'running')
+    throw Error('fixture environment unavailable');
+  return {
+    source: 'synthetic fixture',
+    taskId: task.id,
+    questionId: s.questionId,
+    running: true,
+  };
+};
 DockerRuntime.prototype.close = async function (id) {
   const s = this.load(id);
   if (s) {

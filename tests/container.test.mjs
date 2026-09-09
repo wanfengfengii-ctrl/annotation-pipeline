@@ -66,6 +66,74 @@ test('Docker resource budget uses VM memory and zero when unavailable', () => {
   assert.equal(validDockerSnapshot(dockerSnapshot(imageId)), true);
   assert.equal(validDockerSnapshot('docker://other@' + imageId), false);
 });
+test('Environment evidence verifies live ownership and omits Docker authentication', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'environment-evidence-'));
+  const task = { id: randomUUID(), turns: [] },
+    turn = { id: randomUUID() };
+  task.turns.push(turn);
+  const workDir = path.join(root, 'workspace');
+  mkdirSync(workDir);
+  let inspected;
+  const rt = new DockerRuntime(
+    root,
+    async () => {},
+    () => false,
+    (args) => {
+      assert.equal(args[0], 'inspect');
+      return JSON.stringify([inspected]);
+    },
+  );
+  const s = {
+    taskId: task.id,
+    questionId: turn.id,
+    containerId: 'container',
+    workDir,
+    image: containerImage,
+    imageId,
+    snapshot: dockerSnapshot(imageId),
+    initialWorkspaceEmpty: true,
+  };
+  inspected = {
+    Id: s.containerId,
+    Image: imageId,
+    State: { Running: true },
+    Config: {
+      WorkingDir: '/workspace',
+      Env: ['apikey=test-secret'],
+      Labels: {
+        'annotation.pipeline.owner': rt.owner,
+        'annotation.pipeline.task': task.id,
+      },
+    },
+    Mounts: [
+      { Type: 'bind', Source: workDir, Destination: '/workspace', RW: true },
+    ],
+    HostConfig: {
+      Privileged: false,
+      RestartPolicy: { Name: 'no' },
+      CapDrop: ['ALL'],
+      SecurityOpt: ['no-new-privileges'],
+    },
+  };
+  rt.save(s);
+  const evidence = rt.environmentEvidence(task, turn);
+  assert.equal(evidence.running, true);
+  assert.equal(evidence.questionId, turn.id);
+  assert.equal(evidence.imageId, imageId);
+  assert.equal(evidence.mount.source, workDir);
+  assert(!JSON.stringify(evidence).includes('test-secret'));
+  assert(!JSON.stringify(evidence).includes('Env'));
+  inspected.State.Running = false;
+  assert.throws(() => rt.environmentEvidence(task, turn), /未运行/);
+  inspected.State.Running = true;
+  inspected.Image = 'sha256:' + 'b'.repeat(64);
+  assert.throws(() => rt.environmentEvidence(task, turn), /身份或隔离/);
+  inspected.Image = imageId;
+  assert.throws(
+    () => rt.environmentEvidence(task, { id: randomUUID() }),
+    /题目不匹配/,
+  );
+});
 test('Native completion needs turn_duration, preserves real IDs and ignores tool results', () => {
   assert.equal(
     readNativeTurn(files(events('hello', 'u1', false)), 'hello').complete,
