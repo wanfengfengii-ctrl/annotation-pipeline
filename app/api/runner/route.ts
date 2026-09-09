@@ -9,6 +9,7 @@ import { questionRoot } from '@/lib/question-session.mjs';
 import { terminalIssues } from '@/lib/terminal-policy.mjs';
 import { permissionIssues } from '@/lib/permission-audit.mjs';
 import { roundNumber } from '@/lib/record-metadata';
+import { validateInitialCodeSnapshot } from '@/lib/initial-code-snapshot.mjs';
 import { nextDecision, dailyMix } from '@/lib/workflow.mjs';
 import { candidateDigest, assertPolicyAudit } from '@/lib/task-policy.mjs';
 import { questionIssues } from '@/lib/writing-style.mjs';
@@ -28,6 +29,36 @@ export async function POST(req: Request) {
     const b: any = await req.json();
     if (!b || typeof b !== 'object' || Array.isArray(b))
       throw new Error('请求格式无效');
+    if (b.action === 'initial-code-snapshot') {
+      const item = await get(text(b.taskId, '任务', 100));
+      if (!item) throw Error('任务不存在');
+      const root = item.task.turns.find((r) => r.id === b.questionId);
+      const container =
+        root?.container ||
+        (item.task.container?.questionId === root?.id
+          ? item.task.container
+          : undefined);
+      if (!root || questionRoot(item.task, root) !== root.id || !container)
+        throw Error('初始快照必须属于实际原题容器');
+      const value = validateInitialCodeSnapshot(
+        b.snapshot,
+        item.task.id,
+        root.id,
+        container,
+      );
+      const existing = item.task.initialCodeSnapshots?.[root.id];
+      if (
+        existing &&
+        (existing.sha !== value.sha ||
+          existing.manifestSha256 !== value.manifestSha256)
+      )
+        throw Error('已冻结的 GitHub 初始快照不可替换');
+      if (existing) return Response.json({ ok: true, url: existing.url });
+      item.task.initialCodeSnapshots ||= {};
+      item.task.initialCodeSnapshots[root.id] = value;
+      await save(item.task, item.revision);
+      return Response.json({ ok: true, url: value.url });
+    }
     if (b.action === 'heartbeat') {
       await db()
         .prepare(

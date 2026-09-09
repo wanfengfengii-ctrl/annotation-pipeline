@@ -7,6 +7,8 @@ import {
   freshCategories,
 } from '@/lib/project-series.mjs';
 import { RecordsTable } from '@/components/pipeline/records-table';
+import { initialCodeURL, recordRound, recordStack } from '@/lib/record-fields';
+import { roundNumber } from '@/lib/record-metadata';
 import { RecordMetadataPanel } from '@/components/pipeline/record-metadata-panel';
 import { rules, difficultyRules } from '@/lib/task-policy.mjs';
 import { HumanReviewPanel } from '@/components/pipeline/human-review-panel';
@@ -503,7 +505,8 @@ export default function Home() {
                             {t.title}
                           </button>
                           <div className="sub">
-                            {t.category} · {t.stack} · {t.difficulty}
+                            {t.category} · {recordStack(t.stack)} ·{' '}
+                            {t.difficulty}
                           </div>
                         </TableCell>
                         <TableCell>
@@ -522,13 +525,9 @@ export default function Home() {
                           </div>
                         </TableCell>
                         <TableCell>
-                          {t.snapshot ? (
+                          {initialCodeURL(t) ? (
                             <a
-                              href={
-                                t.snapshot.startsWith('https://')
-                                  ? t.snapshot
-                                  : undefined
-                              }
+                              href={initialCodeURL(t)}
                               target="_blank"
                               rel="noreferrer"
                               className="tag"
@@ -537,7 +536,7 @@ export default function Home() {
                                 size={12}
                                 style={{ display: 'inline' }}
                               />{' '}
-                              {t.snapshot.slice(-40, -32)}
+                              {initialCodeURL(t).slice(-40, -32)}
                             </a>
                           ) : (
                             <span className="sub">首轮执行前采集</span>
@@ -619,7 +618,7 @@ export default function Home() {
                           <TableCell>
                             {t.title}
                             <p className="sub">
-                              第 {t.turns.indexOf(r) + 1} 轮 · {r.category}
+                              {recordRound(roundNumber(t, r))} · {r.category}
                             </p>
                           </TableCell>
                           <TableCell>{humanLabel(r)}</TableCell>
@@ -892,7 +891,8 @@ export default function Home() {
               CLI。
             </div>
             <div className="wide sub">
-              执行器会创建独立工作区，不自动提交或推送模型生成的代码。外部依赖请在工作区准备好后运行后续轮次。
+              执行器会创建独立工作区，在每道独立题开始前将冻结的初始代码发布到本项目的私有
+              GitHub 快照仓库。
             </div>
             <div className="wide actions">
               <Button type="submit" disabled={busy}>
@@ -977,7 +977,7 @@ function TaskDetail({
         {t.title}
       </SheetTitle>
       <SheetDescription className="sub">
-        {t.stack} · {t.category} · {t.difficulty}
+        {recordStack(t.stack)} · {t.category} · {t.difficulty}
       </SheetDescription>
       <div className="actions" style={{ margin: '16px 0' }}>
         <Badge value={status(t)} />
@@ -1118,7 +1118,7 @@ function TaskDetail({
             .map((r) => (
               <div key={r.id}>
                 <h3 className="section">
-                  第 {t.turns.indexOf(r) + 1} 轮 · {r.category}
+                  {recordRound(roundNumber(t, r))} · {r.category}
                 </h3>
                 <HumanReviewPanel
                   key={r.id}
@@ -1142,26 +1142,33 @@ function TaskDetail({
         </TabsContent>
         <TabsContent value="environment">
           <div className="section">
-            <h3>初始快照</h3>
-            {t.snapshot ? (
+            <h3>初始环境快照</h3>
+            {Object.values(t.initialCodeSnapshots || {}).map((snapshot, i) => (
+              <p key={snapshot.questionId} className="sub mono">
+                原题 {i + 1}：
+                <a href={snapshot.url} target="_blank" rel="noreferrer">
+                  {snapshot.url}
+                </a>
+              </p>
+            ))}
+            {!Object.keys(t.initialCodeSnapshots || {}).length &&
+            initialCodeURL(t) ? (
               <a
-                href={
-                  t.snapshot.startsWith('https://') ? t.snapshot : undefined
-                }
+                href={initialCodeURL(t)}
                 target="_blank"
                 rel="noreferrer"
                 className="sub mono"
               >
-                {t.snapshot}
+                {initialCodeURL(t)}
               </a>
-            ) : (
+            ) : !Object.keys(t.initialCodeSnapshots || {}).length ? (
               <p className="sub">
-                首轮执行前记录作业镜像摘要与空目录状态，GitHub
-                仓库单独作为出题参考。
+                执行前将冻结的初始代码发布至 GitHub，并核验完整 Commit 链接。
               </p>
-            )}
+            ) : null}
           </div>
           {[
+            ['容器镜像快照', t.snapshot || '尚未采集'],
             ['宿主机参考仓库', t.repoPath],
             ['独立工作区', t.workDir || '尚未创建'],
             ['容器名称', t.container?.name || '尚未创建'],

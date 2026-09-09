@@ -51,6 +51,20 @@ try {
     assert.equal(r.automation.policy.value.questionCompliant, true);
   }
   assert.equal(new Set(t.turns.map((r) => r.container.workDir)).size, 22);
+  assert.equal(Object.keys(t.initialCodeSnapshots).length, 22);
+  for (const r of t.turns) {
+    assert.ok(
+      t.initialCodeSnapshots[r.questionRootId]?.url.startsWith(
+        'https://github.com/',
+      ),
+    );
+    assert.ok(
+      calls(f).find(
+        (e) => e.name === 'initial-code' && e.questionId === r.questionRootId,
+      ).time <=
+        calls(f).find((e) => e.name === 'claude' && e.turnId === r.id).time,
+    );
+  }
   assert.ok(
     t.turns.every((r) => r.roundNumber <= 3 && r.permissionAudit.passed),
   );

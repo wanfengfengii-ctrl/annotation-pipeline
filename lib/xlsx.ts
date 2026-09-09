@@ -89,6 +89,7 @@ export function xlsx(rows: RecordRow[], batchId: string) {
       '原始轨迹路径',
       '原始操作系统',
       '原始语言/框架',
+      '初始代码快照说明',
     ],
     ...rows.map((r) => [
       batchId,
@@ -101,6 +102,7 @@ export function xlsx(rows: RecordRow[], batchId: string) {
       r.originalFields?.tracePath || '',
       r.originalFields?.os || '',
       r.originalFields?.stack || '',
+      r.originalFields?.initialCodeNote || '',
     ]),
   ];
   const files: Record<string, Uint8Array> = {};

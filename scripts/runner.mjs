@@ -37,6 +37,7 @@ import {
   assertPolicyAudit,
 } from '../lib/task-policy.mjs';
 import { githubSnapshot, githubStatus } from './github-snapshot.mjs';
+import { InitialCodePublisher } from './initial-code-snapshot.mjs';
 import { resources, fingerprint, supplyDecision } from './scheduler.mjs';
 import { codexStage } from './codex-stages.mjs';
 import {
@@ -103,6 +104,7 @@ const command = (cmd, args, cwd) =>
     timeout: 60000,
   }).trim();
 const version = 'Claude Code · Mac Terminal 交互作业';
+const initialCodePublisher = new InitialCodePublisher();
 const codexVersion = command('codex', ['--version'], root);
 let github = githubStatus(),
   githubChecked = Date.now();
@@ -633,6 +635,22 @@ async function execute({ task, turn }) {
       cached.snapshot = snap;
       persist();
       automation.snapshot = snap;
+      const questionId = container.questionId || turn.questionRootId || turn.id;
+      const initialCode = initialCodePublisher.publish({
+        taskId: task.id,
+        questionId,
+        container,
+        workRoot,
+        publicationMode:
+          alreadySent || turn.repairOf ? 'backfill' : 'before-run',
+      });
+      await api({
+        action: 'initial-code-snapshot',
+        taskId: task.id,
+        questionId,
+        snapshot: initialCode,
+      });
+      automation.initialCodeSnapshot = initialCode;
       stage = 'claude';
       await api({
         action: 'stage',

@@ -2,6 +2,11 @@
 import { questionRoot } from '../../lib/question-session.mjs';
 import { permissionAuditVersion } from '../../lib/permission-audit.mjs';
 import { DockerRuntime } from '../../scripts/docker-runtime.mjs';
+import { InitialCodePublisher } from '../../scripts/initial-code-snapshot.mjs';
+import {
+  initialCodeVersion,
+  initialSnapshotSubject,
+} from '../../lib/initial-code-snapshot.mjs';
 import {
   containerImage,
   containerPolicyVersion,
@@ -15,6 +20,39 @@ os.totalmem = () => 32 * 2 ** 30;
 os.freemem = () => 16 * 2 ** 30;
 os.loadavg = () => [1, 1, 1];
 os.platform = () => 'fixture';
+InitialCodePublisher.prototype.publish = function ({
+  taskId,
+  questionId,
+  container,
+  publicationMode,
+}) {
+  const subject = initialSnapshotSubject(container);
+  appendFileSync(
+    process.env.FIXTURE_LOG,
+    JSON.stringify({
+      name: 'initial-code',
+      taskId,
+      questionId,
+      time: Date.now(),
+    }) + '\n',
+  );
+  return {
+    version: initialCodeVersion,
+    engine: 'github-cli-initial-code',
+    taskId,
+    questionId,
+    repository: 'fixture/initial-code',
+    sha: 'a'.repeat(40),
+    tree: 'b'.repeat(40),
+    url: 'https://github.com/fixture/initial-code/commit/' + 'a'.repeat(40),
+    isPrivate: true,
+    files: subject.files,
+    manifestSha256: subject.sha256,
+    imageSnapshot: container.snapshot,
+    publicationMode,
+    verifiedAt: new Date().toISOString(),
+  };
+};
 DockerRuntime.prototype.ensure = async function (task, turn) {
   let s = this.load(task.id);
   const questionId = questionRoot(task, turn);

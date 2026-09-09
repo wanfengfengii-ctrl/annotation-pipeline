@@ -3,6 +3,7 @@ import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { validateScaffold } from './project-scaffold.mjs';
 import { codexTurnIds } from '../lib/harness.mjs';
+import { stackFieldInstructions } from '../lib/stack-field.mjs';
 import {
   runtimeCheckIdPattern,
   validateRuntimePlan,
@@ -14,6 +15,11 @@ import {
   assertWritingRevision,
 } from '../lib/writing-style.mjs';
 const str = { type: 'string' };
+const stack = {
+  type: 'string',
+  maxLength: 300,
+  description: stackFieldInstructions,
+};
 const strings = { type: 'array', items: str };
 const five = { type: 'array', items: str, minItems: 5, maxItems: 5 };
 const schema = (properties) => ({
@@ -62,7 +68,7 @@ export const schemas = {
     },
   }),
   scaffold: schema({
-    stack: str,
+    stack,
     summary: str,
     startup: str,
     files: {
@@ -144,7 +150,7 @@ export const schemas = {
       ],
     },
     difficulty: { type: 'string', enum: ['中等', '困难', '地狱'] },
-    stack: str,
+    stack,
   }),
   prepare: schema({
     prompt: str,
@@ -161,7 +167,7 @@ export const schemas = {
       ],
     },
     difficulty: { type: 'string', enum: ['简单', '中等', '困难', '地狱'] },
-    stack: str,
+    stack,
     acceptance: strings,
   }),
   snapshot: schema({

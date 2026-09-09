@@ -1,6 +1,7 @@
 import { issues, type Task, type Turn, type Review } from './pipeline.ts';
 import { humanAsReview } from './human-review.ts';
 import { roundNumber } from './record-metadata.ts';
+import { formatStack } from './stack-field.mjs';
 export const recordHeaders = [
   'User Prompt',
   'SessionID',
@@ -50,6 +51,7 @@ export type RecordRow = {
     tracePath: string;
     os: string;
     stack: string;
+    initialCodeNote?: string;
   };
 };
 export function recordCategory(value: string) {
@@ -65,16 +67,33 @@ export function recordOS(value: string) {
   if (/windows|win32/i.test(value)) return 'Windows';
   return value;
 }
-export const recordStack = (value: string) =>
-  value
-    .split(/[,，、;；\r\n]+/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .join('、');
+export const recordStack = formatStack;
+export function recordRound(n: number | '') {
+  if (!n) return '';
+  const digits = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+  const value =
+    n < 10
+      ? digits[n]
+      : n < 100
+        ? (n < 20 ? '' : digits[Math.floor(n / 10)]) +
+          '十' +
+          (n % 10 ? digits[n % 10] : '')
+        : String(n);
+  return `第${value}轮`;
+}
 export const snapshotLink = (value: string) =>
   /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/commit\/[a-f0-9]{40}$/i.test(
     value,
   );
+export function initialCodeURL(t: Task, r = t.turns?.[0]) {
+  const initial = r && t.initialCodeSnapshots?.[r.questionRootId || r.id];
+  return (
+    initial?.url ||
+    (!r?.container && !t.container && snapshotLink(t.snapshot || '')
+      ? t.snapshot
+      : '')
+  );
+}
 export function shanghaiDate(v?: string) {
   if (!v || isNaN(Date.parse(v))) return '';
   return new Date(Date.parse(v) + 8 * 3600000)
@@ -95,6 +114,8 @@ export function recordRow(
       source === 'human' && h ? humanAsReview(h) : r.review;
   const human = source === 'human',
     submitted = human ? h?.receipt : r.receipt;
+  const initialCode = t.initialCodeSnapshots?.[r.questionRootId || r.id];
+  const initialURL = initialCodeURL(t, r);
   const quality = human
     ? h?.state === 'approved'
       ? '人工复核通过（已有 AI 评分）'
@@ -121,13 +142,17 @@ export function recordRow(
     tracePath: r.tracePath || '',
     os: r.os || t.os || '',
     stack: r.stack || t.stack || '',
+    initialCodeNote:
+      initialCode?.publicationMode === 'backfill'
+        ? '初始代码来自执行前冻结清单，GitHub 提交于执行后补发；未改写原始轨迹。'
+        : '',
   };
   const base = [
     r.prompt,
     r.sessionId || '',
     r.promptId || '',
-    roundNumber(t, r),
-    r.container?.snapshot || t.snapshot || '',
+    recordRound(roundNumber(t, r)),
+    initialURL,
     originalFields.tracePath.split(/[\\/]/).at(-1) || '',
     r.reproducibility || t.reproducibility || '',
     r.harness || t.harness || 'Claude Code',
@@ -166,6 +191,7 @@ export function recordRow(
     formatVersion: 2,
     originalFields,
     eligible:
+      snapshotLink(initialURL) &&
       !r.excluded &&
       (human
         ? h?.state === 'approved' &&

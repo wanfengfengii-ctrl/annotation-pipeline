@@ -171,6 +171,25 @@ export type Turn = {
   };
 };
 export type Task = {
+  initialCodeSnapshots?: Record<
+    string,
+    {
+      version: string;
+      engine: string;
+      taskId: string;
+      questionId: string;
+      repository: string;
+      sha: string;
+      tree: string;
+      url: string;
+      isPrivate: boolean;
+      files: number;
+      manifestSha256: string;
+      imageSnapshot: string;
+      publicationMode: 'before-run' | 'backfill';
+      verifiedAt: string;
+    }
+  >;
   container?: ContainerRecord;
   harness?: 'Claude Code' | 'Codex CLI';
   id: string;

@@ -1,6 +1,7 @@
 // Synthetic API fixtures only, on an isolated port 3001 database without a runner.
 import assert from 'node:assert/strict';
 import { permissionAuditVersion } from '../lib/permission-audit.mjs';
+import { initialCodeVersion } from '../lib/initial-code-snapshot.mjs';
 import {
   containerImage,
   containerPolicyVersion,
@@ -86,6 +87,12 @@ try {
     assert.equal(job.task.id, task.id);
     const sessionId = 'records-session-' + i;
     const container = {
+      questionId: job.turn.id,
+      scaffoldSnapshot: {
+        manifestPath: '/fixture/scaffold.json',
+        sha256: 'c'.repeat(64),
+        files: 1,
+      },
       terminalIdentity: {
         transport: 'mac-terminal',
         runId: job.turn.id,
@@ -102,6 +109,38 @@ try {
       workDir: '/fixture/' + task.id + '/workspace',
     };
     await run({ action: 'container', taskId: task.id, container });
+    const initial = {
+      version: initialCodeVersion,
+      engine: 'github-cli-initial-code',
+      taskId: task.id,
+      questionId: job.turn.id,
+      repository: 'fixture/initial-code',
+      sha: 'a'.repeat(40),
+      tree: 'b'.repeat(40),
+      url: 'https://github.com/fixture/initial-code/commit/' + 'a'.repeat(40),
+      isPrivate: true,
+      files: 1,
+      manifestSha256: 'c'.repeat(64),
+      imageSnapshot: container.snapshot,
+      publicationMode: 'before-run',
+      verifiedAt: new Date().toISOString(),
+    };
+    const publish = {
+      action: 'initial-code-snapshot',
+      taskId: task.id,
+      questionId: job.turn.id,
+      snapshot: initial,
+    };
+    await assert.rejects(
+      () =>
+        run({
+          ...publish,
+          snapshot: { ...initial, manifestSha256: 'd'.repeat(64) },
+        }),
+      /不一致/,
+    );
+    await run(publish);
+    await run(publish);
     const finish = (extra) =>
       run({
         action: 'finish',
@@ -267,7 +306,12 @@ try {
   assert.equal(data.rows.length, 10);
   assert.equal(data.headers.length, 30);
   assert.ok(data.rows.every((r) => r.eligible));
-  assert.ok(data.rows.every((r) => r.values[3] === 1));
+  assert.ok(data.rows.every((r) => r.values[3] === '第一轮'));
+  assert.ok(
+    data.rows.every((r) =>
+      r.values[4].startsWith('https://github.com/fixture/initial-code/commit/'),
+    ),
+  );
   const editedRow = await records({ query: '__RECORDS_API__1', pageSize: 20 });
   assert.deepEqual(
     editedRow.rows.find((r) => r.taskId === edited.id).values.slice(-3),

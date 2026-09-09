@@ -8,6 +8,7 @@ import {
   recordCategory,
   recordOS,
   recordStack,
+  recordRound,
 } from '../lib/record-fields.ts';
 import { exportScope, recordSelection } from '../lib/record-selection.ts';
 import { xlsx, recordsCsv } from '../lib/xlsx.ts';
@@ -116,7 +117,10 @@ test('实际工作簿字段完整有序，AI 与实际提交来源分开，Excel
   assert.equal(row.values[14], turn.review.descriptions[0]);
   assert.match(sheet, /&lt;&amp;&quot;/);
   assert.match(sheet, /<c r="A2" s="2"><v>1<\/v><\/c>/);
-  assert.match(sheet, /<c r="E2" s="2"><v>1<\/v><\/c>/);
+  assert.match(
+    sheet,
+    /<c r="E2" s="2" t="inlineStr"><is><t xml:space="preserve">第一轮<\/t>/,
+  );
   assert.match(sheet, /<c r="O2" s="2"><v>1<\/v><\/c>/);
   assert.match(sheet, /<hyperlink ref="F2" r:id="rId1"/);
   assert.match(
@@ -173,7 +177,30 @@ test('样表字段统一显示，真实容器快照不替换为参考仓库，�
     },
   };
   const row = recordRow(t, r, 'ai');
-  assert.equal(row.values[4], r.container.snapshot);
+  assert.equal(row.values[4], '');
+  assert.equal(row.eligible, false);
+  const actualURL =
+    'https://github.com/fixture/initial/commit/' + 'b'.repeat(40);
+  t.initialCodeSnapshots = {
+    r: { url: actualURL, publicationMode: 'backfill' },
+  };
+  assert.equal(recordRow(t, r, 'ai').values[4], actualURL);
+  assert.equal(
+    recordRow(t, { ...r, id: 'repair', questionRootId: 'r' }, 'ai').values[4],
+    actualURL,
+  );
+  assert.equal(
+    recordRow(
+      t,
+      { ...r, id: 'new-question', questionRootId: 'new-question' },
+      'ai',
+    ).values[4],
+    '',
+  );
+  assert.match(
+    recordRow(t, r, 'ai').originalFields.initialCodeNote,
+    /执行后补发/,
+  );
   assert.match(
     row.originalFields.snapshot,
     /骨架快照：\/actual\/manifest.json#sha256:/,
@@ -193,6 +220,34 @@ test('样表字段统一显示，真实容器快照不替换为参考仓库，�
   assert.match(
     strFromU8(zip['xl/worksheets/sheet2.xml']),
     /\/actual\/manifest.json/,
+  );
+});
+
+test('轮次使用中文顺序，语言框架去除业务说明并保留库名与版本', () => {
+  assert.deepEqual([1, 2, 3, 10].map(recordRound), [
+    '第一轮',
+    '第二轮',
+    '第三轮',
+    '第十轮',
+  ]);
+  assert.equal(recordRound(''), '');
+  assert.equal(
+    recordStack(
+      'Python 3 标准库、SQLite（sqlite3）、HTTP 服务与客户端、unittest、多进程集成测试',
+    ),
+    'Python 3、SQLite（sqlite3）、unittest',
+  );
+  assert.equal(
+    recordStack(
+      'Python 3、SQLite、Python 标准库 urllib.request/http.server、unittest；现有 HTML 仅为空骨架，未接入服务路由。',
+    ),
+    'Python 3、SQLite、urllib.request/http.server、unittest',
+  );
+  assert.equal(
+    recordStack(
+      'Go 1.23.12、标准库 net/http、HTML、CSS、原生 JavaScript、WebSocket',
+    ),
+    'Go 1.23.12、标准库 net/http、HTML、CSS、原生 JavaScript、WebSocket',
   );
 });
 
