@@ -1,6 +1,7 @@
 'use client';
 import { canAddTurn, claudeCallCount } from '@/lib/project-series.mjs';
 import { RecordsTable } from '@/components/pipeline/records-table';
+import { RecordMetadataPanel } from '@/components/pipeline/record-metadata-panel';
 import { rules, difficultyRules } from '@/lib/task-policy.mjs';
 import { HumanReviewPanel } from '@/components/pipeline/human-review-panel';
 import { humanLabel, humanIssues } from '@/lib/human-review';
@@ -805,7 +806,7 @@ export default function Home() {
                 </ul>
                 <a
                   className="row-title"
-                  href="https://docs.qq.com/document/DVWVQemZTRm5jZnRJ"
+                  href="https://docs.qq.com/document/DVUhTYVdrZkFxdEhy"
                   target="_blank"
                   rel="noreferrer"
                 >
@@ -1217,6 +1218,7 @@ function TurnPanel({
             当前阶段：
             {(
               {
+                context: '上下文配置预检',
                 prepare: 'Codex 任务准备',
                 policy: 'Codex 禁出、雷同与难度审核',
                 snapshot: 'Codex + GitHub CLI 环境快照',
@@ -1345,11 +1347,32 @@ function TurnPanel({
           <p className="sub">{r.review.other}</p>
         </section>
       )}
+      {r.contextCheck && (
+        <details className="section">
+          <summary>
+            本轮上下文检查 ·{' '}
+            {r.contextCheck.ready ? '客户端声明符合' : '待核验'}
+          </summary>
+          <p className="sub">{r.contextCheck.reason}</p>
+          <p className="sub">
+            模型：{r.contextCheck.model} · 运行报告：
+            {r.contextCheck.runtimeTokens ?? '未报告'} tokens
+          </p>
+          <p className="sub">{r.contextCheck.note}</p>
+        </details>
+      )}
       {r.error && (
         <p className="issue" style={{ marginTop: 12 }}>
           {r.error}
         </p>
       )}
+      <RecordMetadataPanel
+        key={r.id + (r.metadataHistory?.length || 0)}
+        task={t}
+        turn={r}
+        run={run}
+        busy={busy}
+      />
       {r.continuationOf && (
         <details className="section">
           <summary>本轮继续原题 · 原始验收目标</summary>

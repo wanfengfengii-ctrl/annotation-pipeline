@@ -106,6 +106,34 @@ export function SchedulerPanel({
         流程规则：{s?.workflowVersion || '等待执行器报告'}
         。评分包含五维分档、过程与产物证据；每轮生成带 SHA-256 清单的本地归档。
       </p>
+      <div className="section">
+        <h3>上下文检查 · 要求 1,000,000 tokens</h3>
+        <p className="sub">
+          {s?.contextCheck?.reason || '等待本机执行器读取 CLI 配置'}。
+        </p>
+        {s?.contextCheck && (
+          <p className="sub">
+            当前配置模型：{s.contextCheck.model || '未确定'} ·{' '}
+            {s.contextCheck.ready ? '客户端声明符合' : '待核验'}
+            ，实际任务开始前按项目配置再次检查。
+          </p>
+        )}
+        <p className="sub">
+          更换 CLI
+          模型后自动重新检查，不改写模型配置；配置声明不代表网关已通过百万 token
+          实测。
+        </p>
+        {!!s?.contextSources?.length && (
+          <details>
+            <summary>查看任务仓库检查</summary>
+            {s.contextSources.map((v: any) => (
+              <p className="sub" key={v.repoPath}>
+                {v.repoPath}：{v.reason}
+              </p>
+            ))}
+          </details>
+        )}
+      </div>
       {s?.mix && (
         <p className="sub">
           今日有效轮次：

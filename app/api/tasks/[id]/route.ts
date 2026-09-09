@@ -1,4 +1,5 @@
 import { isContinuation } from '@/lib/round-context.mjs';
+import { updateRecordMetadata } from '@/lib/record-metadata';
 import { canAddTurn } from '@/lib/project-series.mjs';
 import { get, save, failure, protect, text } from '@/db/store';
 import {
@@ -27,7 +28,11 @@ export async function PATCH(
       ['review', 'retry', 'assess', 'exclude', 'trace'].includes(b.action)
     )
       throw Error('人工交付已登记，该轮已锁定');
-    if (b.action === 'enqueue') {
+    if (b.action === 'record-metadata') {
+      const r = t.turns.find((r) => r.id === b.turnId);
+      if (!r) throw Error('轮次不存在');
+      updateRecordMetadata(t, r, b.metadata);
+    } else if (b.action === 'enqueue') {
       if (t.closed || pending(t) || !canAddTurn(t))
         throw new Error('会话已结束、正在执行或已达到 10 轮上限');
       if (
@@ -54,6 +59,7 @@ export async function PATCH(
       )
         throw Error('项目首题须为 0-1，后续题须基于已有项目');
       t.turns.push({
+        roundNumber: t.turns.length + 1,
         id: crypto.randomUUID(),
         prompt: text(b.prompt, 'Prompt', 80000),
         ...(continuing

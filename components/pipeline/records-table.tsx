@@ -235,7 +235,7 @@ export function RecordsTable({
                         <summary>{String(v).slice(0, 100)}…</summary>
                         <pre>{v}</pre>
                       </details>
-                    ) : i === 3 &&
+                    ) : recordHeaders[i] === '初始环境快照' &&
                       String(v).startsWith('https://github.com/') ? (
                       <a href={String(v)} target="_blank" rel="noreferrer">
                         {String(v).slice(-40, -32)} ↗
@@ -305,7 +305,8 @@ export function RecordsTable({
         </Button>
       </div>
       <p className="sub" style={{ padding: '0 24px 20px' }}>
-        主表与截图使用相同的 26 列；Excel 的“来源与导出记录”工作表单独保留 AI /
+        主表与新版试标表使用相同的 30 列；Excel 的“来源与导出记录”工作表单独保留
+        AI /
         人工来源。轨迹文件列保留本机路径，未自动上传附件；提交人和时间仅来自实际交付登记。
       </p>
     </section>

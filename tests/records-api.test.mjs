@@ -136,6 +136,10 @@ try {
       );
       assert.ok(results.every((r) => !r.allowed && r.count === 10));
     }
+    await assert.rejects(
+      () => finish({ success: true, contextCheck: { ready: false } }),
+      /上下文/,
+    );
     await finish({
       success: true,
       sessionId,
@@ -182,11 +186,36 @@ try {
       );
     }
   }
+  let edited = await latest(ids[1]);
+  const metadata = {
+    parentRecord: 'external-1',
+    auditNote: '人工核对日期字段',
+    parentRecord2: '',
+  };
+  const metadataBody = {
+    action: 'record-metadata',
+    turnId: edited.turns[0].id,
+    metadata,
+    revision: edited.revision,
+  };
+  await api('/api/tasks/' + edited.id, metadataBody, 'PATCH');
+  await assert.rejects(
+    () => api('/api/tasks/' + edited.id, metadataBody, 'PATCH'),
+    /数据已更新/,
+  );
+  edited = await latest(edited.id);
+  assert.equal(edited.turns[0].metadataHistory.length, 1);
   let data = await records({});
   assert.equal(data.total, 12);
   assert.equal(data.rows.length, 10);
-  assert.equal(data.headers.length, 26);
+  assert.equal(data.headers.length, 30);
   assert.ok(data.rows.every((r) => r.eligible));
+  assert.ok(data.rows.every((r) => r.values[3] === 1));
+  const editedRow = await records({ query: '__RECORDS_API__1', pageSize: 20 });
+  assert.deepEqual(
+    editedRow.rows.find((r) => r.taskId === edited.id).values.slice(-3),
+    ['external-1', '人工核对日期字段', ''],
+  );
   const page2 = await records({ page: 2 });
   assert.equal(page2.rows.length, 2);
   assert.ok(
@@ -227,7 +256,7 @@ try {
   assert.equal((await exportFile({ ...filter, exports: 'never' })).status, 400);
   assert.equal((await records({ exports: 'exact', count: 2 })).total, 12);
   console.log(
-    'Records API passed: 26 fields, 12 records on two pages, exact filters, XLSX/CSV, export scope, idempotent concurrent retries, ten-call failure budget and session lock.',
+    'Records API passed: 30 fields, 12 records on two pages, exact filters, XLSX/CSV, export scope, idempotent concurrent retries, ten-call failure budget and session lock.',
   );
 } finally {
   await api('/api/scheduler', original);

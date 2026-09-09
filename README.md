@@ -113,9 +113,9 @@ npm run build
 
 ## 截图表头、分页和导出次数
 
-“标注数据”逐轮展示与用户两张截图一致的 26 列：User Prompt、SessionID、TurnID/PromptID、初始环境快照、轨迹文件、环境可复现等级、Harness、Harness 版本、操作系统、任务类型、任务难度、语言/框架、五项评分及各自描述、其他问题、提交人、提交时间、质检结果。每页可选 10/20/50/100 条，支持关键词、题型、上海产生日期、评分来源、未导出/已导出/指定次数筛选。
+“标注数据”逐轮展示与用户提供的实际 Excel 一致的 30 列：User Prompt、SessionID、TurnID/PromptID、当前对话轮次排序、初始环境快照、轨迹文件、环境可复现等级、Harness、Harness 版本、操作系统、任务类型、任务难度、语言/框架、五项评分及各自描述、其他问题、提交人、提交时间、质检结果、父记录、审核备注、父记录 2。每页可选 10/20/50/100 条，支持关键词、题型、上海产生日期、评分来源、未导出/已导出/指定次数筛选。
 
-可下载本页或全部筛选结果中的合格轮次，主表固定上述 26 列；Excel 第二个工作表保留评分来源、批次和导出前次数。提交人和时间只来自实际回执登记；AI 校验结果与人工确认明确区分。轨迹文件保留真实本机路径，未冒充已上传附件。
+可下载本页或全部筛选结果中的合格轮次，新批次主表固定上述 30 列，旧 26 列批次重新下载保留原结构；Excel 第二个工作表保留评分来源、批次和导出前次数。提交人和时间只来自实际回执登记；AI 校验结果与人工确认明确区分。轨迹文件保留真实本机路径，未冒充已上传附件。
 
 `POST /api/export` 生成真正的 `.xlsx` 或同表头 CSV。成功生成一次表格，就为其中每条轮次累计一次，AI 和人工版本合计；同一请求重试不会重复累计。记录保存该批次数据快照，避免网络重试时导出内容变化。次数表示生成文件，不表示操作系统已保存或已对外提交。一次最多 1000 条/16MB 文本；Excel 单字段超过 32767 字会明确提示改用 CSV，不能静默截断。旧 `GET /api/export` 保留兼容读取接口，不计入新版下载次数；页面统一使用新接口。
 
@@ -129,7 +129,7 @@ npm run build
 
 每个项目只有一个 Claude SessionID：首次 `--session-id`，后续 `--resume`。Claude 子进程启动前由服务端原子预占调用次数，失败/不确定调用仍占次数；阶段缓存恢复不重复调用、不重复计数。10 条题目或累计 10 次 Claude 调用任一达到上限即停止新增；允许只重做评分和归档。旧项目不强制迁移为 0-1，新的硬上限仍适用。模型继续沿用两个 CLI 的现有配置。
 
-新增验证：`node --test tests/records.test.mjs tests/project-series.test.mjs`；`node tests/records-api.test.mjs` 验证 26 列、分页、导出筛选和幂等计数、失败重试额度；`tests/flow.test.mjs` 的模拟 CLI 验证一个项目连续 10 轮、分类顺序、相同工作目录和 SessionID、独立评分归档及无第 11 次调用。模拟验证不等于真实模型上游已可用。
+新增验证：`node --test tests/records.test.mjs tests/project-series.test.mjs`；`node tests/records-api.test.mjs` 验证 30 列、分页、导出筛选和幂等计数、失败重试额度；`tests/flow.test.mjs` 的模拟 CLI 验证一个项目连续 10 轮、分类顺序、相同工作目录和 SessionID、独立评分归档及无第 11 次调用。模拟验证不等于真实模型上游已可用。
 
 
 ## 本轮与后续出题分离、截断续写
@@ -143,3 +143,9 @@ npm run build
 未处理完的失败轮次禁止追加新轮，防止后续改代码破坏待评分状态；后续轮次存在后禁止重跑旧轮；已评分/归档的轨迹标识和已登记回执不可覆盖。后续题型建议同时考虑当天全局已完成与在途任务，真实任务分类仍优先于权重。
 
 检查：`node --test tests/round-context.test.mjs tests/workflow.test.mjs`、`node tests/audit-api.test.mjs`、`node tests/flow.test.mjs`。集成测试需停止真实执行器，完成后按 `.runner/audit-api-id`、`.runner/truncation-flow-id` 等本次创建的测试 ID 清理。
+
+## 2026-09-09 合并更新
+
+详见 [字段与流程更新方案](docs/upgrade-2026-09-09.md)。执行前动态检查 Claude CLI 的 100 万上下文声明，换模型自动重读配置；未知或不符时暂停，配置声明不会被当成网关容量实测。CLI 不传模型覆盖参数。`npm run context:check -- /项目路径` 可只读检查当前配置。
+
+轮次固定 1–10，父记录和审核备注允许手动填写并保留修改历史。已登记交付后字段锁定，AI 评分来源和人工确认继续分开。新增验证：`node --test tests/context-check.test.mjs tests/record-metadata.test.mjs`。

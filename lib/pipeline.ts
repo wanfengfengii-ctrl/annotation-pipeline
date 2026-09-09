@@ -4,6 +4,7 @@ import {
   type HumanReview,
   type EvidenceItem,
 } from './human-review.ts';
+import type { RecordMetadata } from './record-metadata.ts';
 export const categories = [
   '0-1 代码生成',
   'Feature 迭代',
@@ -38,6 +39,15 @@ export type Review = {
   artifactFindings?: string;
 };
 export type Turn = {
+  roundNumber?: number;
+  harness?: 'Claude Code' | 'Codex CLI';
+  contextCheck?: any;
+  recordMetadata?: RecordMetadata;
+  metadataHistory?: {
+    at: string;
+    previous: RecordMetadata;
+    value: RecordMetadata;
+  }[];
   id: string;
   prompt: string;
   category: string;
@@ -90,6 +100,7 @@ export type Turn = {
   };
 };
 export type Task = {
+  harness?: 'Claude Code' | 'Codex CLI';
   id: string;
   title: string;
   repoPath: string;
@@ -163,6 +174,7 @@ export function deadline(createdAt: string) {
 export function issues(t: Task, r: Turn) {
   const e: string[] = [];
   if (r.excluded) return ['该轮已按工程故障排除'];
+  if (r.contextCheck && !r.contextCheck.ready) e.push('上下文配置未通过核验');
   if (!['review', 'submitted'].includes(r.status)) e.push('该轮尚未完成执行');
   if (!validSnapshot(t.snapshot))
     e.push('缺少完整 40 位 SHA 的 GitHub 快照链接');
@@ -244,7 +256,7 @@ export function csv(tasks: Task[], source: 'primary' | 'human' = 'primary') {
           r.category,
           r.difficulty,
           r.stack || t.stack,
-          'Claude Code',
+          r.harness || t.harness || 'Claude Code',
           r.harnessVersion || t.harnessVersion,
           r.os || t.os,
           t.reproducibility,

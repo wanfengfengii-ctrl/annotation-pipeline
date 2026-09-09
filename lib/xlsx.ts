@@ -13,8 +13,44 @@ const col = (n: number) => {
     s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
   return s;
 };
+const oldHeaders = recordHeaders.filter(
+  (h) => !['当前对话轮次排序', '父记录', '审核备注', '父记录 2'].includes(h),
+);
+function headersFor(rows: RecordRow[]) {
+  if (rows.length && rows.every((r) => r.values.length === 26))
+    return oldHeaders;
+  if (rows.some((r) => r.values.length !== 30))
+    throw Error('导出字段结构不一致，请重新生成批次');
+  return recordHeaders;
+}
+function excelDate(value: unknown) {
+  if (
+    typeof value !== 'string' ||
+    !/^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+  )
+    return null;
+  const time = Date.parse(value.replaceAll('/', '-').replace(' ', 'T') + 'Z');
+  return Number.isFinite(time) ? time / 86400000 + 25569 : null;
+}
+function cellXml(
+  v: string | number,
+  row: number,
+  column: number,
+  headers: readonly string[],
+) {
+  const ref = col(column) + String(row + 1);
+  const date = row > 0 && headers[column] === '提交时间' ? excelDate(v) : null;
+  if (date !== null) return `<c r="${ref}" s="3"><v>${date}</v></c>`;
+  return typeof v === 'number'
+    ? `<c r="${ref}" s="2"><v>${v}</v></c>`
+    : `<c r="${ref}" s="${row === 0 ? 1 : 2}" t="inlineStr"><is><t xml:space="preserve">${xml(v)}</t></is></c>`;
+}
 export function xlsx(rows: RecordRow[], batchId: string) {
-  const data = [Array.from(recordHeaders), ...rows.map((r) => r.values)];
+  if (rows.some((row) => row.values.some((v) => String(v).length > 32767)))
+    throw Error(
+      '有字段超过 Excel 单元格 32767 字限制，请改用 CSV 导出完整内容',
+    );
+  const data = [Array.from(headersFor(rows)), ...rows.map((r) => r.values)];
   if (rows.length > 1000 || JSON.stringify(data).length > 16000000)
     throw Error('一次导出最多 1000 条或 16MB 文本，请缩小筛选范围或按页导出');
   if (data.some((row) => row.some((v) => String(v).length > 32767)))
@@ -22,7 +58,7 @@ export function xlsx(rows: RecordRow[], batchId: string) {
       '有字段超过 Excel 单元格 32767 字限制，请改用 CSV 导出完整内容',
     );
   const sheet = (grid: (string | number)[][]) =>
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${grid[0].map((_, i) => `<col min="${i + 1}" max="${i + 1}" width="${i === 0 ? 60 : i >= 12 && i % 2 === 1 ? 48 : 24}" customWidth="1"/>`).join('')}</cols><sheetData>${grid.map((row, i) => `<row r="${i + 1}"${i === 0 ? ' ht="30" customHeight="1"' : ''}>${row.map((v, j) => (typeof v === 'number' ? `<c r="${col(j)}${i + 1}" s="2"><v>${v}</v></c>` : `<c r="${col(j)}${i + 1}" s="${i === 0 ? 1 : 2}" t="inlineStr"><is><t xml:space="preserve">${xml(v)}</t></is></c>`)).join('')}</row>`).join('')}</sheetData><autoFilter ref="A1:${col(grid[0].length - 1)}${grid.length}"/></worksheet>`;
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${grid[0].map((_, i) => `<col min="${i + 1}" max="${i + 1}" width="${i === 0 ? 60 : String(grid[0][i]).includes('描述') || grid[0][i] === '审核备注' ? 48 : 24}" customWidth="1"/>`).join('')}</cols><sheetData>${grid.map((row, i) => `<row r="${i + 1}"${i === 0 ? ' ht="30" customHeight="1"' : ''}>${row.map((v, j) => cellXml(v, i, j, grid[0].map(String))).join('')}</row>`).join('')}</sheetData><autoFilter ref="A1:${col(grid[0].length - 1)}${grid.length}"/></worksheet>`;
   const notes: (string | number)[][] = [
     ['导出批次', '任务', '轮次', '评分来源', '导出前次数', '说明'],
     ...rows.map((r) => [
@@ -54,7 +90,7 @@ export function xlsx(rows: RecordRow[], batchId: string) {
   );
   add(
     'xl/styles.xml',
-    '<?xml version="1.0"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Arial"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Arial"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF244B81"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf fontId="1" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>',
+    '<?xml version="1.0"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy/mm/dd hh:mm:ss"/></numFmts><fonts count="2"><font><sz val="11"/><name val="Arial"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Arial"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF244B81"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf fontId="1" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>',
   );
   add('xl/worksheets/sheet1.xml', sheet(data));
   add('xl/worksheets/sheet2.xml', sheet(notes));
@@ -69,7 +105,7 @@ export function recordsCsv(rows: RecordRow[]) {
     '"';
   return (
     '\ufeff' +
-    [recordHeaders, ...rows.map((r) => r.values)]
+    [headersFor(rows), ...rows.map((r) => r.values)]
       .map((r) => r.map(cell).join(','))
       .join('\r\n')
   );

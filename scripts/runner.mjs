@@ -10,6 +10,13 @@ import {
 } from '../lib/project-series.mjs';
 import { workflow, scoreInstructions, nextDecision } from '../lib/workflow.mjs';
 import { withProjectScope } from '../lib/writing-style.mjs';
+import { harnessInstructions } from '../lib/harness.mjs';
+import {
+  checkClaudeContext,
+  assertContext,
+  assertContextContinuity,
+  runtimeContextCheck,
+} from './context-check.mjs';
 import {
   verifyScoreEvidence,
   createEvidenceArchive,
@@ -144,6 +151,7 @@ async function executeClaude({ task, turn, onChild = track }) {
     output: '',
     error: '',
     harnessVersion: version,
+    harness: 'Claude Code',
     os: `${os.platform()} ${os.release()}`,
     workDir: task.workDir || path.join(dir, 'workspace'),
     snapshot: task.snapshot,
@@ -186,6 +194,12 @@ async function executeClaude({ task, turn, onChild = track }) {
         : ['--session-id', result.sessionId]),
     ];
     // No --model / --settings / permission override: honor the installed CLI configuration.
+    result.contextCheck = checkClaudeContext({
+      cwd: result.workDir,
+      resumeModel: task.model,
+    });
+    assertContext(result.contextCheck);
+    assertContextContinuity(result.contextCheck, task.turns);
     const reservation = await api({
       action: 'reserve-claude',
       taskId: task.id,
@@ -271,6 +285,13 @@ async function executeClaude({ task, turn, onChild = track }) {
           Boolean(final) &&
           ((code === 0 && !final.is_error) ||
             final.subtype === 'error_max_turns');
+        result.contextCheck = runtimeContextCheck(
+          result.contextCheck,
+          final,
+          result.model,
+        );
+        if (!result.contextCheck.ready)
+          result.error = result.contextCheck.reason;
         resolve();
       });
       child.stdin.on('error', () => {});
@@ -462,6 +483,26 @@ async function execute({ task, turn }) {
       automation = result.automation;
       await safePlan();
     } else {
+      if (!cached.claude?.success) {
+        stage = 'context';
+        await api({
+          action: 'stage',
+          taskId: task.id,
+          turnId: turn.id,
+          jobToken: turn.jobToken,
+          stage,
+        });
+        result.contextCheck = checkClaudeContext({
+          cwd: task.workDir || task.repoPath,
+          resumeModel: task.model,
+        });
+        writeFileSync(
+          path.join(dir, turn.id + '.context.json'),
+          JSON.stringify(result.contextCheck, null, 2),
+          { mode: 0o600 },
+        );
+        assertContext(result.contextCheck);
+      }
       if (
         task.sessionId &&
         task.os &&
@@ -647,9 +688,11 @@ async function execute({ task, turn }) {
         automation,
       };
       if (!result.success) throw new Error(result.error || 'Claude 执行失败');
+      // A completed call with invalid runtime context must not be replayed on retry.
+      if (result.contextCheck) assertContext(result.contextCheck);
       const score = await step(
         'score',
-        ` ${scoreInstructions()}\n你是 Codex 自动评分器。只读分析当前产物和本轮原始轨迹。\n本轮实际 Prompt：${preparation.value.prompt}\n原始验收目标（继续也必须按此目标评分）：${result.evaluationPrompt}\n本轮结果类型：${result.executionOutcome || 'complete'}\n验收条件：${JSON.stringify(preparation.value.acceptance)}\n本轮轨迹文件：${result.tracePath}\n初始快照：${result.snapshot}\n请用 git diff 和实际文件核对结果。按交付完整性、指令遵循、任务规划、推理能力、执行能力依次评分 1–5，并为每项提供具体步骤、文件或工具调用的证据和影响。不要修改、修复产物或编造测试；没有执行的测试不能声称通过。评分来源必须为 AI。other 无其他问题时写“无”。`,
+        ` ${scoreInstructions()}\n${harnessInstructions(result.harness)}\n你是 Codex 自动评分器。只读分析当前产物和本轮原始轨迹。\n本轮实际 Prompt：${preparation.value.prompt}\n原始验收目标（继续也必须按此目标评分）：${result.evaluationPrompt}\n本轮结果类型：${result.executionOutcome || 'complete'}\n验收条件：${JSON.stringify(preparation.value.acceptance)}\n本轮轨迹文件：${result.tracePath}\n初始快照：${result.snapshot}\n请用 git diff 和实际文件核对结果。按交付完整性、指令遵循、任务规划、推理能力、执行能力依次评分 1–5，并为每项提供具体步骤、文件或工具调用的证据和影响。不要修改、修复产物或编造测试；没有执行的测试不能声称通过。评分来源必须为 AI。other 无其他问题时写“无”。`,
         result.workDir,
       );
       try {
@@ -711,6 +754,9 @@ async function execute({ task, turn }) {
         JSON.stringify(
           {
             provenance: 'AI-generated / Codex CLI',
+            harness: result.harness || 'Claude Code',
+            contextCheck: result.contextCheck,
+            roundNumber: task.turns.findIndex((x) => x.id === turn.id) + 1,
             usage: '内部 AI 评测数据，不作为原项目人工标注',
             taskId: task.id,
             turnId: turn.id,
@@ -899,6 +945,7 @@ try {
         const repoPath = context.repos[index];
         supplyState.cursor = index + 1;
         saveSupply();
+        assertContext(checkClaudeContext({ cwd: repoPath }));
         const history = context.history.slice(0, 200);
         const projectSeries = {
           version: seriesVersion,
@@ -993,6 +1040,13 @@ try {
         githubChecked = Date.now();
       }
       const resource = resources(context.config.concurrency);
+      const contextSources = context.repos.map((repoPath) => ({
+        repoPath,
+        ...checkClaudeContext({ cwd: repoPath }),
+      }));
+      const readySources = contextSources
+        .filter((x) => x.ready)
+        .map((x) => x.repoPath);
       schedulerStatus = {
         ...resource,
         active: active.size,
@@ -1004,6 +1058,8 @@ try {
         dailyLimit: context.config.dailyLimit,
         repoCount: context.repos.length,
         workflowVersion: workflow.version,
+        contextCheck: checkClaudeContext({ cwd: root }),
+        contextSources,
         mix: context.mix,
         ruleVersion: rules.version,
         lastAudit: supplyState.lastAudit
@@ -1016,7 +1072,10 @@ try {
           : null,
         supply: generating
           ? 'Codex 正在生成任务'
-          : supplyDecision(context, supplyState) ||
+          : (context.repos.length && !readySources.length
+              ? '任务仓库上下文配置待核验'
+              : null) ||
+            supplyDecision(context, supplyState) ||
             supplyState.lastResult ||
             '等待补充',
         nextAt: supplyState.nextAt || null,
@@ -1041,11 +1100,14 @@ try {
         !stopping &&
         !generating &&
         active.size + orphans.length < resource.effective &&
-        !supplyDecision(context, supplyState)
+        !supplyDecision(context, supplyState) &&
+        readySources.length > 0
       ) {
-        generating = replenish(context).finally(() => {
-          generating = null;
-        });
+        generating = replenish({ ...context, repos: readySources }).finally(
+          () => {
+            generating = null;
+          },
+        );
       }
       await nap(2500);
     } catch (e) {

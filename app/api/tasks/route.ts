@@ -60,6 +60,7 @@ export async function POST(req: Request) {
     };
     if (b.autoStart === true)
       task.turns.push({
+        roundNumber: 1,
         id: crypto.randomUUID(),
         prompt: task.title,
         category: task.category,

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import { codexTurnIds } from '../lib/harness.mjs';
 import {
   writingInstructions,
   checkWriting,
@@ -237,6 +238,16 @@ async function runStage({ stage, prompt, cwd, dir, turnId, onChild }) {
   return {
     value,
     engine: 'codex-cli',
+    harness: 'Codex CLI',
+    turnIds: codexTurnIds(
+      output.split('\n').flatMap((line) => {
+        try {
+          return [JSON.parse(line)];
+        } catch {
+          return [];
+        }
+      }),
+    ),
     threadId: thread,
     tracePath: events,
     finishedAt: new Date().toISOString(),

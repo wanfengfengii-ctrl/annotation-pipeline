@@ -17,11 +17,13 @@ writeFileSync(
 );
 const calls = path.join(bin, 'calls.jsonl');
 writeFileSync(calls, '');
+rmSync(path.join(bin, '.claude'), { recursive: true, force: true });
 for (const f of [
   'project-mode',
   'truncate-once',
   'fail-next-once',
   'stop-project',
+  'runtime-mismatch',
 ])
   rmSync(path.join(bin, f), { force: true });
 writeFileSync(path.join(bin, 'fail-score-once'), '1');
@@ -29,7 +31,7 @@ const fixture = `#!/usr/bin/env node
 const fs=require('fs'),path=require('path');const name=path.basename(process.argv[1]),a=process.argv.slice(2),dir=process.env.FIXTURE_BIN;const sha='a'.repeat(40);if(a.includes('--version')){console.log(name+' fixture');process.exit(0)}
 if(name==='gh'){if(a[0]==='repo')console.log(JSON.stringify({nameWithOwner:'fixture/fixture',url:'https://github.com/fixture/fixture',isPrivate:false,viewerPermission:'READ',defaultBranchRef:{name:'main'}}));else if(a.includes('user'))console.log('fixture-user');else console.log(JSON.stringify({sha:'a'.repeat(40),html_url:'https://github.com/fixture/fixture/commit/'+'a'.repeat(40)}));process.exit(0)}\nif(name==='git'){if(a[0]==='rev-parse')console.log(sha);if(a[0]==='remote')console.log('https://github.com/fixture/fixture.git');if(a[0]==='for-each-ref')console.log('refs/remotes/origin/main');if(a[0]==='worktree')fs.mkdirSync(a[3],{recursive:true});process.exit(0)}
 let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{if(a.includes('--model')||a.includes('-m'))throw Error('Model override is forbidden');
-if(name==='claude'){fs.appendFileSync(dir+'/calls.jsonl',JSON.stringify({name:'claude',cwd:process.cwd(),session:JSON.parse(input).session_id,args:a})+'\\n');const v=JSON.parse(input);if(fs.existsSync(dir+'/project-mode')){const f='.fixture-round-count',n=fs.existsSync(f)?Number(fs.readFileSync(f,'utf8')):0;fs.writeFileSync(f,String(n+1));const project=(input.match(/projects\\/p-[a-f0-9-]{36}/)||[])[0];const saved='.fixture-project-dir';if(project)fs.writeFileSync(saved,project);const projectDir=project||(fs.existsSync(saved)?fs.readFileSync(saved,'utf8'):'');if(!projectDir)throw Error('Missing project directory');fs.mkdirSync(projectDir,{recursive:true});fs.writeFileSync(projectDir+'/engine.ts','// synthetic project round '+(n+1));}console.log(JSON.stringify({type:'system',subtype:'init',model:'fixture-config-model',session_id:v.session_id}));console.log(JSON.stringify({...v,uuid:'fixture-'+v.uuid}));const truncated=fs.existsSync(dir+'/truncate-once');if(truncated)fs.unlinkSync(dir+'/truncate-once');console.log(JSON.stringify({type:'result',subtype:truncated?'error_max_turns':'success',result:'Synthetic fixture output',is_error:truncated}));return}
+if(name==='claude'){fs.appendFileSync(dir+'/calls.jsonl',JSON.stringify({name:'claude',cwd:process.cwd(),session:JSON.parse(input).session_id,args:a})+'\\n');const v=JSON.parse(input);if(fs.existsSync(dir+'/project-mode')){const f='.fixture-round-count',n=fs.existsSync(f)?Number(fs.readFileSync(f,'utf8')):0;fs.writeFileSync(f,String(n+1));const project=(input.match(/projects\\/p-[a-f0-9-]{36}/)||[])[0];const saved='.fixture-project-dir';if(project)fs.writeFileSync(saved,project);const projectDir=project||(fs.existsSync(saved)?fs.readFileSync(saved,'utf8'):'');if(!projectDir)throw Error('Missing project directory');fs.mkdirSync(projectDir,{recursive:true});fs.writeFileSync(projectDir+'/engine.ts','// synthetic project round '+(n+1));}console.log(JSON.stringify({type:'system',subtype:'init',model:'fixture-config-model',session_id:v.session_id}));console.log(JSON.stringify({...v,uuid:'fixture-'+v.uuid}));const truncated=fs.existsSync(dir+'/truncate-once');if(truncated)fs.unlinkSync(dir+'/truncate-once');console.log(JSON.stringify({type:'result',subtype:truncated?'error_max_turns':'success',result:'Synthetic fixture output',is_error:truncated,modelUsage:{'fixture-config-model':{contextWindow:fs.existsSync(dir+'/runtime-mismatch')?200000:1000000}}}));return}
 const schema=a[a.indexOf('--output-schema')+1],out=a[a.indexOf('--output-last-message')+1];const stage=['policy','prepare','snapshot','score','delivery','next','project-next'].find(x=>schema.endsWith('.'+x+'.schema.json'));fs.appendFileSync(dir+'/calls.jsonl',JSON.stringify({name:stage})+'\\n');if(['next','project-next'].includes(stage)&&fs.existsSync(dir+'/fail-next-once')){fs.unlinkSync(dir+'/fail-next-once');process.exit(1)}if(stage==='score'&&fs.existsSync(dir+'/fail-score-once')){fs.unlinkSync(dir+'/fail-score-once');process.exit(1)}
 const count=fs.existsSync('.fixture-round-count')?Number(fs.readFileSync('.fixture-round-count','utf8')):0;const cats=['0-1 代码生成','Feature 迭代','Bug 修复','代码理解','代码重构','Feature 迭代','Bug 修复','代码理解','代码重构','Feature 迭代'];const values={'project-next':{action:fs.existsSync(dir+'/stop-project')?'complete':cats[count]==='Bug 修复'?'repair':'advance',prompt:'Synthetic project round '+(count+1),category:cats[count]||'Feature 迭代',difficulty:'中等',reason:'synthetic file evidence',baseComplete:true,projectEvidence:'projects directory engine.ts fixture'},policy:{simpleFeatures:input.includes('用户原目标：__FOLLOWUP_FIX__')?['scope','breadth']:[],difficultyEvidence:['scope evidence','context evidence','interaction evidence','breadth evidence'],assessedDifficulty:input.includes('用户原目标：__FOLLOWUP_FIX__')?'简单':'中等',followupFix:input.includes('用户原目标：__FOLLOWUP_FIX__'),followupReason:'首轮或非产物修复',allowed:!input.includes('用户原目标：__POLICY_REJECT__'),matchedRuleIds:input.includes('用户原目标：__POLICY_REJECT__')?['games']:[],duplicateTaskIds:[],checkedGroups:['games','desktop','business','dashboard'],reason:'synthetic eligible task'},prepare:{prompt:'Synthetic prepared goal '+count,category:input.includes('项目连续出题规则')?cats[count]:'Feature 迭代',difficulty:'中等',stack:'fixture',acceptance:['fixture evidence']},snapshot:{environmentLevel:'无外部依赖',dependencies:[],startup:'fixture',verification:'fixture',ready:true,head:sha,remote:'https://github.com/fixture/fixture.git',notes:['fixture snapshot']},next:{action:fs.existsSync(dir+'/auto-next')?'repair':'complete',prompt:'__AUTO_REPAIR__ repair boundary',reason:'fixture follow-up'},score:{when:Array(5).fill('fixture step'),behavior:Array(5).fill('fixture behavior'),impact:Array(5).fill('fixture impact'),expected:Array(5).fill('fixture expected'),evidenceRefs:Array(5).fill((input.match(/本轮轨迹文件：([^\\n]+)/)||[])[1]+':1'),processFindings:'fixture',artifactFindings:'fixture',scores:[3,3,3,3,3],descriptions:['a','b','c','d','e'],other:'无'},delivery:{passed:true,checks:['fixture data complete'],summary:'synthetic verification'}};if(stage==='next'&&fs.existsSync(dir+'/auto-next'))fs.unlinkSync(dir+'/auto-next');fs.writeFileSync(out,JSON.stringify(values[stage]));console.log(JSON.stringify({type:'thread.started',thread_id:'fixture-'+stage}));});
 `;
@@ -83,6 +85,24 @@ async function waitStatus(status) {
 }
 try {
   let t = await waitStatus('failed');
+  assert.equal(t.turns[0].stage, 'context');
+  assert.match(t.turns[0].error, /上下文预检未通过/);
+  assert.equal(t.turns[0].claudeAttempts?.length || 0, 0);
+  assert.equal(readFileSync(calls, 'utf8'), '');
+  mkdirSync(path.join(bin, '.claude'), { recursive: true });
+  writeFileSync(
+    path.join(bin, '.claude/settings.json'),
+    JSON.stringify({
+      model: 'fixture-config-model',
+      env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: '1000000' },
+    }),
+  );
+  await api(
+    '/api/tasks/' + task.id,
+    { action: 'retry', turnId: t.turns[0].id, revision: t.revision },
+    'PATCH',
+  );
+  t = await waitStatus('failed');
   assert.equal(t.turns[0].stage, 'score');
   assert.equal(t.turns[0].requestedPrompt, '__CODEX_FLOW_TEST__');
   await api(
@@ -313,6 +333,10 @@ try {
     await new Promise((r) => setTimeout(r, 250));
   }
   assert.equal(project.turns.length, 10);
+  assert.deepEqual(
+    project.turns.map((r) => r.roundNumber),
+    Array.from({ length: 10 }, (_, i) => i + 1),
+  );
   assert.ok(
     project.turns.every(
       (r) =>
@@ -358,6 +382,90 @@ try {
   );
   const capped = await api('/api/tasks', null, 'GET');
   assert.equal(capped.tasks.find((t) => t.id === series.id).turns.length, 10);
+  rmSync(path.join(bin, 'project-mode'), { force: true });
+  writeFileSync(path.join(bin, 'runtime-mismatch'), '1');
+  const mismatch = (
+    await api('/api/tasks', {
+      title: '__CONTEXT_RUNTIME_TEST__',
+      repoPath: bin,
+      stack: 'fixture',
+      category: 'Feature 迭代',
+      difficulty: '中等',
+      reproducibility: '无外部依赖',
+      autoStart: true,
+    })
+  ).task;
+  writeFileSync('.runner/context-runtime-test-id', mismatch.id);
+  async function waitTask(id, status) {
+    for (let i = 0; i < 120; i++) {
+      const value = (await api('/api/tasks', null, 'GET')).tasks.find(
+        (t) => t.id === id,
+      );
+      if (value.turns.at(-1).status === status) return value;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    throw Error('Task did not reach ' + status);
+  }
+  let invalid = await waitTask(mismatch.id, 'failed');
+  assert.equal(invalid.turns[0].contextCheck.runtimeTokens, 200000);
+  assert.ok(!invalid.turns[0].review);
+  const beforeRetry = callCount('claude');
+  await api(
+    '/api/tasks/' + invalid.id,
+    {
+      action: 'retry',
+      turnId: invalid.turns[0].id,
+      revision: invalid.revision,
+    },
+    'PATCH',
+  );
+  invalid = await waitTask(mismatch.id, 'failed');
+  assert.equal(
+    callCount('claude'),
+    beforeRetry,
+    'runtime context mismatch must preserve completed call',
+  );
+  rmSync(path.join(bin, 'runtime-mismatch'));
+  const switched = (
+    await api('/api/tasks', {
+      title: '__CONTEXT_SWITCH_TEST__',
+      repoPath: bin,
+      stack: 'fixture',
+      category: 'Feature 迭代',
+      difficulty: '中等',
+      reproducibility: '无外部依赖',
+      autoStart: true,
+    })
+  ).task;
+  writeFileSync('.runner/context-switch-test-id', switched.id);
+  let stable = await waitTask(switched.id, 'review');
+  const beforeSwitch = callCount('claude');
+  writeFileSync(
+    path.join(bin, '.claude/settings.json'),
+    JSON.stringify({
+      model: 'fixture-new-model',
+      env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: '1000000' },
+    }),
+  );
+  await api(
+    '/api/tasks/' + stable.id,
+    {
+      action: 'enqueue',
+      prompt: 'Synthetic configuration switch',
+      category: 'Feature 迭代',
+      difficulty: '中等',
+      revision: stable.revision,
+    },
+    'PATCH',
+  );
+  stable = await waitTask(stable.id, 'failed');
+  assert.match(stable.turns[1].error, /配置已变化/);
+  assert.equal(
+    callCount('claude'),
+    beforeSwitch,
+    'configuration change must not mix models in a session',
+  );
+  assert.equal(stable.turns[0].model, 'fixture-config-model');
   console.log(
     'Full fixture pipeline passed: score retry reuses Claude; policy block; automatic continuation; one project/session across 10 independently scored rounds and no 11th call.',
   );

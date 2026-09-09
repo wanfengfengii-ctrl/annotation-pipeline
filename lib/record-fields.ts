@@ -1,9 +1,11 @@
 import { issues, type Task, type Turn, type Review } from './pipeline.ts';
 import { humanAsReview } from './human-review.ts';
+import { roundNumber } from './record-metadata.ts';
 export const recordHeaders = [
   'User Prompt',
   'SessionID',
   'TurnID/PromptID',
+  '当前对话轮次排序',
   '初始环境快照',
   '轨迹文件',
   '环境可复现等级',
@@ -27,6 +29,9 @@ export const recordHeaders = [
   '提交人',
   '提交时间',
   '质检结果',
+  '父记录',
+  '审核备注',
+  '父记录 2',
 ] as const;
 export type RecordSource = 'ai' | 'human';
 export type RecordRow = {
@@ -73,10 +78,11 @@ export function recordRow(
     r.prompt,
     r.sessionId || '',
     r.promptId || '',
+    roundNumber(t, r),
     t.snapshot || '',
     r.tracePath || '',
     t.reproducibility || '',
-    'Claude Code',
+    r.harness || t.harness || 'Claude Code',
     r.harnessVersion || t.harnessVersion || '',
     r.os || t.os || '',
     r.category,
@@ -97,6 +103,9 @@ export function recordRow(
       : '',
     submitted ? shanghaiDate(human ? h?.deliveredAt : r.submittedAt) : '',
     quality,
+    r.recordMetadata?.parentRecord || '',
+    r.recordMetadata?.auditNote || '',
+    r.recordMetadata?.parentRecord2 || '',
   ];
   return {
     taskId: t.id,

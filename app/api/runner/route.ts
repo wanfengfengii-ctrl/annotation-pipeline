@@ -1,4 +1,5 @@
 import { validateSeries, claudeCallCount } from '@/lib/project-series.mjs';
+import { roundNumber } from '@/lib/record-metadata';
 import { nextDecision, dailyMix } from '@/lib/workflow.mjs';
 import { candidateDigest, assertPolicyAudit } from '@/lib/task-policy.mjs';
 import { schedulerConfig } from '@/db/scheduler';
@@ -117,6 +118,7 @@ export async function POST(req: Request) {
         turns: [
           {
             id: crypto.randomUUID(),
+            roundNumber: 1,
             prompt: text(b.prompt, '任务目标', 20000),
             category: b.category,
             difficulty: b.difficulty,
@@ -213,6 +215,7 @@ export async function POST(req: Request) {
         throw new Error('阶段更新凭据错误');
       if (
         ![
+          'context',
           'prepare',
           'policy',
           'snapshot',
@@ -272,7 +275,20 @@ export async function POST(req: Request) {
         return Response.json({ ok: true });
       if (!r || r.status !== 'running' || r.jobToken !== b.jobToken)
         throw new Error('任务状态或执行凭据不匹配');
+      if (b.success && b.contextCheck && !b.contextCheck.ready)
+        throw Error('上下文未通过核验，不能标记执行成功');
       r.status = b.success ? 'review' : 'failed';
+      r.roundNumber ||= roundNumber(item.task, r) || undefined;
+      if (b.harness !== undefined) {
+        if (!['Claude Code', 'Codex CLI'].includes(b.harness))
+          throw Error('Harness 无效');
+        if (item.task.harness && item.task.harness !== b.harness)
+          throw Error('同一会话不能切换 Harness');
+        r.harness = b.harness;
+        item.task.harness = b.harness;
+      }
+      if (b.contextCheck && typeof b.contextCheck === 'object')
+        r.contextCheck = b.contextCheck;
       if (b.success) delete r.planRetry;
       r.finishedAt =
         typeof b.finishedAt === 'string' && !isNaN(Date.parse(b.finishedAt))
@@ -368,6 +384,7 @@ export async function POST(req: Request) {
           item.task.automationNotice = decision.notice;
           if (decision.prompt)
             item.task.turns.push({
+              roundNumber: item.task.turns.length + 1,
               id: crypto.randomUUID(),
               prompt: decision.prompt,
               ...('continuationOf' in decision && 'evaluationPrompt' in decision

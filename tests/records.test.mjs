@@ -8,17 +8,18 @@ import {
 } from '../lib/record-fields.ts';
 import { xlsx, recordsCsv } from '../lib/xlsx.ts';
 
-test('截图字段完整有序，AI 与实际提交来源分开，Excel 文本不执行公式', () => {
-  assert.equal(recordHeaders.length, 26);
-  assert.deepEqual(recordHeaders.slice(0, 6), [
+test('实际工作簿字段完整有序，AI 与实际提交来源分开，Excel 文本不执行公式', () => {
+  assert.equal(recordHeaders.length, 30);
+  assert.deepEqual(recordHeaders.slice(0, 7), [
     'User Prompt',
     'SessionID',
     'TurnID/PromptID',
+    '当前对话轮次排序',
     '初始环境快照',
     '轨迹文件',
     '环境可复现等级',
   ]);
-  assert.deepEqual(recordHeaders.slice(-4), [
+  assert.deepEqual(recordHeaders.slice(23, 27), [
     '其他问题',
     '提交人',
     '提交时间',
@@ -35,6 +36,7 @@ test('截图字段完整有序，AI 与实际提交来源分开，Excel 文本�
   };
   const turn = {
     id: 'round',
+    roundNumber: 1,
     prompt: '=1+1\n中文<&"',
     sessionId: 'session',
     promptId: 'prompt',
@@ -62,8 +64,12 @@ test('截图字段完整有序，AI 与实际提交来源分开，Excel 文本�
   };
   const row = recordRow(task, turn, 'ai');
   assert.equal(row.eligible, true);
-  assert.equal(row.values.length, 26);
-  assert.deepEqual(row.values.slice(23), ['', '', 'AI 校验通过（待人工确认）']);
+  assert.equal(row.values.length, 30);
+  assert.deepEqual(row.values.slice(24, 27), [
+    '',
+    '',
+    'AI 校验通过（待人工确认）',
+  ]);
   assert.equal(
     recordRow(
       task,
@@ -74,17 +80,29 @@ test('截图字段完整有序，AI 与实际提交来源分开，Excel 文本�
         submittedAt: '2026-09-08T16:01:02Z',
       },
       'ai',
-    ).values[24],
+    ).values[25],
     '2026/09/09 00:01:02',
   );
+  assert.deepEqual(recordHeaders.slice(-3), ['父记录', '审核备注', '父记录 2']);
+  assert.deepEqual(row.values.slice(-3), ['', '', '']);
+  const dated = recordRow(
+    task,
+    { ...turn, receipt: 'actual', submittedAt: '2026-09-08T16:01:02Z' },
+    'ai',
+  );
+  const dateSheet = strFromU8(
+    unzipSync(xlsx([dated], 'date'))['xl/worksheets/sheet1.xml'],
+  );
+  assert.match(dateSheet, /<c r="Z2" s="3"><v>46274\.000717/);
   const zip = unzipSync(xlsx([row], 'fixture-batch'));
   const sheet = strFromU8(zip['xl/worksheets/sheet1.xml']);
   assert.ok(!sheet.includes('<f>'));
   assert.match(sheet, /t="inlineStr"/);
   assert.ok(sheet.includes(turn.review.descriptions[0]));
-  assert.equal(row.values[13], turn.review.descriptions[0]);
+  assert.equal(row.values[14], turn.review.descriptions[0]);
   assert.match(sheet, /&lt;&amp;&quot;/);
-  assert.match(sheet, /<c r="M2" s="2"><v>1<\/v><\/c>/);
+  assert.match(sheet, /<c r="D2" s="2"><v>1<\/v><\/c>/);
+  assert.match(sheet, /<c r="N2" s="2"><v>1<\/v><\/c>/);
   assert.match(strFromU8(zip['xl/worksheets/sheet2.xml']), /未经人工确认/);
   assert.match(recordsCsv([row]), /'=1\+1/);
   assert.throws(
