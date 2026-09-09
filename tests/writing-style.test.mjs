@@ -11,7 +11,12 @@ import {
 } from '../lib/writing-style.mjs';
 import { codexStage } from '../scripts/codex-stages.mjs';
 import fixture from './fixtures/question.cjs';
-import { questionCacheState } from '../lib/question-cache.mjs';
+import {
+  questionCacheState,
+  legacyRepairContext,
+} from '../lib/question-cache.mjs';
+import { policyInstructions } from '../lib/task-policy.mjs';
+import { runtimeVersion } from '../lib/runtime-verification.mjs';
 import {
   questionParts,
   assertQuestionAudit,
@@ -42,6 +47,105 @@ test('规则升级保留正在终端执行的原题，旧题不追溯套格式�
     () => questionCacheState({}, { turnId: 'one' }, 'one'),
     /不能重新生成或重发/,
   );
+});
+test('仅已执行历史题的同会话真实修复继承界面范围，新题及未复现问题不能豁免', () => {
+  const root = {
+    id: 'root',
+    questionRootId: 'root',
+    status: 'review',
+    promptId: 'prompt',
+    sessionId: 'session',
+    prompt: '旧后端服务',
+    automation: {
+      policy: {
+        engine: 'codex-cli',
+        accepted: true,
+        value: { questionCompliant: false },
+      },
+      runtimeVerification: {
+        version: runtimeVersion,
+        executed: true,
+        status: 'bugs',
+        reportPath: '/report',
+        reportSha256: 'hash',
+        checks: [
+          {
+            kind: 'reproduction',
+            outcome: 'reproduced',
+            exitCode: 1,
+            logPath: '/log',
+            logSha256: 'hash',
+            requirement: '原题要求',
+            codeEvidence: 'app.py:1',
+          },
+        ],
+      },
+    },
+  };
+  const repair = {
+    id: 'repair',
+    category: 'Bug 修复',
+    repairOf: 'root',
+    questionRootId: 'root',
+  };
+  const task = { turns: [root, repair] };
+  assert.deepEqual(legacyRepairContext(task, repair), {
+    rootId: 'root',
+    previousTurnId: 'root',
+    originalPrompt: '旧后端服务',
+  });
+  for (const category of [
+    '0-1 代码生成',
+    'Feature 迭代',
+    '代码理解',
+    '代码重构',
+  ])
+    assert.equal(legacyRepairContext(task, { ...repair, category }), null);
+  for (const change of [
+    (r) => {
+      delete r.promptId;
+    },
+    (r) => {
+      delete r.sessionId;
+    },
+    (r) => {
+      r.excluded = true;
+    },
+    (r) => {
+      r.automation.policy.accepted = false;
+    },
+    (r) => {
+      r.automation.policy.questionRuleVersion = '2026-09-09.questions1';
+    },
+    (r) => {
+      r.automation.runtimeVerification.status = 'passed';
+    },
+    (r) => {
+      r.automation.runtimeVerification.checks[0].exitCode = 0;
+    },
+  ]) {
+    const copy = structuredClone(task);
+    change(copy.turns[0]);
+    assert.equal(legacyRepairContext(copy, repair), null);
+  }
+  assert.equal(
+    legacyRepairContext(task, { ...repair, questionRootId: 'other' }),
+    null,
+  );
+  assert(!writingInstructions('prepare').includes('本轮范围继承说明'));
+  const scoped = writingInstructions('prepare', { legacyRepair: true });
+  assert.match(scoped, /本轮范围继承说明/);
+  assert.match(scoped, /不适用于首题、0-1、Feature、理解或重构/);
+  const policy = policyInstructions({ legacyRepair: true });
+  for (const required of [
+    '固定禁出规则',
+    '固定难度规则',
+    'questionCompliant',
+  ]) {
+    assert(policy.includes(required));
+  }
+  for (const category of ['[games]', '[desktop]', '[business]', '[dashboard]'])
+    assert(policy.includes(category));
 });
 
 test('题目使用无编号的项目名称和一至两段正文，不追加项目路径；点评保留独立格式', () => {

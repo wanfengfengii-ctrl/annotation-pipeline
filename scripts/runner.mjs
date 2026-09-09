@@ -11,7 +11,11 @@ import {
 import { workflow, scoreInstructions, nextDecision } from '../lib/workflow.mjs';
 import { questionIssues } from '../lib/writing-style.mjs';
 import { questionRules } from '../lib/question-writing.mjs';
-import { questionCacheState } from '../lib/question-cache.mjs';
+import {
+  questionCacheState,
+  legacyRepairContext,
+  preparationContextVersion,
+} from '../lib/question-cache.mjs';
 import { resumeInitialSnapshot } from '../lib/snapshot-resume.mjs';
 import { harnessInstructions } from '../lib/harness.mjs';
 import { DockerRuntime, dockerStatus } from './docker-runtime.mjs';
@@ -175,6 +179,10 @@ async function execute({ task, turn }) {
     containers.load(task.id)?.pending,
     turn.id,
   );
+  if (cached.preparationContextVersion !== preparationContextVersion) {
+    if (!preserveQuestion) delete cached.prepare;
+    cached.preparationContextVersion = preparationContextVersion;
+  }
   if (cached.workflowVersion !== workflow.version) {
     if (!preserveQuestion) delete cached.prepare;
     delete cached.score;
@@ -426,6 +434,13 @@ async function execute({ task, turn }) {
         );
       const firstTurn = previousTurns.length === 0;
       const previousTurn = previousTurns.at(-1);
+      const legacyRepair = legacyRepairContext(task, turn);
+      const questionContext = { legacyRepair: !!legacyRepair };
+      if (legacyRepair)
+        automation.questionScope = {
+          type: 'historical-repair',
+          ...legacyRepair,
+        };
       const continuation = continuationContext(task, turn);
       const allowFollowupFix = !!(
         task.workDir &&
@@ -437,6 +452,34 @@ async function execute({ task, turn }) {
       const roundContext = JSON.stringify({
         firstTurn,
         allowFollowupFix,
+        actualWorkspace: task.workDir,
+        projectDirectory: task.projectSeries?.directory,
+        legacyRepair,
+        previousVerification: previousTurn?.automation?.runtimeVerification && {
+          status: previousTurn.automation.runtimeVerification.status,
+          reportPath: previousTurn.automation.runtimeVerification.reportPath,
+          reportSha256:
+            previousTurn.automation.runtimeVerification.reportSha256,
+          checks: previousTurn.automation.runtimeVerification.checks.map(
+            ({
+              id,
+              outcome,
+              requirement,
+              observed,
+              logPath,
+              evidenceLine,
+              logSha256,
+            }) => ({
+              id,
+              outcome,
+              requirement,
+              observed,
+              logPath,
+              evidenceLine,
+              logSha256,
+            }),
+          ),
+        },
         previousGoal: previousTurn?.prompt,
         previousGoals: previousTurns.map((r) => ({
           requestedGoal: r.requestedPrompt,
@@ -448,9 +491,9 @@ async function execute({ task, turn }) {
       });
       preparation = await step(
         'prepare',
-        `${seriesPrompt(task)}\n本题已分配分类：${turn.category}，category 必须保持该值，准备阶段不能更换题型。\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n当前容器内工作目录固定为 /workspace，容器已启动，项目骨架或上题归档代码已准备好，宿主机参考仓库不在容器里。0-1 在该项目内实现全新功能，Feature 迭代现有能力。请读取当前任务目录，准备交给 Claude 的任务 prompt、分类、难度、技术栈和验收条件。题目首行只写项目名称，不加编号，正文用 180 至 260 字自然描述网页业务，原始题目措辞不是格式模板。保留业务目标和必要边界，不擅自增加业务需求；当前目录、权限、评测来源和技术实现细节不附加到 prompt。详细验收步骤放入 acceptance，正文保留用户可见的验收行为。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions()}`,
+        `${seriesPrompt(task)}\n本题已分配分类：${turn.category}，category 必须保持该值，准备阶段不能更换题型。\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n当前容器内工作目录固定为 /workspace，容器已启动，项目骨架或上题归档代码已准备好，宿主机参考仓库不在容器里。0-1 在该项目内实现全新功能，Feature 迭代现有能力。请读取当前任务目录，准备交给 Claude 的任务 prompt、分类、难度、技术栈和验收条件。题目首行只写项目名称，不加编号，正文用 180 至 260 字自然描述业务，界面要求按下述适用范围执行，原始题目措辞不是格式模板。保留业务目标和必要边界，不擅自增加业务需求；当前目录、权限、评测来源和技术实现细节不附加到 prompt。acceptance 只放实际可执行的验收条件，不混入出题审核、难度分析或待补信息；正文保留用户可见的验收行为。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions(questionContext)}`,
         task.workDir || task.repoPath,
-        { allocation: { category: turn.category } },
+        { allocation: { category: turn.category }, questionContext },
       );
       if (continuation) {
         preparation.value = {
@@ -490,20 +533,22 @@ async function execute({ task, turn }) {
         throw Error('执行或验收目标超过 80000 字限制');
       result.preparation = preparation.value;
       const candidate = {
-        repoPath: task.repoPath,
+        repoPath: task.workDir || cached.claude?.workDir,
         title: task.title,
         prompt: result.evaluationPrompt,
         category: preparation.value.category,
         difficulty: preparation.value.difficulty,
       };
+      if (!candidate.repoPath) throw Error('题目审核缺少实际容器产物目录');
       const context = await api({ action: 'supply-context' });
       const history = context.history
         .filter((t) => t.id !== task.id)
         .slice(0, 200);
       const audit = await step(
         'policy',
-        `${policyInstructions({ questionStyle: questionStyleApplies })}\n${!questionStyleApplies ? '本题已在终端发送，保留原始题目，不追溯应用新的题目格式与内容标准；questionCompliant 写 false，questionChecks、workflowFeatures、businessDetails 写空数组，allowed 只按原禁出和难度规则判断。' : ''}\n轮次上下文：${roundContext}\n独立审核用户原目标与准备后的实际任务，两个都必须合规。若当前输入仅为继续或续写，必须根据前序原始目标判断。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同且难度合格时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
-        task.workDir || task.repoPath,
+        `${policyInstructions({ questionStyle: questionStyleApplies, ...questionContext })}\n${!questionStyleApplies ? '本题已在终端发送，保留原始题目，不追溯应用新的题目格式与内容标准；questionCompliant 写 false，questionChecks、workflowFeatures、businessDetails 写空数组，allowed 只按原禁出和难度规则判断。' : ''}\n轮次上下文：${roundContext}\n独立审核用户原目标与准备后的实际任务，两个都必须合规。若当前输入仅为继续或续写，必须根据前序原始目标判断。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选 repoPath 是本轮实际容器产物在本机的映射目录，审核必须读取此处对应项目；原参考仓库仅用于最初选题，不能拿它的代码判断本轮产物。此前复现数值引用 roundContext.previousVerification 给出的独立报告和日志，不在 Claude 原轨迹中寻找独立验收的工具调用。\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同且难度合格时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
+        candidate.repoPath,
+        { questionContext },
       );
       audit.proposedDifficulty = candidate.difficulty;
       candidate.difficulty = audit.value.assessedDifficulty;
@@ -512,6 +557,8 @@ async function execute({ task, turn }) {
         firstTurn,
         allowFollowupFix,
         previousTurnId: previousTurn?.id,
+        actualWorkspace: candidate.repoPath,
+        legacyRepair,
       };
       audit.ruleVersion = rules.version;
       if (questionStyleApplies)
