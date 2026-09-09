@@ -168,6 +168,23 @@ function changedSource(manifest, workspace) {
         hash(readFileSync(path.join(workspace, f.path))) !== f.sha256,
     );
 }
+export function runtimeCommandArgs(name, command) {
+  // Noninteractive Bash still reads BASH_ENV unless it is explicitly cleared.
+  // Keep the generated command as one argv entry; never quote or rewrite it.
+  return [
+    'exec',
+    '--env',
+    'BASH_ENV=',
+    '--env',
+    'ENV=',
+    name,
+    '/bin/bash',
+    '--noprofile',
+    '--norc',
+    '-c',
+    command,
+  ];
+}
 export function runDocker(
   args,
   { timeoutSeconds = 30, onChild = () => {}, logPath } = {},
@@ -312,7 +329,7 @@ export async function verifyRuntime({
   );
   const plan = await step(
     'runtime-plan',
-    `先完整阅读当前项目代码，结合原题验收找出疑似真实缺陷，再设计可运行的验收和复现脚本。原题：${prompt}\n验收条件：${JSON.stringify(acceptance)}\n执行器会在镜像 ${imageId} 的独立 Docker 容器运行你的 shell 命令，工作目录 /workspace 是当前项目的代码副本；原始产物和 Claude 轨迹不会被挂载。不得调用 Claude、Codex、Docker 或访问宿主机。仅使用本地合成测试数据和回环地址，不访问真实业务服务、凭据，不发布或推送。缺失的依赖可在 setup 步骤安装，不要求特定包管理器。排除清单：${JSON.stringify(manifest.omitted)}。\n命令按顺序在同一个容器执行，可以启动后台服务并等待就绪；每一步新 shell，环境变量不继承。写临时测试或浏览器脚本到 /tmp，不能改项目源码或测试来让结果通过。网页任务须实际启动服务并用 HTTP 或可用的 headless 浏览器验证原题关键流程；适合浏览器的交互不能仅用静态源码或 HTTP 200 代替，需要时在 setup 安装浏览器依赖。至少一个 acceptance 步骤覆盖原题主要行为，每个疑似缺陷单独一个 reproduction 步骤，必须调用真实项目逻辑。check.requirement 写原题已有要求，codeEvidence 提供 1 至 8 个当前目录内相对文件路径:行号，多个引用用分号分隔，每个路径及行号都必须真实存在；setup 可写无。id 以小写字母开头，只含小写字母、数字、下划线或连字符，1 至 128 位且各步唯一。预期、实际、断言结果必须打印。业务断言失败退出码 1，通过退出码 0，环境故障打印清晰原因退出码 2；不要故意打印失败冒充复现，不把无关功能要求当缺陷。首次发现的静态问题未运行前都只是怀疑。总时限最多 900 秒，最多 8 步，每步最多 300 秒。若无法运行，用明确报告阻塞原因并退出 2 的 acceptance 命令，不编造通过。`,
+    `先完整阅读当前项目代码，结合原题验收找出疑似真实缺陷，再设计可运行的验收和复现脚本。原题：${prompt}\n验收条件：${JSON.stringify(acceptance)}\n执行器会在镜像 ${imageId} 的独立 Docker 容器运行你的 Bash 命令，执行方式固定为 /bin/bash --noprofile --norc -c，BASH_ENV 和 ENV 清空，不加载 shell 启动文件；支持 ERR trap 和 pipefail。工作目录 /workspace 是当前项目的代码副本；原始产物和 Claude 轨迹不会被挂载。不得调用 Claude、Codex、Docker 或访问宿主机。仅使用本地合成测试数据和回环地址，不访问真实业务服务、凭据，不发布或推送。缺失的依赖可在 setup 步骤安装，不要求特定包管理器。排除清单：${JSON.stringify(manifest.omitted)}。\n命令按顺序在同一个容器执行，可以启动后台服务并等待就绪；每一步新 Bash 进程，上一检查步骤 export 的环境变量不会继承，需要的变量应在当前命令内设置。写临时测试或浏览器脚本到 /tmp，不能改项目源码或测试来让结果通过。网页任务须实际启动服务并用 HTTP 或可用的 headless 浏览器验证原题关键流程；适合浏览器的交互不能仅用静态源码或 HTTP 200 代替，需要时在 setup 安装浏览器依赖。至少一个 acceptance 步骤覆盖原题主要行为，每个疑似缺陷单独一个 reproduction 步骤，必须调用真实项目逻辑。check.requirement 写原题已有要求，codeEvidence 提供 1 至 8 个当前目录内相对文件路径:行号，多个引用用分号分隔，每个路径及行号都必须真实存在；setup 可写无。id 以小写字母开头，只含小写字母、数字、下划线或连字符，1 至 128 位且各步唯一。预期、实际、断言结果必须打印。业务断言失败退出码 1，通过退出码 0，环境故障打印清晰原因退出码 2；不要故意打印失败冒充复现，不把无关功能要求当缺陷。首次发现的静态问题未运行前都只是怀疑。总时限最多 900 秒，最多 8 步，每步最多 300 秒。若无法运行，用明确报告阻塞原因并退出 2 的 acceptance 命令，不编造通过。`,
     workDir,
   );
   validateRuntimePlan(plan.value);
@@ -357,7 +374,7 @@ export async function verifyRuntime({
     for (const c of plan.value.checks) {
       await step('runtime-running', c.id, workDir);
       const logPath = path.join(root, c.id + '.log');
-      const run = await runDocker(['exec', name, '/bin/sh', '-lc', c.command], {
+      const run = await runDocker(runtimeCommandArgs(name, c.command), {
         timeoutSeconds: c.timeoutSeconds,
         onChild,
         logPath,

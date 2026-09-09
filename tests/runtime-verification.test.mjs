@@ -12,6 +12,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import {
   validateRuntimePlan,
   runtimeRepairEvidence,
@@ -23,6 +24,8 @@ import {
   validateCodeRef,
   runtimeInputDigest,
   reuseRuntimeVerification,
+  runtimeCommandArgs,
+  verifyRuntime,
 } from '../scripts/runtime-verification.mjs';
 import { schemas } from '../scripts/codex-stages.mjs';
 const spec = {
@@ -39,6 +42,99 @@ function fixture(t) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
+function runVerificationShell(command, options = {}) {
+  const args = runtimeCommandArgs('verification-test', command),
+    shellIndex = args.indexOf('/bin/bash'),
+    env = { ...process.env, ...options.env };
+  for (let i = 0; i < shellIndex; i++) {
+    if (args[i] !== '--env') continue;
+    const [key, value] = args[++i].split('=');
+    env[key] = value;
+  }
+  return spawnSync(args[shellIndex], args.slice(shellIndex + 1), {
+    cwd: options.cwd,
+    env,
+    encoding: 'utf8',
+  });
+}
+test('Verification shell supports Bash ERR traps and pipefail without misclassifying setup failures', () => {
+  const result = runVerificationShell(`set -Ee -o pipefail
+trap 'printf "setup failed: status=%s\\n" "$?"; exit 2' ERR
+false | true
+printf 'unreachable\\n'`);
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, 'setup failed: status=1\n');
+  assert.equal(result.stderr, '');
+});
+test('Verification preserves multiline commands and literal quoting as one argument', () => {
+  const payload =
+      'quotes "double" \'single\' $HOME $(printf substituted) `printf substituted`',
+    command = `cat <<'EXACT_COMMAND_PAYLOAD'\n${payload}\nEXACT_COMMAND_PAYLOAD\nprintf '%s\\n' 'last line'`;
+  const args = runtimeCommandArgs('verification-test', command);
+  assert.deepEqual(args.slice(-5), [
+    '/bin/bash',
+    '--noprofile',
+    '--norc',
+    '-c',
+    command,
+  ]);
+  const result = runVerificationShell(command);
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, payload + '\nlast line\n');
+  assert.equal(result.stderr, '');
+});
+test('Verification ignores shell startup files and previous steps exported variables', (t) => {
+  const dir = fixture(t),
+    startup = path.join(dir, 'injected startup.sh');
+  for (const file of [startup, '.bash_profile', '.bashrc', '.profile'])
+    writeFileSync(
+      path.isAbsolute(file) ? file : path.join(dir, file),
+      "printf 'unexpected startup file\\n'; exit 91\n",
+    );
+  const options = {
+    cwd: dir,
+    env: { HOME: dir, BASH_ENV: startup, ENV: startup },
+  };
+  const first = runVerificationShell(
+    "export ANNOTATION_PREVIOUS_STEP=present; printf 'ready\\n'",
+    options,
+  );
+  assert.equal(first.status, 0);
+  assert.equal(first.stdout, 'ready\n');
+  const next = runVerificationShell(
+    'printf \'%s|%s|%s\\n\' "${BASH_ENV-unset}" "${ENV-unset}" "${ANNOTATION_PREVIOUS_STEP-unset}"',
+    options,
+  );
+  assert.equal(next.status, 0);
+  assert.equal(next.stdout, '||unset\n');
+  assert.equal(next.stderr, '');
+});
+test('Runtime planning is told the exact Bash contract before any container starts', async (t) => {
+  const dir = fixture(t),
+    workDir = path.join(dir, 'source');
+  mkdirSync(workDir);
+  writeFileSync(path.join(workDir, 'app.js'), 'export const value = 1;\n');
+  const stopAfterPlan = new Error('stop after checking planner instructions');
+  await assert.rejects(
+    verifyRuntime({
+      dir,
+      workDir,
+      turnId: 'turn',
+      imageId: 'sha256:' + 'a'.repeat(64),
+      prompt: '显示结果',
+      acceptance: ['result=1'],
+      step: async (stage, instruction, cwd) => {
+        assert.equal(stage, 'runtime-plan');
+        assert.equal(cwd, workDir);
+        assert.match(instruction, /\/bin\/bash --noprofile --norc -c/);
+        assert.match(instruction, /BASH_ENV 和 ENV 清空/);
+        assert.match(instruction, /上一检查步骤 export 的环境变量不会继承/);
+        throw stopAfterPlan;
+      },
+    }),
+    (error) => error === stopAfterPlan,
+  );
+});
 test('Runtime plans require real acceptance, unique IDs and bounded execution', () => {
   assert.equal(
     validateRuntimePlan({ summary: 'check', checks: [spec] }).checks.length,
