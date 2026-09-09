@@ -12,21 +12,40 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 const hashFile = (file) =>
   createHash('sha256').update(readFileSync(file)).digest('hex');
-export function verifyScoreEvidence(value, workDir, dir) {
+function scoreCitations(refs, workDir, dir) {
+  if (!Array.isArray(refs) || refs.length !== 5)
+    throw Error('评分证据须按五维提供 5 组引用');
   const roots = [realpathSync(workDir), realpathSync(dir)];
-  for (let i = 0; i < 5; i++) {
-    const ref = value.evidenceRefs[i],
-      match = ref.match(/^(.*):(\d+)$/);
-    if (!match) throw Error('评分证据必须包含文件路径和行号：' + ref);
-    const file = realpathSync(path.resolve(workDir, match[1]));
-    if (!roots.some((root) => file.startsWith(root + path.sep)))
-      throw Error('评分证据超出任务工作区');
-    if (lstatSync(file).size > 10 * 1024 * 1024)
-      throw Error('单个评分证据超过 10MB，请引用更小的可核验文件');
-    const line = Number(match[2]),
-      total = readFileSync(file, 'utf8').split('\n').length;
-    if (line < 1 || line > total) throw Error('评分引用行号不存在：' + ref);
+  const citations = [],
+    totals = new Map();
+  for (const [dimension, group] of refs.entries()) {
+    const entries =
+      typeof group === 'string'
+        ? group.split(/[;；\n]/).map((s) => s.trim())
+        : [];
+    if (!entries.length || entries.length > 8 || entries.some((s) => !s))
+      throw Error('每维评分证据须提供 1–8 个引用，多个引用用分号分隔');
+    for (const ref of entries) {
+      const match = ref.match(/^(.*):(\d+)$/);
+      if (!match) throw Error('评分证据必须包含文件路径和行号：' + ref);
+      const file = realpathSync(path.resolve(workDir, match[1]));
+      if (!roots.some((root) => file.startsWith(root + path.sep)))
+        throw Error('评分证据超出任务工作区');
+      const stat = lstatSync(file);
+      if (!stat.isFile() || stat.size > 10 * 1024 * 1024)
+        throw Error('评分证据须为不超过 10MB 的普通文件');
+      if (!totals.has(file))
+        totals.set(file, readFileSync(file, 'utf8').split('\n').length);
+      const line = Number(match[2]);
+      if (!Number.isSafeInteger(line) || line < 1 || line > totals.get(file))
+        throw Error('评分引用行号不存在：' + ref);
+      citations.push({ dimension, ref, file, line });
+    }
   }
+  return citations;
+}
+export function verifyScoreEvidence(value, workDir, dir) {
+  scoreCitations(value.evidenceRefs, workDir, dir);
   return {
     ...value,
     rawDescriptions: value.rawDescriptions || value.descriptions,
@@ -117,32 +136,25 @@ export function createEvidenceArchive({
   const citations = [],
     captured = new Map();
   let citedBytes = 0;
-  for (const [i, ref] of (
-    automation.score?.value?.evidenceRefs || []
-  ).entries()) {
-    const match = ref.match(/^(.*):(\d+)$/);
-    if (!match) throw Error('评分引用格式无效');
-    const file = realpathSync(path.resolve(workDir, match[1]));
-    if (
-      ![realpathSync(workDir), realpathSync(dir)].some((root) =>
-        file.startsWith(root + path.sep),
-      )
-    )
-      throw Error('引用超出工作区');
+  const refs = automation.score?.value?.evidenceRefs;
+  for (const { dimension, ref, file, line } of refs
+    ? scoreCitations(refs, workDir, dir)
+    : []) {
     const bytes = lstatSync(file).size;
     let name = captured.get(file);
     if (!name) {
       if (bytes > 10 * 1024 * 1024 || citedBytes + bytes > 32 * 1024 * 1024)
         throw Error('评分引用文件超过归档上限');
-      name = 'cited/' + i + '.txt';
+      name = 'cited/' + captured.size + '.txt';
       add(file, name);
       captured.set(file, name);
       citedBytes += bytes;
     }
     citations.push({
       ref,
+      dimension,
       name,
-      line: Number(match[2]),
+      line,
       sha256: manifest.find((f) => f.name === name).sha256,
     });
   }

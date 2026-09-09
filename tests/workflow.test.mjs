@@ -103,6 +103,7 @@ test('evidence verifies locations and archive hashes, includes new code and list
       ]),
     );
     value.evidenceRefs = Array(5).fill(trace + ':1');
+    value.evidenceRefs[0] = trace + ':1；new.js:1';
     value.descriptions = Array(5).fill(
       '已经生成基础代码。测试没有运行，运行结果未验证。',
     );
@@ -120,6 +121,25 @@ test('evidence verifies locations and archive hashes, includes new code and list
         dir,
       ),
     );
+    for (const suffix of [
+      ';missing.js:1',
+      '；new.js:999',
+      ';',
+      '; /etc/hosts:1',
+    ])
+      assert.throws(() =>
+        verifyScoreEvidence(
+          {
+            ...value,
+            evidenceRefs: [
+              trace + ':1' + suffix,
+              ...value.evidenceRefs.slice(1),
+            ],
+          },
+          dir,
+          dir,
+        ),
+      );
     assert.throws(() =>
       verifyScoreEvidence(
         { ...value, evidenceRefs: Array(5).fill('/etc/hosts:1') },
@@ -145,6 +165,14 @@ test('evidence verifies locations and archive hashes, includes new code and list
     assert.equal(preview.find((e) => e.id === 'trace').truncated, false);
     writeFileSync(trace, 'changed by later round');
     const frozen = reviewEvidence({ dir, turnId: 'turn', tracePath: trace });
+    assert.match(
+      frozen.find((e) => e.originalRef === 'new.js:1').content,
+      /answer=42/,
+    );
+    assert.notEqual(
+      frozen.find((e) => e.originalRef === 'new.js:1').originalPath,
+      frozen.find((e) => e.originalRef === trace + ':1').originalPath,
+    );
     assert.match(
       frozen.find((e) => e.originalRef === trace + ':1').content,
       /type.*result/,

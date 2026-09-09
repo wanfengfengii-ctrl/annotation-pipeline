@@ -20,7 +20,7 @@ const hash = (b) => createHash('sha256').update(b).digest('hex');
 const ignored =
   /(^|\/)(\.git|node_modules|\.venv|venv|__pycache__|\.next|\.claude|\.codex|\.env[^/]*|.ssh|.npmrc|.netrc|credentials[^/]*|[^/]*\.(pem|key|p12))($|\/)/i;
 export function copyVerificationSource(source, dest) {
-  mkdirSync(dest, { recursive: true });
+  if (dest) mkdirSync(dest, { recursive: true });
   const files = [],
     omitted = [];
   let bytes = 0;
@@ -47,15 +47,111 @@ export function copyVerificationSource(source, dest) {
         files.length >= 3000
       )
         throw Error('验收副本超出大小限制，未执行不完整副本');
-      const target = path.join(dest, rel);
-      mkdirSync(path.dirname(target), { recursive: true });
-      copyFileSync(src, target);
+      const target = dest ? path.join(dest, rel) : src;
+      if (dest) {
+        mkdirSync(path.dirname(target), { recursive: true });
+        copyFileSync(src, target);
+      }
       bytes += st.size;
       files.push({ path: rel, sha256: hash(readFileSync(target)) });
     }
   }
   walk(source);
   return { files, omitted };
+}
+export function runtimeInputDigest({ imageId, prompt, acceptance }) {
+  return hash(JSON.stringify({ imageId, prompt, acceptance }));
+}
+export function reuseRuntimeVerification(report, context) {
+  if (!report) return null;
+  try {
+    const { workDir, dir, turnId, taskId, previousResult } = context;
+    const root = realpathSync(dir) + path.sep;
+    const withinTask = (file) => realpathSync(file).startsWith(root);
+    if (
+      report.version !== runtimeVersion ||
+      report.executed !== true ||
+      !['passed', 'bugs'].includes(report.status) ||
+      report.imageId !== context.imageId ||
+      !path
+        .basename(path.dirname(report.reportPath))
+        .startsWith(turnId + '.attempt-') ||
+      !withinTask(report.reportPath) ||
+      hash(readFileSync(report.reportPath)) !== report.reportSha256
+    )
+      return null;
+    const saved = JSON.parse(readFileSync(report.reportPath, 'utf8'));
+    const { reportSha256, ...cached } = report;
+    if (JSON.stringify(saved) !== JSON.stringify(cached)) return null;
+    const inputDigest = runtimeInputDigest(context);
+    // Older reports bind their inputs through the failed job's existing receipt.
+    // Never assume a matching report or code hash alone proves the same question.
+    if (report.inputDigest) {
+      if (report.inputDigest !== inputDigest) return null;
+    } else {
+      if (
+        previousResult?.taskId !== taskId ||
+        previousResult?.turnId !== turnId ||
+        previousResult.automation?.runtimeVerification?.reportSha256 !==
+          reportSha256 ||
+        runtimeInputDigest({
+          imageId: previousResult.container?.imageId,
+          prompt:
+            previousResult.evaluationPrompt ||
+            previousResult.automation?.preparation?.value?.prompt,
+          acceptance: previousResult.automation?.preparation?.value?.acceptance,
+        }) !== inputDigest
+      )
+        return null;
+    }
+    const inventory = (manifest) =>
+      JSON.stringify({
+        files: [...manifest.files].sort((a, b) => a.path.localeCompare(b.path)),
+        omitted: [...manifest.omitted].sort(),
+      });
+    if (
+      inventory(copyVerificationSource(workDir)) !==
+      inventory(report.sourceManifest)
+    )
+      return null;
+    for (const file of [
+      report.executionPath,
+      report.plan.tracePath,
+      report.diagnosis.tracePath,
+      ...report.checks.map((c) => c.logPath),
+    ])
+      if (!withinTask(file) || !lstatSync(file).isFile()) return null;
+    const execution = JSON.parse(readFileSync(report.executionPath, 'utf8'));
+    if (
+      JSON.stringify(execution.plan) !== JSON.stringify(report.plan.value) ||
+      !Array.isArray(execution.runs) ||
+      execution.runs.length !== report.checks.length ||
+      new Set(execution.runs.map((c) => c.id)).size !== report.checks.length ||
+      execution.runs.some((run) => {
+        const check = report.checks.find((c) => c.id === run.id);
+        return (
+          !check ||
+          Object.entries(run).some(
+            ([key, value]) =>
+              JSON.stringify(check[key]) !== JSON.stringify(value),
+          )
+        );
+      })
+    )
+      return null;
+    validateRuntimePlan(report.plan.value);
+    for (const c of report.plan.value.checks)
+      if (c.kind !== 'setup') validateCodeRef(c.codeEvidence, workDir);
+    const checked = finalizeRuntimeReport(
+      report.plan.value,
+      report.checks,
+      report.diagnosis.value,
+    );
+    if (checked.status !== report.status) return null;
+    return report;
+  } catch {
+    return null;
+  }
 }
 function changedSource(manifest, workspace) {
   // Runtime databases/logs are allowed to change; application source and manifests are not.
@@ -298,6 +394,7 @@ export async function verifyRuntime({
   );
   const report = {
     ...finalizeRuntimeReport(plan.value, runs, diagnosis.value),
+    inputDigest: runtimeInputDigest({ imageId, prompt, acceptance }),
     imageId,
     sourceManifest: manifest,
     plan,

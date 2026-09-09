@@ -35,7 +35,10 @@ import {
 import { githubSnapshot, githubStatus } from './github-snapshot.mjs';
 import { resources, fingerprint, supplyDecision } from './scheduler.mjs';
 import { codexStage } from './codex-stages.mjs';
-import { verifyRuntime } from './runtime-verification.mjs';
+import {
+  verifyRuntime,
+  reuseRuntimeVerification,
+} from './runtime-verification.mjs';
 import {
   runtimeVersion,
   runtimeRepairEvidence,
@@ -629,16 +632,37 @@ async function execute({ task, turn }) {
       delete cached.score;
       delete cached.delivery;
       delete cached.next;
-      automation.runtimeVerification = await verifyRuntime({
+      const runtimeContext = {
         workDir: result.workDir,
         dir,
-        turnId: turn.id + '.attempt-' + cached.attempt,
         imageId: result.container.imageId,
         prompt: result.evaluationPrompt || preparation.value.prompt,
         acceptance: preparation.value.acceptance,
-        step,
-        onChild,
+      };
+      const previousReceipt = path.join(dir, turn.id + '.result.json');
+      const reused = reuseRuntimeVerification(cached.runtimeVerification, {
+        ...runtimeContext,
+        taskId: task.id,
+        turnId: turn.id,
+        previousResult: existsSync(previousReceipt)
+          ? JSON.parse(readFileSync(previousReceipt, 'utf8'))
+          : null,
       });
+      automation.runtimeVerification =
+        reused ||
+        (await verifyRuntime({
+          ...runtimeContext,
+          turnId: turn.id + '.attempt-' + cached.attempt,
+          step,
+          onChild,
+        }));
+      if (reused)
+        automation.runtimeReuse = {
+          checkedAt: new Date().toISOString(),
+          reportPath: reused.reportPath,
+          reportSha256: reused.reportSha256,
+          inputsAndSourceVerified: true,
+        };
       cached.runtimeVerification = automation.runtimeVerification;
       persist();
       if (automation.runtimeVerification.status === 'blocked')

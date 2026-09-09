@@ -21,6 +21,8 @@ import {
   copyVerificationSource,
   finalizeRuntimeReport,
   validateCodeRef,
+  runtimeInputDigest,
+  reuseRuntimeVerification,
 } from '../scripts/runtime-verification.mjs';
 import { schemas } from '../scripts/codex-stages.mjs';
 const spec = {
@@ -130,6 +132,132 @@ test('Verification copy omits secrets and symlinks and never edits original', (t
   assert(!existsSync(path.join(dest, 'escape')));
   writeFileSync(path.join(dest, 'app.py'), 'print(2)');
   assert.equal(readFileSync(path.join(src, 'app.py'), 'utf8'), 'print(1)');
+});
+test('Completed verification is reusable only for identical inputs, source and intact evidence', (t) => {
+  const dir = fixture(t),
+    workDir = path.join(dir, 'source'),
+    runDir = path.join(dir, 'turn.attempt-1.runtime');
+  mkdirSync(workDir);
+  mkdirSync(runDir);
+  writeFileSync(path.join(workDir, 'app.py'), 'print(1)');
+  const context = {
+    dir,
+    workDir,
+    turnId: 'turn',
+    taskId: 'task',
+    imageId: 'sha256:' + 'a'.repeat(64),
+    prompt: 'original',
+    acceptance: ['result=4'],
+  };
+  const logPath = path.join(runDir, 'api.log');
+  writeFileSync(logPath, 'expected=4 actual=3\n');
+  const run = {
+    id: 'api',
+    exitCode: 1,
+    timedOut: false,
+    limited: false,
+    sourceChanged: false,
+    logPath,
+    logSha256: createHash('sha256').update(readFileSync(logPath)).digest('hex'),
+  };
+  const plan = {
+    value: { summary: 'check', checks: [spec] },
+    tracePath: path.join(dir, 'plan.jsonl'),
+  };
+  const diagnosis = {
+    value: {
+      summary: 'bug',
+      checks: [
+        {
+          id: 'api',
+          outcome: 'reproduced',
+          observed: '3 instead of 4',
+          evidenceLine: 1,
+        },
+      ],
+    },
+    tracePath: path.join(dir, 'diagnosis.jsonl'),
+  };
+  const executionPath = path.join(runDir, 'execution.json'),
+    reportPath = path.join(runDir, 'report.json');
+  writeFileSync(plan.tracePath, '{}\n');
+  writeFileSync(diagnosis.tracePath, '{}\n');
+  writeFileSync(
+    executionPath,
+    JSON.stringify({ plan: plan.value, runs: [run] }),
+  );
+  const report = {
+    ...finalizeRuntimeReport(plan.value, [run], diagnosis.value),
+    imageId: context.imageId,
+    inputDigest: runtimeInputDigest(context),
+    sourceManifest: copyVerificationSource(workDir),
+    plan,
+    diagnosis,
+    executionPath,
+    reportPath,
+  };
+  function saved(value) {
+    writeFileSync(reportPath, JSON.stringify(value));
+    return {
+      ...value,
+      reportSha256: createHash('sha256')
+        .update(readFileSync(reportPath))
+        .digest('hex'),
+    };
+  }
+  const current = saved(report);
+  assert.equal(reuseRuntimeVerification(current, context), current);
+  for (const patch of [
+    { prompt: 'changed' },
+    { acceptance: ['changed'] },
+    { imageId: 'different' },
+    { turnId: 'other' },
+  ])
+    assert.equal(
+      reuseRuntimeVerification(current, { ...context, ...patch }),
+      null,
+    );
+  assert.equal(
+    reuseRuntimeVerification({ ...current, status: 'passed' }, context),
+    null,
+  );
+  writeFileSync(path.join(workDir, 'new.py'), 'new');
+  assert.equal(reuseRuntimeVerification(current, context), null);
+  rmSync(path.join(workDir, 'new.py'));
+  writeFileSync(logPath, 'tampered');
+  assert.equal(reuseRuntimeVerification(current, context), null);
+  writeFileSync(logPath, 'expected=4 actual=3\n');
+  const execution = readFileSync(executionPath);
+  writeFileSync(
+    executionPath,
+    JSON.stringify({ plan: plan.value, runs: [{ ...run, exitCode: 0 }] }),
+  );
+  assert.equal(reuseRuntimeVerification(current, context), null);
+  writeFileSync(executionPath, execution);
+  const { inputDigest, ...legacy } = report;
+  const old = saved(legacy);
+  assert.equal(reuseRuntimeVerification(old, context), null);
+  const receipt = {
+    taskId: 'task',
+    turnId: 'turn',
+    evaluationPrompt: context.prompt,
+    container: { imageId: context.imageId },
+    automation: {
+      runtimeVerification: old,
+      preparation: { value: { acceptance: context.acceptance } },
+    },
+  };
+  assert.equal(
+    reuseRuntimeVerification(old, { ...context, previousResult: receipt }),
+    old,
+  );
+  assert.equal(
+    reuseRuntimeVerification(old, {
+      ...context,
+      previousResult: { ...receipt, evaluationPrompt: 'changed' },
+    }),
+    null,
+  );
 });
 test('Diagnosis requires real failed assertions and valid immutable logs', (t) => {
   const dir = fixture(t),
