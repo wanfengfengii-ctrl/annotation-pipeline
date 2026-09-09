@@ -56,6 +56,36 @@ export function createEvidenceArchive({
     });
   }
   add(bundlePath, 'evaluation.json');
+  const container = JSON.parse(readFileSync(bundlePath, 'utf8')).container;
+  if (container?.scaffoldSnapshot) {
+    const initial = container.scaffoldSnapshot;
+    const data = readFileSync(initial.manifestPath);
+    if (createHash('sha256').update(data).digest('hex') !== initial.sha256)
+      throw Error('Initial scaffold hash mismatch');
+    add(initial.manifestPath, 'initial-scaffold.json');
+  }
+  if (container?.sourceSnapshot) {
+    const initial = container.sourceSnapshot;
+    const data = readFileSync(initial.manifestPath);
+    if (createHash('sha256').update(data).digest('hex') !== initial.sha256)
+      throw Error('Initial source manifest hash mismatch');
+    add(initial.manifestPath, 'initial-source-manifest.json');
+    const base = path.dirname(initial.manifestPath);
+    for (const f of JSON.parse(data).files.filter((f) =>
+      f.name.startsWith('workspace/'),
+    )) {
+      const src = path.resolve(base, f.name);
+      if (
+        !src.startsWith(base + path.sep) ||
+        !lstatSync(src).isFile() ||
+        lstatSync(src).isSymbolicLink() ||
+        createHash('sha256').update(readFileSync(src)).digest('hex') !==
+          f.sha256
+      )
+        throw Error('Initial source file hash mismatch');
+      add(src, 'initial-workspace/' + f.name.slice('workspace/'.length));
+    }
+  }
   add(tracePath, 'claude.jsonl');
   const native = path.join(dir, turnId + '.native.jsonl');
   if (existsSync(native)) add(native, 'claude-native.jsonl');

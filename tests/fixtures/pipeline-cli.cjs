@@ -74,6 +74,7 @@ process.stdin.on('end', () => {
       'prepare',
       'policy',
       'snapshot',
+      'scaffold',
       'score',
       'delivery',
       'next',
@@ -94,18 +95,27 @@ process.stdin.on('end', () => {
       ? Number(fs.readFileSync('.fixture-count', 'utf8'))
       : 0,
     cats = [
-      '0-1 代码生成',
-      'Feature 迭代',
-      'Bug 修复',
+      ...Array.from({ length: 7 }, (_, i) => [
+        '0-1 代码生成',
+        ...Array(i < 3 ? 2 : 1).fill('Bug 修复'),
+        'Feature 迭代',
+      ]).flat(),
       '代码理解',
       '代码重构',
-      'Feature 迭代',
-      'Bug 修复',
-      '代码理解',
-      '代码重构',
-      'Feature 迭代',
+      ...Array.from({ length: 3 }, () => [
+        '0-1 代码生成',
+        'Feature 迭代',
+      ]).flat(),
     ];
   const values = {
+    scaffold: {
+      stack: 'fixture',
+      summary: '用于测试的最小项目骨架',
+      startup: 'node src/index.js',
+      files: [
+        { path: 'src/index.js', content: 'export {};\n', executable: false },
+      ],
+    },
     generate: {
       title: '__DOCKER_AUTO__' + Date.now(),
       prompt: 'Synthetic independent project',
@@ -115,7 +125,9 @@ process.stdin.on('end', () => {
     },
     prepare: {
       prompt: 'Synthetic prepared goal ' + count,
-      category: input.includes('项目连续出题规则') ? cats[count] : '代码测试',
+      category:
+        JSON.parse(fs.readFileSync(schema, 'utf8')).properties.category
+          ?.enum?.[0] || '代码测试',
       difficulty: '中等',
       stack: 'fixture',
       acceptance: ['fixture evidence'],
@@ -165,11 +177,12 @@ process.stdin.on('end', () => {
     },
     next: { action: 'complete', prompt: '无', reason: 'fixture complete' },
     'project-next': {
-      action: process.env.FIXTURE_STOP_PROJECT
-        ? 'complete'
-        : cats[count] === 'Bug 修复'
-          ? 'repair'
-          : 'advance',
+      action:
+        process.env.FIXTURE_STOP_PROJECT || !cats[count]
+          ? 'complete'
+          : cats[count] === 'Bug 修复'
+            ? 'repair'
+            : 'advance',
       prompt: 'Synthetic project round ' + (count + 1),
       category: cats[count] || 'Feature 迭代',
       difficulty: '中等',

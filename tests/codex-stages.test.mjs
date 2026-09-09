@@ -1,7 +1,45 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateStage } from '../scripts/codex-stages.mjs';
+import { validateStage, validateAllocation } from '../scripts/codex-stages.mjs';
 import { issues, csv } from '../lib/pipeline.ts';
+test('Weighted allocation cannot be changed by independent question planning', () => {
+  const allocation = { category: 'Feature 迭代' };
+  assert.throws(
+    () =>
+      validateAllocation('prepare', { category: '0-1 代码生成' }, allocation),
+    /weighted allocation/,
+  );
+  assert.throws(
+    () =>
+      validateAllocation(
+        'project-next',
+        {
+          action: 'advance',
+          category: '0-1 代码生成',
+        },
+        allocation,
+      ),
+    /weighted allocation/,
+  );
+  assert.throws(
+    () =>
+      validateAllocation(
+        'project-next',
+        {
+          action: 'advance',
+          category: '代码理解',
+        },
+        { category: null },
+      ),
+    /weighted allocation/,
+  );
+  for (const value of [
+    { action: 'advance', category: 'Feature 迭代' },
+    { action: 'repair', category: 'Bug 修复' },
+    { action: 'complete', category: 'Feature 迭代' },
+  ])
+    assert.equal(validateAllocation('project-next', value, allocation), value);
+});
 test('Codex structured stage validation rejects malformed scores', () => {
   assert.throws(() =>
     validateStage('score', {

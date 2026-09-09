@@ -12,39 +12,40 @@ import {
   reviewEvidence,
 } from '../scripts/evidence.mjs';
 import { acquireLock, identity, livingChildren } from '../scripts/recovery.mjs';
-test('automatic continuation honors pause, ten rounds, repeated goals and input decisions', () => {
-  const turn = {
-    prompt: 'first',
+test('Automatic repair uses the same question and stops after two follow-ups', () => {
+  const first = {
+    id: 'first',
+    questionRootId: 'first',
+    status: 'review',
+    prompt: '新功能',
+    category: '0-1 代码生成',
+    difficulty: '中等',
+    claudeAttempts: ['one'],
     automation: {
       next: {
-        value: { action: 'repair', prompt: 'fix', reason: 'failed assertion' },
+        value: {
+          action: 'repair',
+          prompt: '页面提交后没有刷新结果，把结果展示补上',
+          reason: '现有页面没有刷新逻辑',
+        },
       },
     },
   };
   assert.equal(
-    nextDecision({ turns: [turn] }, turn, { autoContinue: false }),
+    nextDecision({ turns: [first] }, first, { autoContinue: false }),
     null,
   );
   assert.equal(
-    nextDecision({ turns: [turn] }, turn, { autoContinue: true }).prompt,
-    'fix',
+    nextDecision({ turns: [first] }, first, { autoContinue: true }).repairOf,
+    'first',
   );
+  const b = { ...first, id: 'b', repairOf: 'first' },
+    c = { ...first, id: 'c', repairOf: 'b' },
+    t = { turns: [first, b, c] };
+  assert.equal(nextDecision(t, c, { autoContinue: true }).prompt, undefined);
+  first.executionOutcome = 'truncated';
   assert.equal(
-    nextDecision({ turns: Array(10).fill(turn) }, turn, { autoContinue: true })
-      .prompt,
-    undefined,
-  );
-  assert.equal(
-    nextDecision(
-      { turns: [{ prompt: 'fix' }, { requestedPrompt: 'fix' }] },
-      turn,
-      { autoContinue: true },
-    ).prompt,
-    undefined,
-  );
-  turn.automation.next.value.action = 'needs_input';
-  assert.equal(
-    nextDecision({ turns: [turn] }, turn, { autoContinue: true }).prompt,
+    nextDecision({ turns: [first] }, first, { autoContinue: true }).prompt,
     undefined,
   );
 });
@@ -71,6 +72,7 @@ test('daily mix counts actual completed local date and reserved work', () => {
   assert.equal(mix.counts['0-1 代码生成'], 1);
   assert.equal(mix.reserved['Feature 迭代'], 1);
   assert.equal(mix.suggested, 'Bug 修复');
+  assert.deepEqual(Object.values(mix.weights), [7, 7, 10, 1, 1]);
 });
 test('evidence verifies locations and archive hashes, includes new code and lists excluded secrets', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'workflow-'));

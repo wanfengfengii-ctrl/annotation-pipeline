@@ -1,5 +1,11 @@
 'use client';
-import { canAddTurn, claudeCallCount } from '@/lib/project-series.mjs';
+import {
+  canAddTurn,
+  claudeCallCount,
+  canRepair,
+  projectCounts,
+  freshCategories,
+} from '@/lib/project-series.mjs';
 import { RecordsTable } from '@/components/pipeline/records-table';
 import { RecordMetadataPanel } from '@/components/pipeline/record-metadata-panel';
 import { rules, difficultyRules } from '@/lib/task-policy.mjs';
@@ -371,9 +377,9 @@ export default function Home() {
         </div>
         <div className="flow">
           {[
-            ['任务准备 · Codex', '目标转为任务与验收条件'],
-            ['环境快照 · Codex + gh', '核验 GitHub 完整提交'],
-            ['CLI 执行', '每个会话最多 10 轮'],
+            ['任务准备 · Codex', '准备项目骨架、任务与验收条件'],
+            ['环境快照 · Codex + gh', '核验镜像、初始代码与参考提交'],
+            ['终端执行', '初始题 + 最多两次修复'],
             ['自动评分 · Codex', '依据轨迹与产物评分'],
             ['校验与交付 · Codex', '生成带 AI 来源的交付包'],
           ].map(([title, desc], i) => (
@@ -492,15 +498,14 @@ export default function Home() {
                           <Badge value={status(t)} />
                         </TableCell>
                         <TableCell>
-                          <div style={{ width: 100 }}>
-                            <div className="sub">{counted(t)} / 10</div>
-                            <div className="progress-bars">
-                              {Array.from({ length: 10 }, (_, i) => (
-                                <span
-                                  key={i}
-                                  className={i < counted(t) ? 'done' : ''}
-                                />
-                              ))}
+                          <div style={{ width: 150 }}>
+                            {['0-1 代码生成', 'Feature 迭代'].map((c) => (
+                              <div className="sub" key={c}>
+                                {c} {projectCounts(t)[c]} / 10
+                              </div>
+                            ))}
+                            <div className="sub">
+                              已记录 {counted(t)} 条对话
                             </div>
                           </div>
                         </TableCell>
@@ -705,9 +710,9 @@ export default function Home() {
               <div className="rulebox">
                 <h2>执行方式</h2>
                 <p>
-                  本机执行器调用 Claude
-                  CLI，不指定模型，沿用用户及项目配置。首轮从已推送的干净 Git
-                  每道独立题目新建容器；同题继续沿用当前会话。
+                  Claude 在 Mac Terminal
+                  的独立容器中执行，沿用已配置的模型、网关和 1,000,000
+                  上下文。每道独立题开启新会话，Bug 修复最多在原会话追问两次。
                 </p>
                 <p>
                   执行器：{online ? '在线' : '离线'} ·{' '}
@@ -722,10 +727,13 @@ export default function Home() {
                 <h2>逐轮验收</h2>
                 <ul>
                   <li>
-                    每个 Prompt-response pair 为一条数据；同一项目累计最多 10
-                    次，失败重试也占调用次数。
+                    每个 Prompt-response pair 为一条数据；同项目 0-1 与 Feature
+                    各最多十题，每会话最多三条对话。
                   </li>
-                  <li>“继续”计入轮次，评价原始任务目标。</li>
+                  <li>
+                    Bug
+                    修复说明具体问题，最多追问两次；失败调用仍占十次调用上限。
+                  </li>
                   <li>仅工程故障、网络波动导致无反馈价值的轮次可人工排除。</li>
                   <li>
                     Codex
@@ -923,6 +931,16 @@ function TaskDetail({
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
     [tab, setTab] = useState(initialTab);
+  const nextCategories =
+    t.projectSeries && !t.turns.length
+      ? ['0-1 代码生成']
+      : [
+          ...freshCategories.filter((c) => canAddTurn(t, c)),
+          ...(canRepair(t, t.turns.at(-1)) ? ['Bug 修复'] : []),
+        ];
+  const selectedCategory = nextCategories.includes(category)
+    ? category
+    : nextCategories[0] || category;
   async function run(body: object) {
     setBusy(true);
     setError('');
@@ -948,7 +966,9 @@ function TaskDetail({
       <div className="actions" style={{ margin: '16px 0' }}>
         <Badge value={status(t)} />
         <span className="tag gray">
-          {counted(t)} / 10 轮 · Claude 调用 {claudeCallCount(t)} / 10
+          0-1 {projectCounts(t)['0-1 代码生成']} / 10 · Feature{' '}
+          {projectCounts(t)['Feature 迭代']} / 10 · 已记录 {counted(t)} 条对话 ·
+          总调用 {claudeCallCount(t)}
         </span>
         {t.projectSeries && <span className="tag">同一项目连续出题</span>}
         <span className="sub">{t.model || '模型沿用 Claude CLI 配置'}</span>
@@ -983,72 +1003,71 @@ function TaskDetail({
               busy={busy}
             />
           ))}
-          {!t.closed && canAddTurn(t) && !pending(t) && (
-            <form
-              className="section formgrid"
-              onSubmit={async (e) => {
-                e.preventDefault();
-                if (
-                  await run({ action: 'enqueue', prompt, category, difficulty })
-                ) {
-                  setPrompt('');
-                }
-              }}
-            >
-              <h3 className="wide">
-                {t.turns.length ? '追加下一轮交互' : '本轮任务目标'}
-              </h3>
-              <Field label="本轮任务类型">
-                <Picker
-                  label="本轮任务类型"
-                  value={category}
-                  options={
-                    t.projectSeries
-                      ? categories.filter((c) =>
-                          t.turns.length
-                            ? c !== '0-1 代码生成'
-                            : c === '0-1 代码生成',
-                        )
-                      : categories
+          {!t.closed &&
+            (canAddTurn(t) || canRepair(t, t.turns.at(-1))) &&
+            !pending(t) && (
+              <form
+                className="section formgrid"
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (
+                    await run({
+                      action: 'enqueue',
+                      prompt,
+                      category: selectedCategory,
+                      difficulty,
+                    })
+                  ) {
+                    setPrompt('');
                   }
-                  onChange={setCategory}
-                />
-              </Field>
-              <Field label="本轮难度">
-                <Picker
-                  label="本轮难度"
-                  value={difficulty}
-                  options={
-                    counted(t)
-                      ? difficulties
-                      : difficulties.filter((d) => d !== '简单')
-                  }
-                  onChange={setDifficulty}
-                />
-              </Field>
-              <Field label="执行 Prompt" wide>
-                <textarea
-                  required
-                  maxLength={80000}
-                  style={{ minHeight: 140 }}
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  placeholder="完整填写交给 Claude 的任务。输入“继续”时，仍需根据上一轮原始需求选择题型与难度。"
-                />
-              </Field>
-              {!online && (
-                <p className="wide issue">
-                  本机执行器尚未在线。任务可以排队，连接后会按顺序执行。
-                </p>
-              )}
-              <div className="wide">
-                <Button disabled={busy} type="submit">
-                  <Play />
-                  {online ? '加入队列并执行' : '加入等待队列'}
-                </Button>
-              </div>
-            </form>
-          )}
+                }}
+              >
+                <h3 className="wide">
+                  {t.turns.length ? '追加下一轮交互' : '本轮任务目标'}
+                </h3>
+                <Field label="本轮任务类型">
+                  <Picker
+                    label="本轮任务类型"
+                    value={selectedCategory}
+                    options={nextCategories}
+                    onChange={setCategory}
+                  />
+                </Field>
+                <Field label="本轮难度">
+                  <Picker
+                    label="本轮难度"
+                    value={difficulty}
+                    options={
+                      counted(t)
+                        ? difficulties
+                        : difficulties.filter((d) => d !== '简单')
+                    }
+                    onChange={setDifficulty}
+                  />
+                </Field>
+                <Field label="执行 Prompt" wide>
+                  <textarea
+                    required
+                    maxLength={80000}
+                    style={{ minHeight: 140 }}
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    placeholder="填写具体目标。全新功能选 0-1，改进已有功能选 Feature；Bug 修复说明当前结果的问题和预期，最多追问两次。"
+                  />
+                </Field>
+                {!online && (
+                  <p className="wide issue">
+                    本机执行器尚未在线。任务可以排队，连接后会按顺序执行。
+                  </p>
+                )}
+                <div className="wide">
+                  <Button disabled={busy} type="submit">
+                    <Play />
+                    {online ? '加入队列并执行' : '加入等待队列'}
+                  </Button>
+                </div>
+              </form>
+            )}
           {pending(t) && (
             <div className="issue" style={{ marginTop: 20 }}>
               任务已进入执行队列，状态每 5 秒刷新。Claude 完成后自动进入 Codex
@@ -1057,7 +1076,8 @@ function TaskDetail({
           )}
           {!canAddTurn(t) && (
             <div className="issue">
-              已达到 10 轮上限。完成本会话的逐轮评分后，请新建任务。
+              本项目的 0-1 与 Feature
+              题额已用完。当前会话仍可在两次修复额度内处理具体 Bug。
             </div>
           )}
           {!t.closed && !pending(t) && (
@@ -1067,7 +1087,7 @@ function TaskDetail({
               disabled={busy}
               onClick={() => run({ action: 'close' })}
             >
-              结束此会话
+              结束此项目
             </Button>
           )}
         </TabsContent>
@@ -1245,6 +1265,7 @@ function TurnPanel({
             {(
               {
                 context: '上下文配置预检',
+                scaffold: 'Codex 项目骨架',
                 prepare: 'Codex 任务准备',
                 policy: 'Codex 禁出、雷同与难度审核',
                 snapshot: 'Codex 容器环境检查与 GitHub 参考快照',
@@ -1379,7 +1400,22 @@ function TurnPanel({
             本题容器与权限 ·{' '}
             {r.permissionAudit?.passed ? '免审批已核验' : '待核验或存在异常'}
           </summary>
-          <p className="sub">独立题目使用新容器，同题继续保留当前会话。</p>
+          <p className="sub">
+            独立题目使用新 Terminal 会话，只有 Bug 修复保留当前会话，最多两轮。
+          </p>
+          <p className="sub">
+            终端：
+            {r.container.terminalIdentity?.realTerminal
+              ? 'Mac Terminal'
+              : '未核验'}{' '}
+            · {r.container.terminalIdentity?.tty}
+          </p>
+          {r.container.scaffoldSnapshot && (
+            <p className="sub">
+              Codex 已预先准备 {r.container.scaffoldSnapshot.files}{' '}
+              个骨架文件，业务功能由 Claude 完成。
+            </p>
+          )}
           <p className="sub mono">
             {r.container.containerId || r.container.name}
           </p>

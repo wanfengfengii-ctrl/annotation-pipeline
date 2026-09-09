@@ -32,6 +32,13 @@ DockerRuntime.prototype.ensure = async function (task, turn) {
     );
     mkdirSync(workDir, { recursive: true });
     s = {
+      terminalIdentity: {
+        transport: 'mac-terminal',
+        runId: questionId,
+        realTerminal: true,
+        tty: '/dev/fixture',
+      },
+      bootstrapped: true,
       taskId: task.id,
       questionId,
       name: 'annotation-' + task.id,

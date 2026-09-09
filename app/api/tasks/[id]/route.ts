@@ -1,3 +1,4 @@
+import { repairDecision, canRepair } from '@/lib/project-series.mjs';
 import { isContinuation } from '@/lib/round-context.mjs';
 import { updateRecordMetadata } from '@/lib/record-metadata';
 import { canAddTurn } from '@/lib/project-series.mjs';
@@ -35,51 +36,45 @@ export async function PATCH(
     } else if (b.action === 'enqueue') {
       if (!t.container && t.sessionId)
         throw Error('旧版宿主机会话仅保留记录，请创建新的容器任务');
-      if (t.closed || pending(t) || !canAddTurn(t))
-        throw new Error('会话已结束、正在执行或已达到 10 轮上限');
+      if (t.closed || pending(t)) throw Error('项目已结束或正在执行');
       if (
         !categories.includes(b.category) ||
         !difficulties.includes(b.difficulty) ||
         (!counted(t) && b.difficulty === '简单')
       )
-        throw new Error('题型或难度无效');
+        throw Error('题型或难度无效');
       if (t.turns.some((r) => r.status === 'failed' && !r.excluded))
-        throw Error('先处理未完成的轮次，避免后续代码覆盖待评分产物');
-      const previous = t.turns.at(-1);
-      const continuing = isContinuation(b.prompt);
-      if (continuing && t.container?.status !== 'running')
-        throw Error('原题容器已结束，不能恢复旧会话');
-      if (continuing && (!previous || previous.excluded))
-        throw Error('没有可继续的有效轮次');
-      if (continuing) {
-        b.category = previous!.category;
-        b.difficulty = previous!.difficulty;
-      }
-      if (
-        t.projectSeries &&
-        !continuing &&
-        ((t.turns.length === 0 && b.category !== '0-1 代码生成') ||
-          (t.turns.length > 0 && b.category === '0-1 代码生成'))
-      )
-        throw Error('项目首题须为 0-1，后续题须基于已有项目');
-      const turnId = crypto.randomUUID();
+        throw Error('先处理未完成轮次');
+      if (isContinuation(b.prompt))
+        throw Error('只允许具体的 Bug 修复追问，不能仅填写继续');
+      const previous = t.turns.at(-1),
+        repair = b.category === 'Bug 修复';
+      if (repair && !canRepair(t, previous))
+        throw Error('当前会话无法追加 Bug 修复，最多初始题加两轮修复');
+      if (!repair && !canAddTurn(t, b.category))
+        throw Error('该题型额度已用完，0-1 与 Feature 各最多十题');
+      if (t.projectSeries && !t.turns.length && b.category !== '0-1 代码生成')
+        throw Error('连续项目首题必须为 0-1');
+      const decision = repair
+        ? repairDecision(t, previous, {
+            prompt: b.prompt,
+            reason: '用户追加具体问题',
+            difficulty: b.difficulty,
+          })
+        : null;
+      if (repair && !decision?.prompt)
+        throw Error(decision?.notice || '无法追加修复');
+      const id = crypto.randomUUID();
       t.turns.push({
-        roundNumber: continuing ? (previous!.roundNumber || 1) + 1 : 1,
-        questionRootId: continuing
-          ? previous!.questionRootId || previous!.id
-          : turnId,
-        id: turnId,
+        id,
         prompt: text(b.prompt, 'Prompt', 80000),
-        ...(continuing
-          ? {
-              continuationOf: previous!.id,
-              evaluationPrompt: previous!.evaluationPrompt || previous!.prompt,
-            }
-          : {}),
         category: b.category,
         difficulty: b.difficulty,
         status: 'queued',
         createdAt: new Date().toISOString(),
+        roundNumber: repair ? (previous!.roundNumber || 1) + 1 : 1,
+        questionRootId: repair ? decision!.questionRootId : id,
+        ...(repair ? { repairOf: previous!.id } : {}),
       });
     } else if (b.action === 'retry') {
       const r = t.turns.find((r) => r.id === b.turnId);
@@ -96,8 +91,6 @@ export async function PATCH(
       r.status = 'queued';
       r.error = '';
     } else if (b.action === 'retry-plan') {
-      if (t.container && t.container.status !== 'running')
-        throw Error('容器已结束，不能继续出题');
       const r = t.turns.at(-1);
       if (
         !r ||

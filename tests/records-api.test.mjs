@@ -79,6 +79,12 @@ try {
     assert.equal(job.task.id, task.id);
     const sessionId = 'records-session-' + i;
     const container = {
+      terminalIdentity: {
+        transport: 'mac-terminal',
+        runId: job.turn.id,
+        realTerminal: true,
+        tty: '/dev/fixture',
+      },
       taskId: task.id,
       name: 'annotation-' + task.id,
       policyVersion: containerPolicyVersion,
@@ -220,13 +226,13 @@ try {
             {
               action: 'enqueue',
               revision: t.revision,
-              prompt: 'eleventh',
-              category: 'Feature 迭代',
+              prompt: '筛选后列表没有更新，把列表刷新逻辑修好',
+              category: 'Bug 修复',
               difficulty: '困难',
             },
             'PATCH',
           ),
-        /10/,
+        /会话|修复|10/,
       );
     }
   }
@@ -305,8 +311,8 @@ try {
     '/api/tasks/' + clean.id,
     {
       action: 'enqueue',
-      prompt: '继续',
-      category: '0-1 代码生成',
+      prompt: '列表切换筛选后没有回到第一页，把页码重置并检查空列表',
+      category: 'Bug 修复',
       difficulty: '困难',
       revision: clean.revision,
     },

@@ -1,6 +1,12 @@
-import { validateSeries, claudeCallCount } from '@/lib/project-series.mjs';
+import {
+  validateSeries,
+  claudeCallCount,
+  sessionTurns,
+  sessionLimits,
+} from '@/lib/project-series.mjs';
 import { validateContainerRecord } from '@/lib/container-policy.mjs';
 import { questionRoot } from '@/lib/question-session.mjs';
+import { terminalIssues } from '@/lib/terminal-policy.mjs';
 import { permissionIssues } from '@/lib/permission-audit.mjs';
 import { roundNumber } from '@/lib/record-metadata';
 import { nextDecision, dailyMix } from '@/lib/workflow.mjs';
@@ -61,7 +67,11 @@ export async function POST(req: Request) {
               !t.turns.some((r: Turn) =>
                 ['queued', 'running'].includes(r.status),
               ) &&
-              (claudeCallCount(t) >= 10 ||
+              (t.turns.at(-1)?.sessionFinished ||
+                claudeCallCount(t, questionRoot(t, t.turns.at(-1))) >=
+                  sessionLimits.maxCalls ||
+                sessionTurns(t, t.turns.at(-1)).length >=
+                  sessionLimits.maxLogicalTurns ||
                 ['complete', 'needs_input'].includes(
                   t.turns.at(-1)?.automation?.next?.value?.action,
                 )),
@@ -231,14 +241,17 @@ export async function POST(req: Request) {
       if (!sessionId && (!item.task.container || item.task.sessionId))
         throw Error('缺少现有会话 ID 或新容器记录');
       if (item.task.sessionId && item.task.sessionId !== sessionId)
-        throw Error('不能在同一项目切换 Claude 会话');
+        throw Error('不能在当前题目会话中切换 Claude SessionID');
       if (r.claudeAttempts?.includes(attempt))
         return Response.json({
           allowed: true,
-          count: claudeCallCount(item.task),
+          count: claudeCallCount(item.task, questionRoot(item.task, r)),
         });
       r.claudeAttempts ||= r.promptId || r.sessionId ? ['legacy'] : [];
-      if (claudeCallCount(item.task) >= 10)
+      if (
+        claudeCallCount(item.task, questionRoot(item.task, r)) >=
+        sessionLimits.maxCalls
+      )
         return Response.json({ allowed: false, count: 10 });
       // Reserve before spawning; even uncertain/failed calls retain their slot.
       r.claudeAttempts.push(attempt);
@@ -246,7 +259,7 @@ export async function POST(req: Request) {
       await save(item.task, item.revision);
       return Response.json({
         allowed: true,
-        count: claudeCallCount(item.task),
+        count: claudeCallCount(item.task, questionRoot(item.task, r)),
       });
     }
     if (b.action === 'container') {
@@ -271,6 +284,7 @@ export async function POST(req: Request) {
         throw new Error('阶段更新凭据错误');
       if (
         ![
+          'scaffold',
           'context',
           'prepare',
           'policy',
@@ -339,6 +353,8 @@ export async function POST(req: Request) {
           throw Error('任务容器发生变化');
         if (b.success && !b.traceExport?.verified)
           throw Error('容器完整轨迹尚未导出核验');
+        if (b.success && terminalIssues(b).length)
+          throw Error(terminalIssues(b).join('；'));
         if (b.success && permissionIssues(b).length)
           throw Error(permissionIssues(b).join('；'));
         if (
@@ -460,19 +476,18 @@ export async function POST(req: Request) {
             '本轮已归档；后续出题待重试：' + r.automation.nextError;
         if (decision) {
           item.task.automationNotice = decision.notice;
+          r.sessionFinished =
+            'finishSession' in decision && decision.finishSession === true;
           if (decision.prompt) {
             const id = crypto.randomUUID();
-            const continued = 'continuationOf' in decision;
+            const continued = 'repairOf' in decision;
             item.task.turns.push({
               roundNumber: continued ? (r.roundNumber || 1) + 1 : 1,
               questionRootId: continued ? r.questionRootId || r.id : id,
               id,
               prompt: decision.prompt,
-              ...('continuationOf' in decision && 'evaluationPrompt' in decision
-                ? {
-                    continuationOf: String(decision.continuationOf),
-                    evaluationPrompt: String(decision.evaluationPrompt),
-                  }
+              ...('repairOf' in decision
+                ? { repairOf: String(decision.repairOf) }
                 : {}),
               category:
                 ('category' in decision && decision.category) || r.category,

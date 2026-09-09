@@ -34,6 +34,8 @@ export async function POST(req: Request) {
       b.difficulty === '简单'
     )
       throw new Error('首轮须选择有效题型，且不能为简单题');
+    if (b.category === 'Bug 修复')
+      throw Error('Bug 修复必须在已有题目的会话中追加');
     if (b.projectSeries === true && b.category !== '0-1 代码生成')
       throw Error('连续项目的首题必须为 0-1 代码生成');
     const task: Task = {

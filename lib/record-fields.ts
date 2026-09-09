@@ -85,7 +85,13 @@ export function recordRow(
         r.container.sourceSnapshot.manifestPath +
         '#sha256:' +
         r.container.sourceSnapshot.sha256
-      : r.container?.snapshot || t.snapshot || '',
+      : r.container?.scaffoldSnapshot
+        ? r.container.snapshot +
+          '\n骨架快照：' +
+          r.container.scaffoldSnapshot.manifestPath +
+          '#sha256:' +
+          r.container.scaffoldSnapshot.sha256
+        : r.container?.snapshot || t.snapshot || '',
     r.tracePath || '',
     t.reproducibility || '',
     r.harness || t.harness || 'Claude Code',

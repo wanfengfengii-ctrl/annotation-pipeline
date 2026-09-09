@@ -13,7 +13,7 @@ export const defaultScheduler: SchedulerConfig = {
   useHistory: true,
   repos: [],
   scope:
-    '设计中等或困难的独立项目，首题从 0-1 创建可运行基础项目，再在同一项目生成有价值的功能迭代、真实缺陷修复、理解与重构题。不同项目互相独立。',
+    '先准备项目骨架，再按 7:7:10:1:1 设计全新功能、已有功能迭代、真实 Bug 修复、理解和重构题。0-1 和 Feature 各最多十题；独立题目新会话，只有 Bug 在原会话追问，最多两轮。',
   concurrency: 3,
   dailyLimit: 20,
 };

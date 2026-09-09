@@ -35,26 +35,42 @@ try {
   );
   t = await waitTask(
     task.id,
-    (t) => t.turns.length === 10 && t.turns.every((r) => r.status === 'review'),
-    180000,
+    (t) => t.turns.length === 32 && t.turns.every((r) => r.status === 'review'),
+    300000,
   );
-  assert.equal(new Set(t.turns.map((r) => r.sessionId)).size, 10);
-  assert.equal(new Set(t.turns.map((r) => r.promptId)).size, 10);
-  assert.equal(new Set(t.turns.map((r) => r.container.workDir)).size, 10);
+  assert.equal(new Set(t.turns.map((r) => r.sessionId)).size, 22);
+  assert.equal(new Set(t.turns.map((r) => r.promptId)).size, 32);
+  assert.equal(new Set(t.turns.map((r) => r.container.workDir)).size, 22);
   assert.ok(
-    t.turns.every((r) => r.roundNumber === 1 && r.permissionAudit.passed),
+    t.turns.every((r) => r.roundNumber <= 3 && r.permissionAudit.passed),
   );
   assert.ok(
     t.turns
+      .filter((r) => !r.repairOf)
       .slice(1)
       .every((r) => r.container.sourceSnapshot.importedAfterStartup),
   );
   assert.equal(
     calls(f).filter((e) => e.name === 'claude' && e.event === 'start').length,
-    10,
+    32,
     'score retry cannot invoke Claude again',
   );
-  assert.equal(t.turns.flatMap((r) => r.claudeAttempts).length, 10);
+  assert.equal(t.turns.flatMap((r) => r.claudeAttempts).length, 32);
+  assert.equal(calls(f).filter((e) => e.name === 'scaffold').length, 1);
+  assert.deepEqual(
+    ['0-1 代码生成', 'Feature 迭代', 'Bug 修复', '代码理解', '代码重构'].map(
+      (c) => t.turns.slice(0, 26).filter((r) => r.category === c).length,
+    ),
+    [7, 7, 10, 1, 1],
+  );
+  assert.ok(
+    t.turns
+      .filter((r) => r.repairOf)
+      .every(
+        (r) =>
+          r.sessionId === t.turns.find((p) => p.id === r.repairOf).sessionId,
+      ),
+  );
   assert.ok(
     t.turns.every(
       (r) =>
@@ -76,7 +92,7 @@ try {
       },
       'PATCH',
     ),
-    /容器|10/,
+    /容器|十|10/,
   );
   const blocked = await create(f, '__POLICY_REJECT__');
   const rejected = await waitTask(
@@ -86,7 +102,7 @@ try {
   assert.equal(rejected.turns[0].stage, 'policy');
   assert.equal(
     calls(f).filter((e) => e.name === 'claude' && e.event === 'start').length,
-    10,
+    32,
   );
   await api(
     '/api/tasks/' + rejected.id,
@@ -95,7 +111,7 @@ try {
   );
   await waitTask(rejected.id, (t) => t.container?.status === 'removed');
   console.log(
-    'Docker pipeline: ten rounds, native IDs, quota, score retry, policy block, archive and cleanup passed',
+    'Terminal pipeline: 32 rounds, 22 sessions, 7:7:10:1:1 mix, one scaffold, 10+10 project caps, repair reuse, retry, policy and archive passed',
   );
 } finally {
   await stop(child);

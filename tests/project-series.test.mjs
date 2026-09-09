@@ -7,70 +7,124 @@ import {
   nextCategory,
   validateSeries,
   seriesVersion,
+  projectCounts,
+  canRepair,
+  sessionTurns,
 } from '../lib/project-series.mjs';
-const task = {
-  turns: [
-    { prompt: 'initial', category: '0-1 代码生成', claudeAttempts: ['one'] },
-  ],
-};
+const root = (id, category = '0-1 代码生成') => ({
+  id,
+  questionRootId: id,
+  prompt: '功能 ' + id,
+  category,
+  status: 'review',
+  difficulty: '中等',
+  claudeAttempts: ['one'],
+});
 const choice = {
   action: 'advance',
-  prompt: 'extend actual project',
+  prompt: '在项目中增加新的通知能力',
   category: 'Feature 迭代',
   difficulty: '困难',
-  reason: 'new requirement',
+  reason: '现有功能需要扩展',
   baseComplete: true,
-  projectEvidence: 'src/engine.ts exists',
+  projectEvidence: 'src/engine.ts 的现有逻辑',
 };
-const decide = (v, t = task) =>
-  projectDecision(
-    t,
-    { automation: { next: { value: { ...choice, ...v } } } },
+function decide(value, task = { turns: [root('a')] }) {
+  const turn = {
+    ...task.turns.at(-1),
+    automation: { next: { value: { ...choice, ...value } } },
+  };
+  return projectDecision(
+    { ...task, turns: task.turns.map((r) => (r.id === turn.id ? turn : r)) },
+    turn,
     { autoContinue: true },
   );
-test('先建项目，再基于真实产物迭代；基础不可用不能扩展', () => {
+}
+test('Whole new functions count as 0-1 while iterations reuse the existing project', () => {
+  assert.equal(decide({ category: '0-1 代码生成' }).category, '0-1 代码生成');
   assert.equal(decide({}).category, 'Feature 迭代');
   assert.throws(() => decide({ baseComplete: false }), /基础项目/);
-  assert.throws(() => decide({ category: '0-1 代码生成' }), /有效分类/);
   assert.throws(() => decide({ projectEvidence: '' }), /真实项目/);
-  assert.throws(() => decide({ action: 'repair' }), /修复决策/);
-  assert.equal(
-    decide({ action: 'repair', category: 'Bug 修复', baseComplete: false })
-      .category,
-    'Bug 修复',
-  );
-  assert.equal(decide({ prompt: 'initial' }).prompt, undefined);
-  assert.equal(nextCategory(task), 'Feature 迭代');
+  assert.throws(() => decide({ category: 'Bug 修复' }), /当前会话/);
+  assert.equal(nextCategory({ turns: [root('a')] }), 'Feature 迭代');
   assert.throws(() =>
     validateSeries({ version: seriesVersion, directory: '../escape' }),
   );
 });
-test('最多 10 次：排除轮次与失败重试也占额度', () => {
+test('Only Bug repairs reuse a session, at most two and never over ten calls', () => {
+  const first = root('a'),
+    task = { turns: [first] };
+  const d = decide(
+    {
+      action: 'repair',
+      category: 'Bug 修复',
+      prompt: '筛选后页码没有重置，把这个问题修好',
+    },
+    task,
+  );
+  assert.equal(d.repairOf, 'a');
+  assert.equal(d.questionRootId, 'a');
+  const second = {
+      ...root('b', 'Bug 修复'),
+      questionRootId: 'a',
+      repairOf: 'a',
+    },
+    third = { ...root('c', 'Bug 修复'), questionRootId: 'a', repairOf: 'b' };
+  task.turns.push(second);
+  assert.equal(canRepair(task, second), true);
+  task.turns.push(third);
+  assert.equal(canRepair(task, third), false);
+  assert.equal(sessionTurns(task, third).length, 3);
   assert.equal(
-    claudeCallCount({
-      turns: [
-        { claudeAttempts: ['failed1', 'failed2'], excluded: true },
-        { sessionId: 'legacy' },
-      ],
-    }),
-    3,
+    decide({ action: 'repair', category: 'Bug 修复' }, task).prompt,
+    undefined,
+  );
+  assert.equal(decide({ action: 'continue' }, task).prompt, undefined);
+  assert.throws(
+    () =>
+      decide({
+        action: 'repair',
+        category: 'Bug 修复',
+        prompt: '可能是列表有问题',
+      }),
+    /口语/,
   );
   assert.equal(
-    canAddTurn({ turns: Array(10).fill({ excluded: true }) }),
+    canRepair(
+      { turns: [{ ...first, claudeAttempts: Array(10).fill('failed') }] },
+      { ...first, claudeAttempts: Array(10).fill('failed') },
+    ),
     false,
   );
-  const capped = {
-    turns: [
-      {
-        prompt: 'initial',
-        claudeAttempts: Array.from({ length: 10 }, (_, i) => String(i)),
-      },
-    ],
-  };
-  assert.equal(canAddTurn(capped), false);
-  assert.match(decide({}, capped).notice, /10/);
-  assert.equal(
-    canAddTurn({ turns: Array(9).fill({ claudeAttempts: ['x'] }) }),
-    true,
+});
+test('Each project can allocate ten 0-1 and ten Feature roots; failed/excluded slots remain consumed', () => {
+  const turns = Array.from({ length: 10 }, (_, i) => ({
+      ...root('a' + i),
+      excluded: true,
+    })),
+    task = { turns };
+  assert.equal(canAddTurn(task, '0-1 代码生成'), false);
+  assert.equal(canAddTurn(task, 'Feature 迭代'), true);
+  assert.equal(canAddTurn(task), true);
+  turns.push(
+    ...Array.from({ length: 10 }, (_, i) => root('f' + i, 'Feature 迭代')),
   );
+  assert.equal(canAddTurn(task), false);
+  assert.equal(projectCounts(task)['Feature 迭代'], 10);
+  assert.equal(claudeCallCount(task), 20);
+  assert.equal(claudeCallCount(task, 'f9'), 1);
+});
+test('Weighted fresh questions respect accumulated counts and exclude standalone Bugs', () => {
+  const task = { turns: [root('a')] };
+  const c = nextCategory(task, {
+    totals: {
+      '0-1 代码生成': 7,
+      'Feature 迭代': 7,
+      'Bug 修复': 0,
+      代码理解: 0,
+      代码重构: 1,
+    },
+    reserved: {},
+  });
+  assert.equal(c, '代码理解');
 });

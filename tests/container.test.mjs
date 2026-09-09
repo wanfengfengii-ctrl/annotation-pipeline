@@ -118,7 +118,7 @@ class Fake extends DockerRuntime {
     this.save(s);
   }
 }
-test('Ten prompts use one session; cache/export retries never send an extra prompt', async () => {
+test('Three prompts use one session; cache/export retries never send an extra prompt', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'container-unit-')),
     rt = new Fake(root),
     task = { id: randomUUID() };
@@ -138,19 +138,23 @@ test('Ten prompts use one session; cache/export retries never send an extra prom
   });
   const reserve = async () => ({ allowed: ++reserves <= 10, count: reserves });
   let first;
-  for (let i = 0; i < 10; i++) {
-    const turn = { id: randomUUID(), prompt: 'prompt ' + i };
+  for (let i = 0; i < 3; i++) {
+    const turn = {
+      id: randomUUID(),
+      prompt: 'prompt ' + i,
+      ...(first ? { repairOf: first.id } : {}),
+    };
     first ||= turn;
     const result = await rt.execute(task, turn, reserve);
     assert.equal(result.sessionId, 'session');
     assert.equal(result.promptId, 'u' + (i + 1));
   }
   await rt.execute(task, first, reserve);
-  assert.equal(writes, 10);
-  assert.equal(reserves, 10);
+  assert.equal(writes, 3);
+  assert.equal(reserves, 3);
   await assert.rejects(
     rt.execute(task, { id: randomUUID(), prompt: 'eleventh' }, reserve),
-    /10/,
+    /两轮/,
   );
 });
 test('Export failure retains original pending prompt and retries only export', async () => {

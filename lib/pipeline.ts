@@ -6,6 +6,7 @@ import {
 } from './human-review.ts';
 import type { RecordMetadata } from './record-metadata.ts';
 import { validDockerSnapshot } from './container-policy.mjs';
+import { terminalIssues } from './terminal-policy.mjs';
 import { permissionIssues } from './permission-audit.mjs';
 export type PermissionAudit = {
   version: string;
@@ -29,6 +30,20 @@ export type TraceExport = {
   exportedAt: string;
 };
 export type ContainerRecord = {
+  terminalIdentity?: {
+    transport: string;
+    runId: string;
+    tty: string;
+    realTerminal: boolean;
+  };
+  scaffoldSnapshot?: {
+    manifestPath: string;
+    sha256: string;
+    files: number;
+    generatedBy: string;
+    importedAfterStartup: boolean;
+    stack: string;
+  };
   questionId?: string;
   sourceSnapshot?: {
     turnId: string;
@@ -86,7 +101,9 @@ export type Review = {
   artifactFindings?: string;
 };
 export type Turn = {
+  sessionFinished?: boolean;
   questionRootId?: string;
+  repairOf?: string;
   permissionAudit?: PermissionAudit;
   container?: ContainerRecord;
   traceExport?: TraceExport;
@@ -233,7 +250,7 @@ export function issues(t: Task, r: Turn) {
     e.push('缺少不可变环境快照（镜像摘要或完整 GitHub Commit）');
   if (r.container && !r.traceExport?.verified) e.push('完整容器轨迹未导出核验');
   if (r.container) {
-    e.push(...permissionIssues(r));
+    e.push(...permissionIssues(r), ...terminalIssues(r));
     if (
       r.sessionId &&
       t.turns?.some(

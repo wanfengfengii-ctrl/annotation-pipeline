@@ -1,9 +1,12 @@
+import { installScaffold } from './project-scaffold.mjs';
 import { continuationContext } from '../lib/round-context.mjs';
 import {
   seriesVersion,
   seriesPrompt,
   nextCategory,
   canAddTurn,
+  sessionTurns,
+  projectCounts,
 } from '../lib/project-series.mjs';
 import { workflow, scoreInstructions, nextDecision } from '../lib/workflow.mjs';
 import { withProjectScope } from '../lib/writing-style.mjs';
@@ -84,7 +87,7 @@ const command = (cmd, args, cwd) =>
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 60000,
   }).trim();
-const version = 'Claude Code · Docker 作业镜像';
+const version = 'Claude Code · Mac Terminal 交互作业';
 const codexVersion = command('codex', ['--version'], root);
 let github = githubStatus(),
   githubChecked = Date.now();
@@ -179,7 +182,7 @@ async function execute({ task, turn }) {
     success: false,
     automation,
   };
-  async function step(name, prompt, cwd) {
+  async function step(name, prompt, cwd, extra = {}) {
     if (stopping) throw Error('执行器正在停止');
     stage = name;
     await api({
@@ -192,6 +195,7 @@ async function execute({ task, turn }) {
     if (cached[name] && name !== 'policy' && name !== 'snapshot')
       return cached[name];
     const value = await codexStage({
+      ...extra,
       stage: name,
       prompt,
       cwd,
@@ -202,7 +206,7 @@ async function execute({ task, turn }) {
     return value;
   }
   async function planFollowup() {
-    if (!canAddTurn(task) || (result.claudeCallCount || 0) >= 10) {
+    if (!canAddTurn(task) && sessionTurns(task, turn).length >= 3) {
       delete automation.nextError;
       return;
     }
@@ -213,43 +217,39 @@ async function execute({ task, turn }) {
     if (result.executionOutcome === 'truncated') {
       automation.next = {
         value: {
-          action: 'continue',
-          prompt: '继续',
-          reason: '截断后继续原题，逐轮独立评分',
+          action: 'needs_input',
+          prompt: '无',
+          reason: '本轮截断，只有真实 Bug 修复允许同会话追问，已保留当前记录',
         },
       };
       return;
     }
-    if (
-      context.config.autoContinue &&
-      canAddTurn(task) &&
-      (result.claudeCallCount || 0) < 10 &&
-      task.projectSeries
-    ) {
+    if (context.config.autoContinue && task.projectSeries) {
+      const allocatedCategory = nextCategory(task, context.mix) || null;
       const next = await step(
         'project-next',
         `${seriesPrompt(task)}
-当前是第 ${task.turns.length} 次交互；当天全局分布（已完成及在途）：${JSON.stringify(context.mix)}。初始项目目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}
+当前项目题额 ${JSON.stringify(projectCounts(task))}，当前会话已记录 ${sessionTurns(task, turn).length} 条对话，最多三条；当天全局分布（已完成及在途）：${JSON.stringify(context.mix)}。初始项目目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}
 项目路径：${task.projectSeries.directory}
 本轮实际 Prompt：${preparation.value.prompt}
 本轮原始验收目标：${result.evaluationPrompt}
 本轮产物轨迹：${result.tracePath}
 本轮评分：${JSON.stringify(result.review)}
 已有题目（禁止实质重复）：${JSON.stringify(task.turns.map((r) => ({ category: r.category, prompt: r.requestedPrompt || r.prompt })))}
-读取真实项目目录和测试/错误轨迹；基础尚不可用时，若仅因截断或尚未写完则 action=continue（沿用原题分类与验收目标）；只有真实缺陷才 action=repair、category=Bug 修复。基础可用后主动设计下一道该项目的合理工程任务，action=advance，当前优先建议 ${nextCategory(task, context.mix)}，但 Bug 必须有实际证据，理解与重构按真实工程需要选择。baseComplete 必须反映真实基础产物状态。projectEvidence 写实际文件和现象；下一题不能另建项目。任务都已充分覆盖且没有有价值的下一题时 complete；缺少外部凭据或关键输入时 needs_input。结束时 prompt 写“无”。每题仍经独立禁出、雷同和难度审核。`,
+读取真实项目目录和测试/错误轨迹，有具体缺陷且当前会话未达到两轮修复时才 action=repair、category=Bug 修复，这会在当前终端追问。不能把未完成的新功能或截断续写改叫 Bug，不生成 action=continue。基础可用后 action=advance，独立新题必须使用已按比例分配的 ${allocatedCategory || '无新题额度，应结束项目'} 类别，不能自行切换类别；新建此前不存在的功能算 0-1，修改已有能力算 Feature。同项目这两类各最多十题。理解与重构按 7:7:10:1:1 的累计目标选择。projectEvidence 写实际文件、现象和新功能与现有功能的边界；baseComplete 反映实际状态。修复达到两轮仍未解决时 needs_input，不换新窗口规避修复上限；所有任务充分覆盖或题额用完时 complete。prompt 用日常交流的一段话描述目标，修复时说明真实现象与预期，不使用模板或编造人工检查经历。结束时 prompt 写无。`,
         result.workDir,
+        { allocation: { category: allocatedCategory } },
       );
       cached.next = next;
       persist();
       automation.next = next;
     } else if (
       context.config.autoContinue &&
-      canAddTurn(task) &&
-      (result.claudeCallCount || 0) < 10
+      sessionTurns(task, turn).length < 3
     ) {
       const next = await step(
         'next',
-        `只读判断是否需要下一轮。会话最初目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}\n本轮原始目标：${turn.requestedPrompt || turn.prompt}\n完整验收任务：${result.evaluationPrompt}\n轨迹：${result.tracePath}\n产物目录：${result.workDir}\n本轮评价：${JSON.stringify(result.review)}\n执行结果类型：${result.executionOutcome || 'complete'}\n仅对本题未完成部分或已发现 Bug 提出具体修复，不增加无关功能。需要用户凭据、付费、外部访问或关键决策时 needs_input。完成时 complete；截断未完成时 continue；已证实产物问题时 repair。prompt 必须是可执行的下一轮完整指令，complete/needs_input 时写“无”。reason 给出实际依据。每个会话最多 10 轮，每轮独立评分。`,
+        `只读判断是否需要下一轮。会话最初目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}\n本轮原始目标：${turn.requestedPrompt || turn.prompt}\n完整验收任务：${result.evaluationPrompt}\n轨迹：${result.tracePath}\n产物目录：${result.workDir}\n本轮评价：${JSON.stringify(result.review)}\n执行结果类型：${result.executionOutcome || 'complete'}\n仅对本题未完成部分或已发现 Bug 提出具体修复，不增加无关功能。需要用户凭据、付费、外部访问或关键决策时 needs_input。完成时 complete；截断未完成时 needs_input；已证实产物问题且本会话未到两轮修复时 repair。prompt 必须是可执行的下一轮完整指令，complete/needs_input 时写“无”。reason 给出实际依据。每个会话最多初始题加两轮 Bug 修复，共三条对话，累计调用最多十次。Bug prompt 写平淡口语化的一段话，说明具体问题及预期，不允许只写继续。`,
         result.workDir,
       );
       if (
@@ -267,6 +267,7 @@ async function execute({ task, turn }) {
       category: preparation.value.category,
       difficulty: preparation.value.difficulty,
       automation,
+      status: 'review',
     };
     nextDecision(
       {
@@ -315,6 +316,32 @@ async function execute({ task, turn }) {
         };
         result.container = containers.public(container);
       }
+      if (
+        task.projectSeries &&
+        task.turns[0]?.id === turn.id &&
+        !task.container?.scaffoldSnapshot &&
+        !cached.claude
+      ) {
+        const scaffold = await step(
+          'scaffold',
+          `为项目准备最小骨架。项目目标：${task.title}。技术栈：${task.stack}。只返回目录文件、程序入口、依赖清单、空模块接口、基础配置、测试运行器和最小空页面，不实现题目中的业务流程、领域算法或完整功能。现有路径为空，不需要安装依赖或运行命令。最多 40 个文件、总计 160KB，每个文件使用相对于项目根目录的路径。骨架将作为 Claude 开始前的初始代码，由 Claude 完成真正的全新功能。`,
+          task.workDir,
+        );
+        cached.scaffold = scaffold;
+        persist();
+        const s = containers.load(task.id);
+        s.scaffoldSnapshot = installScaffold({
+          value: scaffold.value,
+          workDir: task.workDir,
+          directory: task.projectSeries.directory,
+          evidenceDir: path.join(dir, 'scaffold'),
+          tracePath: scaffold.tracePath,
+        });
+        await containers.publish(s);
+        task.container = containers.public(s);
+        result.container = task.container;
+      }
+      if (cached.scaffold) automation.scaffold = cached.scaffold;
       const index = task.turns.findIndex((r) => r.id === turn.id);
       const previousTurns = task.turns
         .slice(0, Math.max(0, index))
@@ -345,8 +372,9 @@ async function execute({ task, turn }) {
       });
       preparation = await step(
         'prepare',
-        `${seriesPrompt(task)}\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n当前容器内工作目录固定为 /workspace，首题从空目录实现，宿主机参考仓库不在容器里。请读取当前任务目录，准备交给 Claude 的完整任务 Prompt、分类、难度、技术栈和验收条件。保留用户约束，不擅自增加业务需求。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions()}`,
+        `${seriesPrompt(task)}\n本题已分配分类：${turn.category}，category 必须保持该值，准备阶段不能更换题型。\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n当前容器内工作目录固定为 /workspace，容器已启动，项目骨架或上题归档代码已准备好，宿主机参考仓库不在容器里。0-1 在该项目内实现全新功能，Feature 迭代现有能力。请读取当前任务目录，准备交给 Claude 的完整任务 Prompt、分类、难度、技术栈和验收条件。保留用户约束，不擅自增加业务需求。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions()}`,
         task.workDir || task.repoPath,
+        { allocation: { category: turn.category } },
       );
       if (continuation) {
         preparation.value = {
@@ -357,15 +385,14 @@ async function execute({ task, turn }) {
           acceptance: continuation.acceptance,
         };
       }
-      if (
-        task.projectSeries &&
-        !continuation &&
-        (index === 0
-          ? preparation.value.category !== '0-1 代码生成'
-          : preparation.value.category === '0-1 代码生成')
-      )
-        throw Error('项目首题必须为 0-1，后续题必须基于产物扩展');
-      if (task.projectSeries && !continuation) {
+      if (turn.repairOf) {
+        if (preparation.value.category !== 'Bug 修复')
+          throw Error('当前同会话追问必须为 Bug 修复');
+      } else if (preparation.value.category === 'Bug 修复')
+        throw Error('Bug 修复只能关联当前会话');
+      if (!turn.repairOf && preparation.value.category !== turn.category)
+        throw Error('独立题型与已分配额度不一致，需重新出题');
+      if (task.projectSeries && !continuation && !turn.repairOf) {
         // A cached executed prompt is historical evidence and must not be rewritten.
         if (!cached.claude)
           preparation.value.prompt = withProjectScope(
@@ -423,7 +450,7 @@ async function execute({ task, turn }) {
         throw Error('缺少经过核验的容器初始环境');
       const snap = await step(
         'snapshot',
-        `只读检查容器任务的环境证据：${JSON.stringify(container)}。实际初始状态为指定镜像加空 /workspace；当前宿主机任务目录是该目录的绑定挂载。不要要求根目录有 Git，不得修改、提交或推送。首轮无代码是正常状态，后续轮次核对当前实际产物。head 返回镜像摘要，remote 返回镜像名称。environmentLevel 只能是 ${workflow.environmentLevels.join('；')}。列出依赖、启动方法和真实核验范围；镜像固定不代表外部服务及后续下载的依赖已经冻结，不得编造运行结果。`,
+        `只读检查容器任务的环境证据：${JSON.stringify(container)}。容器从指定镜像和空 /workspace 启动，再导入系统准备的项目骨架或上题冻结的代码；初始代码以 scaffoldSnapshot 或 sourceSnapshot 证据为准。当前宿主机任务目录是该目录的绑定挂载。不要要求根目录有 Git，不得修改、提交或推送。核对初始代码清单和当前实际产物。head 返回镜像摘要，remote 返回镜像名称。environmentLevel 只能是 ${workflow.environmentLevels.join('；')}。列出依赖、启动方法和真实核验范围；镜像固定不代表外部服务及后续下载的依赖已经冻结，不得编造运行结果。`,
         task.workDir || cached.claude.workDir,
       );
       if (!snap.value.ready)
@@ -565,6 +592,8 @@ async function execute({ task, turn }) {
             prompt: preparation.value.prompt,
             evaluationPrompt: result.evaluationPrompt,
             continuationOf: turn.continuationOf,
+            repairOf: turn.repairOf,
+            questionRootId: turn.questionRootId,
             executionOutcome: result.executionOutcome,
             snapshot: result.snapshot,
             githubSnapshot: result.githubSnapshot,
@@ -770,7 +799,7 @@ try {
           dir: supplyDir,
           turnId: randomUUID(),
           onChild: track,
-          prompt: `Codex 负责设计新项目的完整首题需求，Claude CLI 负责从零实现。首题 category 必须为 0-1 代码生成。只读分析当前仓库，仅将其作为出题参考，Claude 在独立容器空 /workspace 中工作，容器不可访问此参考仓库。在尚不存在的相对目录 ${projectSeries.directory} 设计独立项目，不基于现有业务只做小改动，不修改该目录外业务。完整首题应交付能运行的基础项目及验证方法，后续将在同一项目出 Feature 迭代、真实 Bug 修复、代码理解与代码重构题。出题范围：${context.config.scope}\n今日已完成及排队题型分布：${JSON.stringify(context.mix)}。新项目首题始终为 0-1；类型分布在同项目的后续题中调节。\n${policyInstructions()}\n不要重复或改写已有题目：${JSON.stringify(history)}\n禁止依赖其他自动任务的改动。不要提出需要外部付费、发布、推送或外部消息的任务。不执行此任务，只返回具体任务目标和验收要求。title 最多 200 字、prompt 最多 20000 字、stack 最多 300 字。`,
+          prompt: `Codex 负责先生成通用项目骨架，再设计该项目首个全新功能，Claude 在可见终端中实现该功能。首题 category 必须为 0-1 代码生成。只读分析当前仓库，仅将其作为出题参考，Claude 在新容器 /workspace 中已准备好的最小骨架上工作，容器不可访问参考仓库。在相对目录 ${projectSeries.directory} 的项目骨架内设计此前不存在的全新功能，不修改该目录外业务。完整首题应交付能运行的全新功能及验证方法，后续在同项目继续出全新功能、Feature 迭代、真实 Bug 修复、理解和重构题，目标比例 7:7:10:1:1；0-1 与 Feature 各最多十题。出题范围：${context.config.scope}\n今日已完成及排队题型分布：${JSON.stringify(context.mix)}。新项目首题始终为 0-1；类型分布在同项目的后续题中调节。\n${policyInstructions()}\n不要重复或改写已有题目：${JSON.stringify(history)}\n禁止依赖其他自动任务的改动。不要提出需要外部付费、发布、推送或外部消息的任务。不执行此任务，只返回具体任务目标和验收要求。title 最多 200 字、prompt 最多 20000 字、stack 最多 300 字。`,
         });
         if (generated.value.category !== '0-1 代码生成')
           throw Error('自动新项目首题必须是 0-1 代码生成');

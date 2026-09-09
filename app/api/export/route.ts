@@ -1,6 +1,7 @@
 import { selectRecords } from '@/db/records';
 import { recordFilter, type RecordRow } from '@/lib/record-fields';
 import { xlsx, recordsCsv } from '@/lib/xlsx';
+import { terminalIssues } from '@/lib/terminal-policy.mjs';
 import { permissionIssues } from '@/lib/permission-audit.mjs';
 import { all, failure, db, protect, text } from '@/db/store';
 import { csv, type Task } from '@/lib/pipeline';
@@ -107,7 +108,8 @@ export async function POST(req: Request) {
         turn = task?.turns.find((r) => r.id === row.turnId);
       if (
         turn?.container &&
-        (permissionIssues(turn).length ||
+        (terminalIssues(turn).length ||
+          permissionIssues(turn).length ||
           task?.turns.some(
             (r) =>
               r.sessionId === turn.sessionId &&

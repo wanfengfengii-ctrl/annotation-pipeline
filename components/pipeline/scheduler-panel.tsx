@@ -63,8 +63,8 @@ export function SchedulerPanel({
           <h2>自动补充与并行执行</h2>
           <p className="sub">
             待执行队列为空且有空闲容量时，由 Codex 先生成 0–1
-            项目题，再在同一项目生成迭代、修复、理解或重构题。不同项目并行，每道独立题目新建容器，同题继续沿用当前
-            Claude 交互进程，累计最多 10 次。
+            项目骨架和全新功能题，再在同一项目生成新功能、迭代、修复、理解和重构题。目标比例
+            7:7:10:1:1，独立题目新建 Terminal 会话，只有 Bug 修复沿用当前会话。
           </p>
         </div>
         <span className="tag">
@@ -122,9 +122,9 @@ export function SchedulerPanel({
             'adminfather/benzhi-claude-code:20260909-isolated-git'}
         </p>
         <p className="sub">
-          每道独立题目从空目录启动，启动后导入上一题代码；同题继续沿用当前会话。每个项目累计最多
-          10
-          次。结束后导出完整轨迹并核验，再删除容器；代码目录保留。暂停续跑的项目仍占用容器名额，可在任务详情结束会话。
+          新容器启动后导入骨架或上题代码；初始题加最多两轮 Bug
+          修复，共三条对话，每会话保留十次调用硬上限。0-1 与 Feature
+          每项目各最多十题。结束后核验并导出完整轨迹，保留代码。
         </p>
         <p className="sub">
           模型及 1,000,000 tokens
@@ -133,8 +133,8 @@ export function SchedulerPanel({
       </div>
       {s?.mix && (
         <p className="sub">
-          今日有效轮次：
-          {Object.entries(s.mix.counts)
+          累计有效轮次：
+          {Object.entries(s.mix.totals || s.mix.counts)
             .map(([name, n]) => `${name} ${String(n)}`)
             .join(' · ')}
           。优先补充：{s.mix.suggested}。{s.mix.note}
@@ -155,7 +155,7 @@ export function SchedulerPanel({
                 setConfig({ ...config, autoContinue: v === true })
               }
             />
-            每轮评分后自动判断并续跑（最多 10 轮）
+            评分后自动出下一题或追问 Bug（每会话最多两次修复）
           </label>
           <label className="scheduler-check">
             <Checkbox

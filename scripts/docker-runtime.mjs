@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import {
   readFileSync,
   writeFileSync,
@@ -13,7 +13,12 @@ import {
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import {
+  prepareTerminal,
+  launchTerminal,
+  connectTerminal,
+} from './mac-terminal.mjs';
+import { sessionLimits } from '../lib/project-series.mjs';
 import {
   auditPermissionTraces,
   verifyPermissionPreflight,
@@ -28,7 +33,6 @@ import {
 
 const nap = (ms) => new Promise((r) => setTimeout(r, ms));
 const hash = (data) => createHash('sha256').update(data).digest('hex');
-const bridgePath = fileURLToPath(new URL('./docker-pty.py', import.meta.url));
 const docker = (args, options = {}) =>
   execFileSync('docker', args, {
     encoding: 'utf8',
@@ -120,6 +124,7 @@ export function readNativeTurn(files, prompt, previousIds = []) {
     return {
       complete,
       promptId: user.uuid,
+      harnessVersion: user.version,
       sessionId: user.sessionId,
       model: assistants.at(-1)?.message?.model,
       output,
@@ -234,7 +239,8 @@ export class DockerRuntime {
     let rotating = false;
     let s = this.load(task.id);
     if (s && (s.questionId || task.turns?.[0]?.id) !== questionId) {
-      if (turn.continuationOf) throw Error('不能将原题继续关联到其他容器');
+      if (turn.repairOf || turn.continuationOf)
+        throw Error('不能将原题继续关联到其他容器');
       await this.close(task.id);
       s = this.load(task.id);
       if (s.status !== 'removed') throw Error('上一题容器尚未完成归档清理');
@@ -259,12 +265,6 @@ export class DockerRuntime {
         throw Error('此题容器已停止，只能导出归档，不能重启旧任务');
       s.containerId = c.Id;
       await this.attach(s, !s.bootstrapped);
-      s.harnessVersion ||= this.command([
-        'exec',
-        s.containerId,
-        'claude',
-        '--version',
-      ]);
       s.os ||= this.command(['exec', s.containerId, 'uname', '-sr']);
       this.importPriorQuestion(s, task, turn);
       s.permissionPreflight = this.permissionPreflight(s);
@@ -307,34 +307,47 @@ export class DockerRuntime {
     // Persist the intent before creation; a crash cannot silently create a second container.
     this.save(s);
     try {
-      s.containerId = this.command(
-        [
-          'run',
-          '-dit',
-          '--init',
-          '--restart=no',
-          '--cap-drop',
-          'ALL',
-          '--security-opt',
-          'no-new-privileges',
-          '--cpus',
-          '2',
-          '--memory',
-          '3g',
-          '--label',
-          'annotation.pipeline.owner=' + this.owner,
-          '--label',
-          'annotation.pipeline.task=' + task.id,
-          '--name',
-          s.name,
-          '--mount',
-          'type=bind,src=' + workDir + ',dst=/workspace',
-          '-e',
-          'apikey',
-          status.imageId,
-        ],
-        { env: { ...process.env, apikey } },
-      );
+      s.terminal = prepareTerminal(path.dirname(workDir), [
+        'run',
+        '-it',
+        '--sig-proxy=false',
+        '--init',
+        '--restart=no',
+        '--cap-drop',
+        'ALL',
+        '--security-opt',
+        'no-new-privileges',
+        '--cpus',
+        '2',
+        '--memory',
+        '3g',
+        '--label',
+        'annotation.pipeline.owner=' + this.owner,
+        '--label',
+        'annotation.pipeline.task=' + task.id,
+        '--name',
+        s.name,
+        '--mount',
+        'type=bind,src=' + workDir + ',dst=/workspace',
+        '-e',
+        'apikey',
+        status.imageId,
+      ]);
+      this.save(s);
+      launchTerminal(s.terminal);
+      const live = await connectTerminal(s.terminal);
+      this.live.set(task.id, live);
+      s.terminalIdentity = live.identity;
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        try {
+          s.containerId = this.owned(s).Id;
+          break;
+        } catch {
+          await nap(250);
+        }
+      }
+      if (!s.containerId) throw Error('Terminal 容器尚未启动');
     } catch {
       s.status = 'error';
       s.error = '容器创建失败；请检查 Docker 状态，已保留工作目录与创建记录';
@@ -344,12 +357,6 @@ export class DockerRuntime {
     this.save(s);
     this.owned(s);
     await this.attach(s, true);
-    s.harnessVersion = this.command([
-      'exec',
-      s.containerId,
-      'claude',
-      '--version',
-    ]);
     s.os = this.command(['exec', s.containerId, 'uname', '-sr']);
     s.permissionPreflight = this.permissionPreflight(s);
     this.importPriorQuestion(s, task, turn);
@@ -359,7 +366,8 @@ export class DockerRuntime {
   }
   importPriorQuestion(s, task, turn) {
     const previous = priorQuestionTurn(task, turn);
-    if (!previous || turn.continuationOf || s.sourceSnapshot) return;
+    if (!previous || turn.repairOf || turn.continuationOf || s.sourceSnapshot)
+      return;
     if (
       !previous.permissionAudit?.passed ||
       (previous.sessionId &&
@@ -427,6 +435,8 @@ export class DockerRuntime {
   }
   permissionPreflight(s) {
     this.owned(s);
+    if (!s.terminalIdentity?.realTerminal)
+      throw Error('缺少实际 Mac Terminal 终端');
     // This does not consume a model prompt or change any model/client configuration.
     const script = `const fs=require('fs'),crypto=require('crypto');let args=null;for(const id of fs.readdirSync('/proc').filter(x=>/^\\d+$/.test(x))){try{const a=fs.readFileSync('/proc/'+id+'/cmdline','utf8').split('\\0');if(a.includes('--dangerously-skip-permissions')){args=a;break;}}catch{}}if(!args)throw Error('Claude 免审批进程不存在');const arg=k=>args[args.indexOf(k)+1];const settings=JSON.parse(arg('--settings')||'{}');const mcp=JSON.parse(arg('--mcp-config')||'{}');const file='/workspace/.permission-check-'+crypto.randomUUID();let writable=false;try{fs.writeFileSync(file,'check',{flag:'wx'});writable=fs.readFileSync(file,'utf8')==='check';}finally{try{fs.unlinkSync(file);}catch{}}console.log(JSON.stringify({skipPermissions:args.includes('--dangerously-skip-permissions'),settingsIsolated:args.includes('--setting-sources')&&arg('--setting-sources')==='',hooksIsolated:args.includes('--safe-mode')&&!settings.hooks&&!settings.permissions?.deny?.length,mcpIsolated:args.includes('--strict-mcp-config')&&Object.keys(mcp.mcpServers||{}).length===0,workspaceWritable:writable,tools:(arg('--tools')||'').split(','),checkedAt:new Date().toISOString()}));`;
     return verifyPermissionPreflight(
@@ -445,33 +455,11 @@ export class DockerRuntime {
   }
   async attach(s, fresh = false) {
     let live = this.live.get(s.taskId);
-    if (live?.child.exitCode === null && s.bootstrapped) return;
     if (!live || live.child.exitCode !== null) {
-      const child = spawn('python3', [bridgePath, s.containerId || s.name], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      live = {
-        child,
-        output: this.command([
-          'logs',
-          '--tail',
-          '100',
-          s.containerId || s.name,
-        ]),
-        error: '',
-      };
+      live = await connectTerminal(s.terminal);
       this.live.set(s.taskId, live);
-      child.stdout.on('data', (d) => {
-        live.output = (live.output + d).slice(-50000);
-      });
-      child.stderr.on('data', (d) => {
-        live.error = (live.error + d).slice(-3000);
-      });
-      child.stdin.on('error', () => {});
-      child.on('error', () => {
-        live.error = '无法连接容器交互终端';
-      });
     }
+    s.terminalIdentity = live.identity;
     const child = live.child;
     await nap(2000);
     // Accept only this fixed image's first-run warning after isolation has been verified.
@@ -481,9 +469,9 @@ export class DockerRuntime {
         if (/bypasspermissionson/i.test(screen)) break;
         if (screen.includes('Yes,Iaccept') && screen.includes('No,exit')) {
           this.owned(s);
-          child.stdin.write('\x1b[B');
+          await child.stdin.write('\x1b[B');
           await nap(700);
-          child.stdin.write('\r');
+          await child.stdin.write('\r');
           await nap(1800);
           break;
         }
@@ -580,6 +568,8 @@ export class DockerRuntime {
     };
   }
   async execute(task, turn, reserve) {
+    if (turn.continuationOf && !turn.repairOf)
+      throw Error('仅 Bug 修复允许继续原会话，普通续写已停止');
     const s = await this.ensure(task, turn);
     if (s.results?.[turn.id])
       return { ...s.results[turn.id], container: this.public(s) };
@@ -595,8 +585,10 @@ export class DockerRuntime {
     if (p && (p.turnId !== turn.id || p.promptHash !== hash(turn.prompt)))
       throw Error('容器中存在未确认的交互，请核对原始轨迹，不能发送新题');
     if (!p) {
-      if (Object.keys(s.results).length >= 10)
-        throw Error('同一窗口最多 10 次交互');
+      if (Object.keys(s.results).length >= sessionLimits.maxLogicalTurns)
+        throw Error('同一会话最多初始题加两轮 Bug 修复');
+      if (Object.keys(s.results).length && !turn.repairOf)
+        throw Error('非 Bug 题目必须使用新会话');
       const previousIds = this.native(s).flatMap((f) =>
         parseNativeJSONL(f.content)
           .filter((e) => e.type === 'user')
@@ -616,15 +608,15 @@ export class DockerRuntime {
       if (!quota.allowed) {
         delete s.pending;
         this.save(s);
-        throw Error('同一项目已达 10 次 Claude 交互上限');
+        throw Error('当前会话已达 10 次 Claude 调用上限');
       }
       p.count = quota.count;
       p.phase = 'sent';
       this.save(s);
       const live = this.live.get(task.id);
-      live.child.stdin.write('\x1b[200~' + turn.prompt + '\x1b[201~');
+      await live.child.stdin.write('\x1b[200~' + turn.prompt + '\x1b[201~');
       await nap(500);
-      live.child.stdin.write('\r');
+      await live.child.stdin.write('\r');
     }
     const deadline =
       Date.now() + Number(process.env.RUNNER_TIMEOUT_MS || 1800000);
@@ -638,6 +630,7 @@ export class DockerRuntime {
         if (s.sessionId && s.sessionId !== native.sessionId)
           throw Error('同一容器的会话 ID 发生变化');
         s.sessionId = native.sessionId;
+        s.harnessVersion = native.harnessVersion || s.harnessVersion;
         const traceExport = await this.export(s, turn.id);
         const permissionAudit = this.permissionAudit(traceExport);
         const dir = path.dirname(this.file(task.id)),
@@ -693,9 +686,13 @@ export class DockerRuntime {
         await this.attach(s);
         const child = this.live.get(taskId).child;
         await nap(500);
-        child.stdin.write('\x04');
+        await child.stdin.write('\x04');
         await nap(150);
-        child.stdin.write('\x04');
+        try {
+          await child.stdin.write('\x04');
+        } catch (e) {
+          if (this.owned(s).State.Running) throw e;
+        }
         for (let i = 0; i < 20 && this.owned(s).State.Running; i++)
           await nap(500);
         if (this.owned(s).State.Running)

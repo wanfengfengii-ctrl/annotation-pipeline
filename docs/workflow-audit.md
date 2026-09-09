@@ -1,3 +1,5 @@
+> 当前执行规则已更新：可见 Mac Terminal、预生成骨架、全新功能算 0-1、比例 7:7:10:1:1、0-1 与 Feature 每项目各十题、仅 Bug 同会话最多两次追问。下文保留历次审计背景，旧的每项目十次和普通继续规则已被替代。当前规则见 [Mac Terminal 作业流程](docker-workflow-2026-09-09.md)。
+
 # 文档流程与自动化核对
 
 核对日期：2026-09-07。依据：[腾讯文档](https://docs.qq.com/document/DVWVQemZTRm5jZnRJ)。
