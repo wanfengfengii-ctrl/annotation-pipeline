@@ -9,8 +9,11 @@ import {
   calls,
 } from './fixtures/flow-helper.mjs';
 const f = fixture('docker-scheduler', {
-    FIXTURE_DOCKER_GB: '16',
+    FIXTURE_DOCKER_GB: '8',
     FIXTURE_STOP_PROJECT: '1',
+    RUNNER_RESOURCE_PROFILE: 'lightweight',
+    // Span the resource cache's 15-second refresh after the first VM probe.
+    FIXTURE_CLAUDE_DELAY_MS: '20000',
   }),
   original = (await api('/api/scheduler', null, 'GET')).config;
 let child;
@@ -26,10 +29,15 @@ try {
   });
   const tasks = [];
   for (let i = 0; i < 3; i++)
-    tasks.push(await create(f, '__DOCKER_PARALLEL__' + i, false));
+    tasks.push(await create(f, '__DOCKER_PARALLEL__' + i, true));
   child = start(f);
   await Promise.all(
-    tasks.map((t) => waitTask(t.id, (x) => x.turns[0].status === 'review')),
+    tasks.map((t) =>
+      waitTask(t.id, (x) => {
+        assert.notEqual(x.turns[0].status, 'failed', x.turns[0].error);
+        return x.turns[0].status === 'review';
+      }),
+    ),
   );
   let auto;
   for (let i = 0; i < 240; i++) {
@@ -55,10 +63,18 @@ try {
     active += e.event === 'start' ? 1 : -1;
     maximum = Math.max(maximum, active);
   }
-  assert.ok(
-    maximum >= 2 && maximum <= 3,
-    'parallel capacity must allow overlapping isolated projects without exceeding 3',
+  assert.equal(
+    maximum,
+    3,
+    '8 GiB Docker must run three overlapping lightweight projects without exceeding 3',
   );
+  for (const action of ['ps', 'inspect', 'stats', 'vm-sample'])
+    assert.ok(
+      calls(f).some(
+        (event) => event.name === 'docker-resource' && event.action === action,
+      ),
+      `real resource sampler did not exercise Docker ${action}`,
+    );
   const taskRecords = (await api('/api/tasks', null, 'GET')).tasks.filter((t) =>
     tasks.some((x) => x.id === t.id),
   );

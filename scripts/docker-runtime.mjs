@@ -30,6 +30,7 @@ import {
   containerPolicyVersion,
   containerTraceRoot,
   dockerSnapshot,
+  resourceProfile,
 } from '../lib/container-policy.mjs';
 
 const nap = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -47,10 +48,14 @@ const compactTerminal = (s) =>
   // eslint-disable-next-line no-control-regex
   s.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\s/g, '');
 
-export function dockerStatus() {
+export function dockerStatus({ command = docker, timeout = 30000 } = {}) {
   try {
-    const info = JSON.parse(docker(['info', '--format', '{{json .}}']));
-    const image = JSON.parse(docker(['image', 'inspect', containerImage]))[0];
+    const info = JSON.parse(
+      command(['info', '--format', '{{json .}}'], { timeout }),
+    );
+    const image = JSON.parse(
+      command(['image', 'inspect', containerImage], { timeout }),
+    )[0];
     const digest = image.RepoDigests?.find((s) =>
       s.startsWith('adminfather/benzhi-claude-code@'),
     )?.split('@')[1];
@@ -72,6 +77,134 @@ export function dockerStatus() {
       image: containerImage,
       reason: 'Docker 未启动或缺少指定镜像，请启动 Docker 并拉取作业镜像',
     };
+  }
+}
+
+export function dockerMemoryBytes(value) {
+  const m = String(value)
+    .trim()
+    .match(/^(\d+(?:\.\d+)?)\s*(B|[KMGTPE]i?B)$/i);
+  if (!m) throw Error('无法读取 Docker 内存用量');
+  const unit = m[2].toUpperCase();
+  const exponent = unit === 'B' ? 0 : 'KMGTPE'.indexOf(unit[0]) + 1;
+  return Number(m[1]) * (unit.includes('I') ? 1024 : 1000) ** exponent;
+}
+
+const resourceReadScript = `// ANNOTATION_RESOURCE_SAMPLE
+const fs = require('fs');
+const read = p => fs.readFileSync(p, 'utf8');
+const mem = read('/proc/meminfo');
+const psi = read('/proc/pressure/memory');
+const stat = read('/sys/fs/cgroup/memory.stat');
+const max = read('/sys/fs/cgroup/memory.max').trim();
+const num = (s, re) => {const m = s.match(re); if (!m) throw Error('missing resource field'); return Number(m[1]);};
+console.log(JSON.stringify({
+  memAvailableBytes: num(mem, /^MemAvailable:\\s+(\\d+)/m) * 1024,
+  pressure: {someAvg10: num(psi, /^some avg10=(\\d+(?:\\.\\d+)?)/m), fullAvg10: num(psi, /^full avg10=(\\d+(?:\\.\\d+)?)/m)},
+  cgroup: {currentBytes: Number(read('/sys/fs/cgroup/memory.current').trim()), maxBytes: max === 'max' ? null : Number(max), inactiveFileBytes: num(stat, /^inactive_file (\\d+)/m)}
+}));`;
+
+export function sampleDockerResources({
+  owner,
+  command = docker,
+  timeout = 5000,
+}) {
+  const observedAt = new Date().toISOString();
+  const deadline = Date.now() + timeout;
+  const run = (args) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw Error('Docker 资源采样超时');
+    return command(args, { timeout: remaining });
+  };
+  try {
+    const ids = run(['ps', '-q']).trim().split(/\s+/).filter(Boolean);
+    if (!ids.length)
+      return {
+        ok: true,
+        observedAt,
+        ownedContainers: [],
+        externalWorkingSetBytes: 0,
+        vmObserved: false,
+      };
+    // Only these fields leave inspect; Config.Env can contain authentication.
+    const inspected = run([
+      'inspect',
+      '--format',
+      '{"id":{{json .Id}},"owner":{{json (index .Config.Labels "annotation.pipeline.owner")}},"memoryLimitBytes":{{json .HostConfig.Memory}}}',
+      ...ids,
+    ])
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    const stats = run([
+      'stats',
+      '--no-stream',
+      '--format',
+      '{{json .}}',
+      ...ids,
+    ])
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    const containers = inspected.map((c) => {
+      const stat = stats.find(
+        (s) => typeof s.ID === 'string' && c.id.startsWith(s.ID),
+      );
+      if (!stat?.MemUsage) throw Error('Docker 容器用量采样不完整');
+      return {
+        ...c,
+        workingSetBytes: dockerMemoryBytes(stat.MemUsage.split('/')[0]),
+      };
+    });
+    if (containers.length !== ids.length)
+      throw Error('Docker 容器清单采样不完整');
+    const own = containers.filter((c) => c.owner === owner);
+    const externalWorkingSetBytes = containers
+      .filter((c) => c.owner !== owner)
+      .reduce((sum, c) => sum + c.workingSetBytes, 0);
+    const sample = {
+      ok: true,
+      observedAt,
+      ownedContainers: own.map(({ id, workingSetBytes, memoryLimitBytes }) => ({
+        id,
+        workingSetBytes,
+        memoryLimitBytes,
+      })),
+      externalWorkingSetBytes,
+      vmObserved: false,
+    };
+    if (!own.length) return sample;
+    // Read only our own container. /proc/meminfo and PSI describe the shared
+    // Linux VM; cgroup readings validate the observation container's limit.
+    const vm = JSON.parse(
+      run(['exec', own[0].id, 'node', '-e', resourceReadScript]),
+    );
+    if (
+      !Number.isFinite(vm.memAvailableBytes) ||
+      vm.memAvailableBytes < 0 ||
+      !Number.isFinite(vm.pressure?.someAvg10) ||
+      !Number.isFinite(vm.pressure?.fullAvg10) ||
+      !Number.isFinite(vm.cgroup?.currentBytes) ||
+      vm.cgroup.maxBytes !== own[0].memoryLimitBytes ||
+      !Number.isFinite(vm.cgroup.inactiveFileBytes)
+    )
+      throw Error('Docker 虚拟机资源采样无效');
+    sample.ownedContainers[0].workingSetBytes = Math.max(
+      sample.ownedContainers[0].workingSetBytes,
+      vm.cgroup.currentBytes - vm.cgroup.inactiveFileBytes,
+    );
+    return {
+      ...sample,
+      vmObserved: true,
+      memAvailableBytes: vm.memAvailableBytes,
+      pressure: vm.pressure,
+    };
+  } catch {
+    // Sampling errors must not reveal raw Docker output or credentials, and
+    // must never turn into optimistic admission after a transient failure.
+    return { ok: false, observedAt, reason: 'Docker 资源采样失败，暂停新任务' };
   }
 }
 
@@ -180,6 +313,47 @@ export class DockerRuntime {
     this.owner = hash(realpathSync(root)).slice(0, 24);
     this.live = new Map();
     this.cleanupAt = new Map();
+    this.resourceCache = null;
+  }
+  resourceStatus({ force = false } = {}) {
+    const residentKey = this.records()
+      .filter((s) => s.status !== 'removed')
+      .map((s) => (s.containerId || s.name) + ':' + s.status)
+      .sort()
+      .join('|');
+    if (
+      !force &&
+      this.resourceCache &&
+      this.resourceCache.residentKey === residentKey &&
+      Date.now() - this.resourceCache.at < 15000
+    )
+      return this.resourceCache.value;
+    const value = dockerStatus({ command: this.command, timeout: 5000 });
+    if (value.ready) {
+      value.resourceSample = sampleDockerResources({
+        owner: this.owner,
+        command: this.command,
+      });
+      const sample = value.resourceSample;
+      if (sample.ok) {
+        const profile = resourceProfile();
+        sample.reason = sample.ownedContainers.some(
+          (c) => c.workingSetBytes >= c.memoryLimitBytes * 0.9,
+        )
+          ? '现有作业接近容器内存上限，暂停新增任务'
+          : sample.pressure?.someAvg10 >= 10 || sample.pressure?.fullAvg10 >= 1
+            ? 'Docker 虚拟机内存压力较高，暂停新增任务'
+            : sample.vmObserved &&
+                sample.memAvailableBytes <
+                  profile.dockerReserveBytes + profile.memoryBytes
+              ? 'Docker 虚拟机可用内存偏低，限制新增任务'
+              : sample.vmObserved
+                ? '已按实际容器限额与虚拟机可用内存核算'
+                : '等待首个作业容器观测虚拟机资源';
+      }
+    }
+    this.resourceCache = { at: Date.now(), residentKey, value };
+    return value;
   }
   file(id) {
     if (!/^[a-f0-9-]{36}$/.test(id)) throw Error('任务 ID 无效');
@@ -339,6 +513,7 @@ export class DockerRuntime {
     // Persist the intent before creation; a crash cannot silently create a second container.
     this.save(s);
     try {
+      const profile = resourceProfile();
       s.terminal = prepareTerminal(path.dirname(workDir), [
         'run',
         '-it',
@@ -350,9 +525,9 @@ export class DockerRuntime {
         '--security-opt',
         'no-new-privileges',
         '--cpus',
-        '2',
+        String(profile.cpus),
         '--memory',
-        '3g',
+        profile.memoryArg,
         '--label',
         'annotation.pipeline.owner=' + this.owner,
         '--label',

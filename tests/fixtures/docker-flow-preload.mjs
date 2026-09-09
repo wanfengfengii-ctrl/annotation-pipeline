@@ -79,6 +79,7 @@ DockerRuntime.prototype.ensure = async function (task, turn) {
       bootstrapped: true,
       taskId: task.id,
       questionId,
+      containerId: questionId.replaceAll('-', '').repeat(2),
       name: 'annotation-' + task.id,
       status: 'running',
       image: containerImage,
@@ -112,7 +113,9 @@ DockerRuntime.prototype.execute = async function (task, turn, reserve) {
       time: Date.now(),
     }) + '\n',
   );
-  await new Promise((r) => setTimeout(r, 300));
+  await new Promise((r) =>
+    setTimeout(r, Number(process.env.FIXTURE_CLAUDE_DELAY_MS || 300)),
+  );
   const count = task.turns.findIndex((r) => r.id === turn.id) + 1;
   writeFileSync(path.join(s.workDir, '.fixture-count'), String(count));
   const project = task.projectSeries?.directory || 'project';

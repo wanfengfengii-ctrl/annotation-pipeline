@@ -20,10 +20,11 @@ import {
 } from '../lib/question-cache.mjs';
 import { resumeInitialSnapshot } from '../lib/snapshot-resume.mjs';
 import { harnessInstructions } from '../lib/harness.mjs';
-import { DockerRuntime, dockerStatus } from './docker-runtime.mjs';
+import { DockerRuntime } from './docker-runtime.mjs';
 import { permissionIssues } from '../lib/permission-audit.mjs';
 import {
   containerCapacity,
+  resourceProfile,
   validDockerSnapshot,
 } from '../lib/container-policy.mjs';
 import {
@@ -74,6 +75,16 @@ const workRoot = path.resolve(
   process.env.RUNNER_WORK_ROOT || path.join(root, '.runner'),
 );
 mkdirSync(workRoot, { recursive: true });
+// Persist this runner's selected resource budget across monitor restarts.
+// The isolated work root keeps fixtures and other installations independent.
+const profilePath = path.join(workRoot, 'resource-profile.json');
+if (!process.env.RUNNER_RESOURCE_PROFILE && existsSync(profilePath)) {
+  const saved = JSON.parse(readFileSync(profilePath, 'utf8'));
+  if (!['standard', 'lightweight'].includes(saved.profile))
+    throw Error('保存的执行器资源预算无效');
+  process.env.RUNNER_RESOURCE_PROFILE = saved.profile;
+}
+resourceProfile();
 const lock = path.join(workRoot, 'runner.lock');
 acquireLock(lock);
 let stopping = false;
@@ -1095,21 +1106,36 @@ try {
         context.containerTasks || [],
         new Set(active.keys()),
       );
-      const resource = resources(context.config.concurrency);
-      const docker = dockerStatus();
+      const profile = resourceProfile();
+      const occupied = active.size + orphans.length + Number(!!generating);
+      const resource = resources(context.config.concurrency, {
+        profile,
+        occupied,
+      });
+      const docker = containers.resourceStatus();
       const hostCapacity = resource.effective;
-      resource.effective = containerCapacity(docker, resource.effective);
-      resource.recommended = containerCapacity(docker, resource.recommended);
+      resource.effective = containerCapacity(docker, resource.effective, {
+        profile,
+        occupied,
+      });
+      resource.recommended = containerCapacity(docker, resource.recommended, {
+        profile,
+        occupied,
+      });
       resource.reason = !docker.ready
         ? docker.reason
         : resource.effective === 0
           ? hostCapacity === 0
             ? '宿主机可用内存不足，暂停领取新任务'
             : 'Docker 资源不足，暂停领取新任务'
-          : '同时按宿主机与 Docker 虚拟机资源限制';
+          : hostCapacity < context.config.concurrency
+            ? resource.reason
+            : docker.resourceSample?.reason ||
+              '同时按宿主机与 Docker 虚拟机资源限制';
       const readySources = docker.ready ? context.repos : [];
       schedulerStatus = {
         ...resource,
+        resourceProfile: profile,
         active: active.size,
         recovering: orphans.length,
         generating: !!generating,

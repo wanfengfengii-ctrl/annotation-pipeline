@@ -1,9 +1,11 @@
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { resourceProfile } from '../lib/container-policy.mjs';
 export function capacityFor(
   { cores, totalGB, availableGB, load },
   requested = 3,
+  { profile = resourceProfile(), occupied = 0 } = {},
 ) {
   const recommended = Math.max(
     1,
@@ -14,7 +16,11 @@ export function capacityFor(
     Math.min(4, Math.floor(cores / 2), Math.floor((totalGB - 8) / 6)),
   );
   const maximum = Math.min(hardwareLimit, requested);
-  const memorySlots = Math.max(0, Math.floor((availableGB - 2) / 3));
+  // availableGB already excludes memory used by running jobs. Add only the
+  // slots for new work to occupied jobs instead of charging their budget twice.
+  const memorySlots =
+    Math.max(0, occupied) +
+    Math.max(0, Math.floor((availableGB - 2) / profile.hostSlotGB));
   const loadSlots =
     load >= cores * 1.2
       ? 1
@@ -33,7 +39,7 @@ export function capacityFor(
           : '资源充足',
   };
 }
-export function resources(requested = 3) {
+export function resources(requested = 3, options = {}) {
   const totalGB = os.totalmem() / 2 ** 30;
   let availableGB = os.freemem() / 2 ** 30;
   if (os.platform() === 'darwin') {
@@ -62,7 +68,7 @@ export function resources(requested = 3) {
   };
   return {
     ...metrics,
-    ...capacityFor(metrics, requested),
+    ...capacityFor(metrics, requested, options),
     cpu: os.cpus()[0]?.model || os.arch(),
   };
 }

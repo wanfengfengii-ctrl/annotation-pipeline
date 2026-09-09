@@ -11,7 +11,96 @@ if (a.includes('--version')) {
   process.exit(0);
 }
 if (name === 'docker') {
+  const GiB = 2 ** 30,
+    memoryLimitBytes =
+      (process.env.RUNNER_RESOURCE_PROFILE === 'lightweight' ? 1.5 : 3) * GiB,
+    root = process.env.RUNNER_WORK_ROOT,
+    owner = root
+      ? require('crypto')
+          .createHash('sha256')
+          .update(fs.realpathSync(root))
+          .digest('hex')
+          .slice(0, 24)
+      : '',
+    containers = root
+      ? fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+          const file = path.join(root, entry.name, 'container.json');
+          if (!entry.isDirectory() || !fs.existsSync(file)) return [];
+          const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+          return state.status === 'running'
+            ? [
+                {
+                  id: state.containerId,
+                  owner,
+                  memoryLimitBytes,
+                  workingSetBytes: 200 * 2 ** 20,
+                },
+              ]
+            : [];
+        })
+      : [];
+  containers.push({
+    id: 'e'.repeat(64),
+    owner: '',
+    memoryLimitBytes: 0,
+    workingSetBytes: 1.3 * GiB,
+  });
+  const logResourceCall = (action) => {
+    if (process.env.FIXTURE_LOG)
+      fs.appendFileSync(
+        process.env.FIXTURE_LOG,
+        JSON.stringify({ name: 'docker-resource', action, time: Date.now() }) +
+          '\n',
+      );
+  };
+  if (a[0] === 'ps') {
+    logResourceCall('ps');
+    console.log(containers.map((container) => container.id).join('\n'));
+    process.exit(0);
+  }
+  if (a[0] === 'inspect' && a.includes('--format')) {
+    logResourceCall('inspect');
+    console.log(
+      containers
+        .filter((container) => a.includes(container.id))
+        .map(({ id, owner, memoryLimitBytes }) =>
+          JSON.stringify({ id, owner, memoryLimitBytes }),
+        )
+        .join('\n'),
+    );
+    process.exit(0);
+  }
+  if (a[0] === 'stats') {
+    logResourceCall('stats');
+    console.log(
+      containers
+        .filter((container) => a.includes(container.id))
+        .map((container) =>
+          JSON.stringify({
+            ID: container.id.slice(0, 12),
+            MemUsage: `${container.workingSetBytes / GiB}GiB / ${container.memoryLimitBytes / GiB || 8}GiB`,
+          }),
+        )
+        .join('\n'),
+    );
+    process.exit(0);
+  }
   if (a[0] === 'exec') {
+    if (a.at(-1).includes('ANNOTATION_RESOURCE_SAMPLE')) {
+      logResourceCall('vm-sample');
+      console.log(
+        JSON.stringify({
+          memAvailableBytes: (6.2 - (containers.length - 1) * 0.2) * GiB,
+          pressure: { someAvg10: 0, fullAvg10: 0 },
+          cgroup: {
+            currentBytes: 200 * 2 ** 20,
+            maxBytes: memoryLimitBytes,
+            inactiveFileBytes: 0,
+          },
+        }),
+      );
+      process.exit(0);
+    }
     const bug = a.at(-1).includes('__runtime_bug__');
     console.log(
       bug
