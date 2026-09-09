@@ -182,6 +182,15 @@ test('Runtime planning receives measured capabilities and Bash contract after is
         assert.match(instruction, /npm 在 \/tmp 下的独立目录安装 Playwright/);
         assert.match(instruction, /真实启动 headless 浏览器验证/);
         assert.match(instruction, /安装或启动失败属于环境 blocked/);
+        assert.match(instruction, /先读取真实启动入口和依赖引用/);
+        assert.match(instruction, /不要无条件执行 npm ci/);
+        assert.match(instruction, /不修改源码、依赖清单或锁文件/);
+        assert.match(instruction, /保留不一致和安装失败证据/);
+        assert.match(instruction, /受影响的自带测试未执行/);
+        assert.match(instruction, /不强制所有项目使用 Playwright/);
+        assert.match(instruction, /playwright install --only-shell chromium/);
+        assert.match(instruction, /系统依赖安装与浏览器二进制下载拆成不同 setup/);
+        assert.match(instruction, /为实际业务 acceptance 留出时间预算/);
         assert.equal(calls.length, 2);
         assert.equal(calls[1][0], 'rm');
         throw stopAfterPlan;

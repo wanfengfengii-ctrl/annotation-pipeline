@@ -64,17 +64,32 @@ export function createEvidenceArchive({
   const stageDir = path.join(dir, turnId + '.evidence');
   mkdirSync(stageDir, { recursive: true });
   const manifest = [];
-  function add(src, name) {
+  function add(src, name, expectedSha256) {
     if (!existsSync(src)) throw Error('交付证据缺失：' + src);
     const data = readFileSync(src);
+    const sha256 = createHash('sha256').update(data).digest('hex');
+    if (expectedSha256 !== undefined && sha256 !== expectedSha256)
+      throw Error('交付证据摘要不一致：' + name);
     mkdirSync(path.dirname(path.join(stageDir, name)), { recursive: true });
     writeFileSync(path.join(stageDir, name), data, { mode: 0o600 });
     manifest.push({
       name,
       mode: lstatSync(src).mode & 0o777,
       bytes: data.length,
-      sha256: createHash('sha256').update(data).digest('hex'),
+      sha256,
     });
+  }
+  function addRuntimeEvidence(src, name, sha256) {
+    if (
+      typeof src !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(sha256 || '') ||
+      !existsSync(src) ||
+      !lstatSync(src).isFile() ||
+      !realpathSync(src).startsWith(realpathSync(dir) + path.sep)
+    )
+      throw Error('独立验收附加证据无效：' + name);
+    // Hash the same bytes that are copied; never rewrite the original log/view.
+    add(src, name, sha256);
   }
   add(bundlePath, 'evaluation.json');
   const container = JSON.parse(readFileSync(bundlePath, 'utf8')).container;
@@ -118,6 +133,37 @@ export function createEvidenceArchive({
       if (hashFile(c.logPath) !== c.logSha256)
         throw Error('独立验收日志摘要不一致');
       add(c.logPath, 'runtime/' + c.id + '.log');
+    }
+    if (runtime.environmentProbe) {
+      const probe = runtime.environmentProbe;
+      addRuntimeEvidence(
+        probe.logPath,
+        'runtime/environment-probe.log',
+        probe.logSha256,
+      );
+    }
+    if (runtime.diagnosisEvidence) {
+      const { logs } = runtime.diagnosisEvidence;
+      if (!Array.isArray(logs) || logs.length !== runtime.checks.length)
+        throw Error('诊断行号证据与验收日志数量不符');
+      const seen = new Set();
+      for (const item of logs) {
+        const check = runtime.checks.find((c) => c.id === item.id);
+        if (
+          !check ||
+          seen.has(item.id) ||
+          !/^[a-z][a-z0-9_-]{0,127}$/.test(item.id) ||
+          item.logPath !== check.logPath ||
+          item.logSha256 !== check.logSha256
+        )
+          throw Error('诊断行号证据与原始验收日志不符');
+        seen.add(item.id);
+        addRuntimeEvidence(
+          item.numberedPath,
+          'runtime/diagnosis-evidence/' + item.id + '.lines.jsonl',
+          item.numberedSha256,
+        );
+      }
     }
     add(runtime.plan.tracePath, 'runtime/plan.jsonl');
     add(runtime.diagnosis.tracePath, 'runtime/diagnosis.jsonl');
