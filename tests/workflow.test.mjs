@@ -164,7 +164,7 @@ test('evidence verifies locations and archive hashes, includes new code and list
         encoding: 'utf8',
       }),
     );
-    assert.ok(manifest.files.some((f) => f.name === 'untracked/new.js'));
+    assert.ok(manifest.files.some((f) => f.name === 'workspace/new.js'));
     assert.ok(manifest.omitted.some((f) => f.name === '.env'));
     assert.ok(!manifest.files.some((f) => f.name === 'untracked/.env'));
   } finally {

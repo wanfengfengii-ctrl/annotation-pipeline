@@ -33,6 +33,10 @@ export async function PATCH(
       if (!r) throw Error('轮次不存在');
       updateRecordMetadata(t, r, b.metadata);
     } else if (b.action === 'enqueue') {
+      if (t.container && t.container.status !== 'running')
+        throw Error('项目容器已结束，请创建新任务，不能恢复旧会话');
+      if (!t.container && t.sessionId)
+        throw Error('旧版宿主机会话仅保留记录，请创建新的容器任务');
       if (t.closed || pending(t) || !canAddTurn(t))
         throw new Error('会话已结束、正在执行或已达到 10 轮上限');
       if (
@@ -88,6 +92,8 @@ export async function PATCH(
       r.status = 'queued';
       r.error = '';
     } else if (b.action === 'retry-plan') {
+      if (t.container && t.container.status !== 'running')
+        throw Error('容器已结束，不能继续出题');
       const r = t.turns.at(-1);
       if (
         !r ||

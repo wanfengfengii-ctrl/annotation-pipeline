@@ -507,7 +507,11 @@ export default function Home() {
                         <TableCell>
                           {t.snapshot ? (
                             <a
-                              href={t.snapshot}
+                              href={
+                                t.snapshot.startsWith('https://')
+                                  ? t.snapshot
+                                  : undefined
+                              }
                               target="_blank"
                               rel="noreferrer"
                               className="tag"
@@ -1105,7 +1109,9 @@ function TaskDetail({
             <h3>初始快照</h3>
             {t.snapshot ? (
               <a
-                href={t.snapshot}
+                href={
+                  t.snapshot.startsWith('https://') ? t.snapshot : undefined
+                }
                 target="_blank"
                 rel="noreferrer"
                 className="sub mono"
@@ -1114,13 +1120,33 @@ function TaskDetail({
               </a>
             ) : (
               <p className="sub">
-                首轮执行前，由执行器校验并记录已发布的 GitHub Commit。
+                首轮执行前记录作业镜像摘要与空目录状态，GitHub
+                仓库单独作为出题参考。
               </p>
             )}
           </div>
           {[
-            ['原始仓库', t.repoPath],
+            ['宿主机参考仓库', t.repoPath],
             ['独立工作区', t.workDir || '尚未创建'],
+            ['容器名称', t.container?.name || '尚未创建'],
+            [
+              '容器状态',
+              t.container
+                ? {
+                    running: '运行中',
+                    stopped: '已停止，待导出',
+                    exported: '已核验，待清理',
+                    removed: '已归档并删除',
+                    error: '需处理',
+                  }[t.container.status]
+                : '尚未创建',
+            ],
+            [
+              '完整轨迹目录',
+              t.container?.traceExport?.path || '每轮完成后自动导出',
+            ],
+            ['容器处理信息', t.container?.error || '正常'],
+            ['GitHub 参考快照', t.githubSnapshot?.url || '未记录'],
             ['Harness', t.harnessVersion || '首轮运行后记录'],
             ['实际模型', t.model || '运行后从 CLI 初始化事件读取'],
             ['操作系统', t.os || '执行后记录'],
@@ -1221,7 +1247,7 @@ function TurnPanel({
                 context: '上下文配置预检',
                 prepare: 'Codex 任务准备',
                 policy: 'Codex 禁出、雷同与难度审核',
-                snapshot: 'Codex + GitHub CLI 环境快照',
+                snapshot: 'Codex 容器环境检查与 GitHub 参考快照',
                 claude: 'Claude 执行',
                 score: 'Codex 五维评分',
                 delivery: 'Codex 校验与交付',

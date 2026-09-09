@@ -1,5 +1,10 @@
 // Synthetic API fixtures only. Stop the real runner and use an empty queue.
 import assert from 'node:assert/strict';
+import {
+  containerImage,
+  containerPolicyVersion,
+  dockerSnapshot,
+} from '../lib/container-policy.mjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 const token = readFileSync('.dev.vars', 'utf8').match(
   /^RUNNER_TOKEN=(.+)$/m,
@@ -72,12 +77,30 @@ try {
     let { job } = await run({ action: 'claim', capacity: 1 });
     assert.equal(job.task.id, task.id);
     const sessionId = 'records-session-' + i;
+    const container = {
+      taskId: task.id,
+      name: 'annotation-' + task.id,
+      policyVersion: containerPolicyVersion,
+      status: 'running',
+      image: containerImage,
+      imageId: 'sha256:' + 'a'.repeat(64),
+      snapshot: dockerSnapshot('sha256:' + 'a'.repeat(64)),
+      workDir: '/fixture/' + task.id + '/workspace',
+    };
+    await run({ action: 'container', taskId: task.id, container });
     const finish = (extra) =>
       run({
         action: 'finish',
         taskId: task.id,
         turnId: job.turn.id,
         jobToken: job.turn.jobToken,
+        container,
+        traceExport: {
+          verified: true,
+          path: '/fixture/projects',
+          files: 1,
+          sha256: 'a'.repeat(64),
+        },
         ...extra,
       });
     for (let n = 1; n <= (i === 0 ? 10 : 1); n++) {
@@ -146,7 +169,7 @@ try {
       promptId: 'records-prompt-' + i,
       preparedPrompt: '=1+1\n中文<&" ' + i,
       tracePath: '/fixture/trajectory-' + i,
-      snapshot: 'https://github.com/fixture/project/commit/' + 'a'.repeat(40),
+      snapshot: container.snapshot,
       harnessVersion: 'fixture-2.1',
       os: 'macOS',
       review: {

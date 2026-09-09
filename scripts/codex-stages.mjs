@@ -170,6 +170,7 @@ async function runStage({ stage, prompt, cwd, dir, turnId, onChild }) {
     err = '';
   const args = [
     'exec',
+    '--skip-git-repo-check',
     '--sandbox',
     'read-only',
     '--json',

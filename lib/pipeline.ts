@@ -5,6 +5,28 @@ import {
   type EvidenceItem,
 } from './human-review.ts';
 import type { RecordMetadata } from './record-metadata.ts';
+import { validDockerSnapshot } from './container-policy.mjs';
+export type TraceExport = {
+  verified: boolean;
+  path: string;
+  manifestPath: string;
+  files: number;
+  sha256: string;
+  exportedAt: string;
+};
+export type ContainerRecord = {
+  taskId: string;
+  name: string;
+  containerId?: string;
+  policyVersion: string;
+  image: string;
+  imageId: string;
+  snapshot: string;
+  workDir: string;
+  status: 'running' | 'stopped' | 'exported' | 'removed' | 'error';
+  traceExport?: TraceExport;
+  error?: string;
+};
 export const categories = [
   '0-1 代码生成',
   'Feature 迭代',
@@ -39,6 +61,8 @@ export type Review = {
   artifactFindings?: string;
 };
 export type Turn = {
+  container?: ContainerRecord;
+  traceExport?: TraceExport;
   roundNumber?: number;
   harness?: 'Claude Code' | 'Codex CLI';
   contextCheck?: any;
@@ -100,6 +124,7 @@ export type Turn = {
   };
 };
 export type Task = {
+  container?: ContainerRecord;
   harness?: 'Claude Code' | 'Codex CLI';
   id: string;
   title: string;
@@ -147,8 +172,9 @@ export function pending(t: Task) {
   );
 }
 export function validSnapshot(s: string) {
-  return /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/commit\/[0-9a-f]{40}$/i.test(
-    s,
+  return (
+    validDockerSnapshot(s) ||
+    /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/commit\/[0-9a-f]{40}$/i.test(s)
   );
 }
 export function producedAt(r: Turn) {
@@ -177,7 +203,8 @@ export function issues(t: Task, r: Turn) {
   if (r.contextCheck && !r.contextCheck.ready) e.push('上下文配置未通过核验');
   if (!['review', 'submitted'].includes(r.status)) e.push('该轮尚未完成执行');
   if (!validSnapshot(t.snapshot))
-    e.push('缺少完整 40 位 SHA 的 GitHub 快照链接');
+    e.push('缺少不可变环境快照（镜像摘要或完整 GitHub Commit）');
+  if (r.container && !r.traceExport?.verified) e.push('完整容器轨迹未导出核验');
   if (!t.harnessVersion || !t.os) e.push('缺少客户端版本或操作系统');
   if (!r.sessionId || !r.promptId)
     e.push('缺少 SessionID 或原始用户消息 PromptID');

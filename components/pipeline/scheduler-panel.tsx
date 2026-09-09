@@ -63,8 +63,8 @@ export function SchedulerPanel({
           <h2>自动补充与并行执行</h2>
           <p className="sub">
             待执行队列为空且有空闲容量时，由 Codex 先生成 0–1
-            项目题，再在同一项目生成迭代、修复、理解或重构题。不同项目独立并行，同一项目沿用一个
-            Claude 会话，累计最多 10 次。
+            项目题，再在同一项目生成迭代、修复、理解或重构题。不同项目使用独立容器并行，同一项目保持一个
+            Claude 交互进程，累计最多 10 次。
           </p>
         </div>
         <span className="tag">
@@ -107,32 +107,28 @@ export function SchedulerPanel({
         。评分包含五维分档、过程与产物证据；每轮生成带 SHA-256 清单的本地归档。
       </p>
       <div className="section">
-        <h3>上下文检查 · 要求 1,000,000 tokens</h3>
-        <p className="sub">
-          {s?.contextCheck?.reason || '等待本机执行器读取 CLI 配置'}。
-        </p>
-        {s?.contextCheck && (
+        <h3>Docker 作业环境</h3>
+        <p className="sub">{s?.docker?.reason || '等待执行器检查 Docker'}</p>
+        {s?.docker?.ready && (
           <p className="sub">
-            当前配置模型：{s.contextCheck.model || '未确定'} ·{' '}
-            {s.contextCheck.ready ? '客户端声明符合' : '待核验'}
-            ，实际任务开始前按项目配置再次检查。
+            Docker 分配 {s.docker.cpus} 核 /{' '}
+            {(s.docker.memoryBytes / 2 ** 30).toFixed(1)} GB，当前{' '}
+            {s.residentContainers} 个项目容器保留。每个容器限制 2 核 / 3
+            GB，同时按宿主机余量限制并行数。
           </p>
         )}
-        <p className="sub">
-          更换 CLI
-          模型后自动重新检查，不改写模型配置；配置声明不代表网关已通过百万 token
-          实测。
+        <p className="sub mono">
+          {s?.docker?.image ||
+            'adminfather/benzhi-claude-code:20260909-isolated-git'}
         </p>
-        {!!s?.contextSources?.length && (
-          <details>
-            <summary>查看任务仓库检查</summary>
-            {s.contextSources.map((v: any) => (
-              <p className="sub" key={v.repoPath}>
-                {v.repoPath}：{v.reason}
-              </p>
-            ))}
-          </details>
-        )}
+        <p className="sub">
+          每个新项目从空目录启动，同一容器保持一个交互进程，最多 10
+          次。结束后导出完整轨迹并核验，再删除容器；代码目录保留。暂停续跑的项目仍占用容器名额，可在任务详情结束会话。
+        </p>
+        <p className="sub">
+          模型及 1,000,000 tokens
+          配置沿用现状，执行器不覆盖模型、上下文或挂载宿主机配置。
+        </p>
       </div>
       {s?.mix && (
         <p className="sub">

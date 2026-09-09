@@ -5,6 +5,7 @@ import {
   existsSync,
   realpathSync,
   lstatSync,
+  readdirSync,
 } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -98,12 +99,20 @@ export function createEvidenceArchive({
       sha256: manifest.find((f) => f.name === name).sha256,
     });
   }
-  const diff = execFileSync('git', ['diff', '--binary', 'HEAD'], {
-    cwd: workDir,
-    encoding: 'utf8',
-    timeout: 60000,
-    maxBuffer: 32 * 1024 * 1024,
-  });
+  let diff = '';
+  // A fresh /workspace is intentionally not a Git checkout. Never initialize it for bookkeeping.
+  if (existsSync(path.join(workDir, '.git'))) {
+    try {
+      diff = execFileSync('git', ['diff', '--binary', 'HEAD'], {
+        cwd: workDir,
+        encoding: 'utf8',
+        timeout: 60000,
+        maxBuffer: 32 * 1024 * 1024,
+      });
+    } catch {
+      diff = 'Git HEAD 不可用；产物文件按本轮结束时的实际内容归档。\n';
+    }
+  } else diff = '初始环境为空目录；产物文件按本轮结束时的实际内容归档。\n';
   writeFileSync(path.join(stageDir, 'tracked-changes.patch'), diff, {
     mode: 0o600,
   });
@@ -114,18 +123,22 @@ export function createEvidenceArchive({
   });
   const omitted = [];
   let total = 0;
-  const untracked = execFileSync(
-    'git',
-    ['ls-files', '--others', '--exclude-standard', '-z'],
-    {
-      cwd: workDir,
-      encoding: 'utf8',
-      timeout: 60000,
-      maxBuffer: 4 * 1024 * 1024,
-    },
-  )
-    .split('\0')
-    .filter(Boolean);
+  const excluded =
+    /(^|\/)(\.git|node_modules|\.venv|venv|__pycache__|\.next)($|\/)/;
+  const walk = (dir) =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      const src = path.join(dir, e.name),
+        rel = path.relative(workDir, src);
+      if (excluded.test(rel)) {
+        omitted.push({
+          name: rel,
+          reason: '版本库内部文件或可重新安装的依赖/缓存',
+        });
+        return [];
+      }
+      return e.isDirectory() ? walk(src) : [rel];
+    });
+  const untracked = walk(workDir);
   for (const name of untracked) {
     const src = path.resolve(workDir, name),
       rel = path.relative(workDir, src);
@@ -144,19 +157,19 @@ export function createEvidenceArchive({
       omitted.push({ name, reason: '路径、敏感文件类型或归档大小限制' });
       continue;
     }
-    add(src, 'untracked/' + rel);
+    add(src, 'workspace/' + rel);
     total += info.size;
   }
   writeFileSync(
     path.join(stageDir, 'manifest.json'),
     JSON.stringify(
       {
-        format: 2,
+        format: 3,
         provenance: 'AI evaluation',
         files: manifest,
         citations,
         omitted,
-        note: '本地证据包包含轨迹、评估、已跟踪 diff 和符合大小限制的未跟踪普通文件。排除项列入 omitted；使用前核对，未向外部上传。',
+        note: '本地证据包包含轨迹、评估、可用的 Git diff 和符合大小限制的完整工作区普通文件。排除项列入 omitted；使用前核对，未向外部上传。',
       },
       null,
       2,

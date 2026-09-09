@@ -1,4 +1,5 @@
 import { validateSeries, claudeCallCount } from '@/lib/project-series.mjs';
+import { validateContainerRecord } from '@/lib/container-policy.mjs';
 import { roundNumber } from '@/lib/record-metadata';
 import { nextDecision, dailyMix } from '@/lib/workflow.mjs';
 import { candidateDigest, assertPolicyAudit } from '@/lib/task-policy.mjs';
@@ -9,6 +10,7 @@ import {
   difficulties,
   businessDate,
   type Task,
+  type Turn,
 } from '@/lib/pipeline';
 import { all, get, save, db, failure, runnerAuth, text } from '@/db/store';
 export async function POST(req: Request) {
@@ -47,6 +49,21 @@ export async function POST(req: Request) {
         config,
         mix: dailyMix(tasks, businessDate(new Date().toISOString())),
         repos: sources(config, tasks),
+        containerTasks: tasks
+          .filter((t) => t.container)
+          .map((t) => ({
+            id: t.id,
+            containerStatus: t.container.status,
+            closed: t.closed,
+            finishContainer:
+              !t.turns.some((r: Turn) =>
+                ['queued', 'running'].includes(r.status),
+              ) &&
+              (claudeCallCount(t) >= 10 ||
+                ['complete', 'needs_input'].includes(
+                  t.turns.at(-1)?.automation?.next?.value?.action,
+                )),
+          })),
         queued: tasks.some((t) =>
           t.turns.some((r: any) => r.status === 'queued'),
         ),
@@ -156,7 +173,18 @@ export async function POST(req: Request) {
         config.concurrency,
         Number.isInteger(b.capacity) ? Math.max(1, Math.min(4, b.capacity)) : 1,
       );
-      for (const item of [...tasks].reverse()) {
+      const residents = Array.isArray(b.residentTaskIds)
+        ? b.residentTaskIds
+        : [];
+      const ordered = [...tasks]
+        .reverse()
+        .sort(
+          (a, b) =>
+            Number(residents.includes(b.id)) - Number(residents.includes(a.id)),
+        );
+      for (const item of ordered) {
+        if (b.allowNewContainer === false && !residents.includes(item.id))
+          continue;
         if (
           item.closed ||
           item.turns.some(
@@ -188,7 +216,11 @@ export async function POST(req: Request) {
       if (!item || !r || r.status !== 'running' || r.jobToken !== b.jobToken)
         throw Error('执行额度凭据无效');
       const attempt = text(b.attemptId, '调用标识', 200);
-      const sessionId = text(b.sessionId, 'Claude 会话 ID', 300);
+      const sessionId = b.sessionId
+        ? text(b.sessionId, 'Claude 会话 ID', 300)
+        : undefined;
+      if (!sessionId && (!item.task.container || item.task.sessionId))
+        throw Error('缺少现有会话 ID 或新容器记录');
       if (item.task.sessionId && item.task.sessionId !== sessionId)
         throw Error('不能在同一项目切换 Claude 会话');
       if (r.claudeAttempts?.includes(attempt))
@@ -201,12 +233,23 @@ export async function POST(req: Request) {
         return Response.json({ allowed: false, count: 10 });
       // Reserve before spawning; even uncertain/failed calls retain their slot.
       r.claudeAttempts.push(attempt);
-      item.task.sessionId = sessionId;
+      if (sessionId) item.task.sessionId = sessionId;
       await save(item.task, item.revision);
       return Response.json({
         allowed: true,
         count: claudeCallCount(item.task),
       });
+    }
+    if (b.action === 'container') {
+      const item = await get(text(b.taskId, '任务 ID'));
+      if (!item) throw Error('任务不存在');
+      const container = validateContainerRecord(b.container, item.task.id);
+      if (item.task.container && item.task.container.name !== container.name)
+        throw Error('不能切换任务容器');
+      item.task.container = container;
+      item.task.workDir = container.workDir;
+      await save(item.task, item.revision);
+      return Response.json({ ok: true });
     }
     if (b.action === 'stage') {
       const item = await get(text(b.taskId, '任务 ID'));
@@ -277,6 +320,22 @@ export async function POST(req: Request) {
         throw new Error('任务状态或执行凭据不匹配');
       if (b.success && b.contextCheck && !b.contextCheck.ready)
         throw Error('上下文未通过核验，不能标记执行成功');
+      if (b.container) {
+        const container = validateContainerRecord(b.container, item.task.id);
+        if (item.task.container && item.task.container.name !== container.name)
+          throw Error('任务容器发生变化');
+        if (b.success && !b.traceExport?.verified)
+          throw Error('容器完整轨迹尚未导出核验');
+        if (
+          item.task.sessionId &&
+          b.sessionId &&
+          item.task.sessionId !== b.sessionId
+        )
+          throw Error('容器 SessionID 发生变化');
+        item.task.container = container;
+        r.container = container;
+        r.traceExport = b.traceExport;
+      }
       r.status = b.success ? 'review' : 'failed';
       r.roundNumber ||= roundNumber(item.task, r) || undefined;
       if (b.harness !== undefined) {
@@ -361,7 +420,10 @@ export async function POST(req: Request) {
         if (typeof b[key] === 'string') item.task[key] = b[key];
       for (const key of ['harnessVersion', 'os', 'model'] as const)
         if (typeof b[key] === 'string') r[key] = b[key];
-      if (!item.task.snapshot && typeof b.reproducibility === 'string')
+      if (
+        (!item.task.snapshot || item.task.turns[0]?.id === r.id) &&
+        typeof b.reproducibility === 'string'
+      )
         item.task.reproducibility = b.reproducibility;
       if (b.githubSnapshot?.engine === 'github-cli')
         item.task.githubSnapshot = b.githubSnapshot;
