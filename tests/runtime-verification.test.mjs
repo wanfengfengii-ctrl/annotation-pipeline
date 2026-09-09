@@ -20,7 +20,9 @@ import {
 import {
   copyVerificationSource,
   finalizeRuntimeReport,
+  validateCodeRef,
 } from '../scripts/runtime-verification.mjs';
+import { schemas } from '../scripts/codex-stages.mjs';
 const spec = {
   id: 'api',
   kind: 'acceptance',
@@ -52,6 +54,67 @@ test('Runtime plans require real acceptance, unique IDs and bounded execution', 
     })),
   ])
     assert.throws(() => validateRuntimePlan({ summary: 'check', checks }));
+});
+test('Descriptive check IDs follow the same bounded contract in generation and validation', () => {
+  const pattern = new RegExp(
+    schemas['runtime-plan'].properties.checks.items.properties.id.pattern,
+  );
+  for (const id of [
+    'reproduction_expiry_during_database_lock_wait',
+    'a'.repeat(128),
+  ]) {
+    assert(pattern.test(id));
+    assert.doesNotThrow(() =>
+      validateRuntimePlan({ summary: 'check', checks: [{ ...spec, id }] }),
+    );
+  }
+  for (const id of [
+    'a'.repeat(129),
+    '../escape',
+    'with/slash',
+    'uppercaseID',
+    '1check',
+    '',
+  ]) {
+    assert(!pattern.test(id));
+    assert.throws(
+      () =>
+        validateRuntimePlan({ summary: 'check', checks: [{ ...spec, id }] }),
+      /步骤格式/,
+    );
+  }
+  assert.throws(
+    () => validateRuntimePlan({ summary: 'check', checks: [null] }),
+    /步骤格式/,
+  );
+});
+test('Every source reference is verified, including lists, line bounds and directory symlinks', (t) => {
+  const dir = fixture(t),
+    source = path.join(dir, 'source'),
+    outside = path.join(dir, 'outside');
+  mkdirSync(source);
+  mkdirSync(outside);
+  writeFileSync(path.join(source, 'app.py'), 'first\nsecond');
+  writeFileSync(path.join(source, 'worker.py'), 'worker');
+  writeFileSync(path.join(outside, 'secret.py'), 'secret');
+  symlinkSync(outside, path.join(source, 'link'));
+  for (const refs of [
+    'app.py:1',
+    'app.py:1; worker.py:1',
+    'app.py:2；worker.py:1',
+  ])
+    assert.doesNotThrow(() => validateCodeRef(refs, source));
+  for (const refs of [
+    'app.py:1; missing.py:1',
+    'app.py:1; worker.py:99',
+    'app.py:0',
+    'app.py:1;',
+    '../outside/secret.py:1',
+    'link/secret.py:1',
+    `${source}/app.py:1`,
+    Array(9).fill('app.py:1').join(';'),
+  ])
+    assert.throws(() => validateCodeRef(refs, source));
 });
 test('Verification copy omits secrets and symlinks and never edits original', (t) => {
   const dir = fixture(t),

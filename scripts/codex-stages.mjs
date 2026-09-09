@@ -4,6 +4,7 @@ import path from 'node:path';
 import { validateScaffold } from './project-scaffold.mjs';
 import { codexTurnIds } from '../lib/harness.mjs';
 import {
+  runtimeCheckIdPattern,
   validateRuntimePlan,
   validateRuntimeVerdict,
 } from '../lib/runtime-verification.mjs';
@@ -29,12 +30,16 @@ export const schemas = {
       minItems: 1,
       maxItems: 8,
       items: schema({
-        id: str,
+        id: { type: 'string', pattern: runtimeCheckIdPattern },
         kind: { type: 'string', enum: ['setup', 'acceptance', 'reproduction'] },
-        command: str,
+        command: { type: 'string', minLength: 1, maxLength: 24000 },
         expected: str,
         requirement: str,
-        codeEvidence: str,
+        codeEvidence: {
+          type: 'string',
+          description:
+            '1 至 8 个当前项目内的相对文件路径:行号，多个引用用分号分隔；setup 可写无',
+        },
         timeoutSeconds: { type: 'integer', minimum: 1, maximum: 300 },
       }),
     },
