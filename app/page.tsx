@@ -287,7 +287,10 @@ export default function Home() {
       <header className="topbar">
         <div className="brand">
           <Workflow className="brand-mark" size={40} />
-          标注流水线 <span className="tag">WORKSPACE</span>
+          标注流水线{' '}
+          <span className="tag workspace-label">
+            {local ? '本机工作台' : '云端工作台'}
+          </span>
         </div>
         <div className="actions">
           <span className="top-note">Codex 编排 · Claude 执行</span>
@@ -309,6 +312,11 @@ export default function Home() {
               onClick={() => {
                 setRecordsSource('ai');
                 setPage('records');
+                requestAnimationFrame(() =>
+                  document
+                    .getElementById('workbench')
+                    ?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+                );
               }}
             >
               <Download />
@@ -390,7 +398,11 @@ export default function Home() {
             </div>
           ))}
         </div>
-        <Tabs value={page} onValueChange={(v) => setPage(String(v))}>
+        <Tabs
+          id="workbench"
+          value={page}
+          onValueChange={(v) => setPage(String(v))}
+        >
           <TabsList variant="line" className="tabbar">
             <TabsTrigger value="tasks">任务工作台</TabsTrigger>
             <TabsTrigger value="records">标注数据</TabsTrigger>
@@ -835,10 +847,14 @@ export default function Home() {
         </p>
       </main>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="modal" style={{ maxWidth: 640 }}>
+        <DialogContent
+          className="modal"
+          style={{ maxWidth: 'min(640px, calc(100% - 32px))' }}
+        >
           <DialogTitle>新建标注任务</DialogTitle>
           <DialogDescription>
-            一个任务对应一个会话。执行前请确认仓库提交已推送，且评测团队可以访问。
+            独立题目新建会话，Bug
+            修复沿用原会话，最多追问两次。执行前请确认仓库提交已推送，且评测团队可以访问。
           </DialogDescription>
           <form onSubmit={create} className="formgrid">
             <label className="human-check wide">
@@ -979,7 +995,7 @@ function TaskDetail({
         </div>
       )}
       <Tabs value={tab} onValueChange={(v) => setTab(String(v))}>
-        <TabsList>
+        <TabsList className="tabbar detail-tabbar">
           <TabsTrigger value="turns">交互与自动评分</TabsTrigger>
           <TabsTrigger value="human">人工二次确认</TabsTrigger>
           <TabsTrigger value="environment">环境与快照</TabsTrigger>

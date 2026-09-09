@@ -59,7 +59,10 @@ export function RecordsTable({
         setData(d);
       })
       .catch((e) => {
-        if (!controller.signal.aborted) setError(e.message);
+        if (!controller.signal.aborted) {
+          setData(null);
+          setError(e.message);
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -214,7 +217,21 @@ export function RecordsTable({
         </p>
       )}
       {message && <output className="sub">{message}</output>}
-      <div className="record-scroll" aria-busy={loading}>
+      {loading && (
+        <p role="status" className="record-status sub">
+          正在读取标注记录…
+        </p>
+      )}
+      <p className="record-status sub">
+        左右滚动表格可查看全部字段，长文本可点击展开。
+      </p>
+      <div
+        className="record-scroll"
+        aria-label="标注字段表格，可横向滚动"
+        role="region"
+        tabIndex={0}
+        aria-busy={loading}
+      >
         <table className="record-table">
           <thead>
             <tr>
@@ -226,45 +243,50 @@ export function RecordsTable({
             </tr>
           </thead>
           <tbody>
-            {data?.rows.map((row) => (
-              <tr key={row.taskId + row.turnId}>
-                {row.values.map((v, i) => (
-                  <td key={i}>
-                    {String(v).length > 100 ? (
-                      <details>
-                        <summary>{String(v).slice(0, 100)}…</summary>
-                        <pre>{v}</pre>
-                      </details>
-                    ) : recordHeaders[i] === '初始环境快照' &&
-                      String(v).startsWith('https://github.com/') ? (
-                      <a href={String(v)} target="_blank" rel="noreferrer">
-                        {String(v).slice(-40, -32)} ↗
-                      </a>
-                    ) : v === 0 || v ? (
-                      v
-                    ) : (
-                      '—'
-                    )}
+            {!loading &&
+              data?.rows.map((row) => (
+                <tr key={row.taskId + row.turnId}>
+                  {row.values.map((v, i) => (
+                    <td key={i}>
+                      {String(v).length > 100 ? (
+                        <details>
+                          <summary>{String(v).slice(0, 100)}…</summary>
+                          <pre>{v}</pre>
+                        </details>
+                      ) : recordHeaders[i] === '初始环境快照' &&
+                        String(v).startsWith('https://github.com/') ? (
+                        <a href={String(v)} target="_blank" rel="noreferrer">
+                          {String(v).slice(-40, -32)} ↗
+                        </a>
+                      ) : v === 0 || v ? (
+                        v
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                  ))}
+                  <td>
+                    <span className="tag">{row.exportCount} 次</span>
+                    <p className="sub">{row.eligible ? '可导出' : '待校验'}</p>
                   </td>
-                ))}
-                <td>
-                  <span className="tag">{row.exportCount} 次</span>
-                  <p className="sub">{row.eligible ? '可导出' : '待校验'}</p>
-                </td>
-                <td>
-                  <Button variant="ghost" onClick={() => onOpen(row.taskId)}>
-                    打开任务
-                  </Button>
-                </td>
-              </tr>
-            ))}
+                  <td>
+                    <Button variant="ghost" onClick={() => onOpen(row.taskId)}>
+                      打开任务
+                    </Button>
+                  </td>
+                </tr>
+              ))}
           </tbody>
         </table>
       </div>
-      {!loading && !data?.rows.length && (
+      {!loading && !error && !data?.rows.length && (
         <div className="blank">
           <h3>当前筛选没有标注记录</h3>
-          <p className="sub">AI 评分完成后将自动出现，人工确认可稍后完成。</p>
+          <p className="sub">
+            {filter.source === 'human'
+              ? '完成人工二次确认后，可在这里查看对应记录。'
+              : 'AI 评分完成后将自动出现，人工确认可稍后完成。'}
+          </p>
         </div>
       )}
       <div className="record-pagination">

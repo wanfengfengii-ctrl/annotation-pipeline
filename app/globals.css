@@ -306,6 +306,7 @@ h3 {
   flex-direction: column;
   gap: 7px;
   font-size: 14px;
+  min-width: 0;
 }
 .field input,
 .field textarea {
@@ -347,6 +348,21 @@ h3 {
 }
 .detail {
   padding: 24px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.detail .tag {
+  white-space: normal;
+}
+.detail pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.shell [data-slot='tabs'],
+.detail [data-slot='tabs'],
+.shell [data-slot='tabs-content'],
+.detail [data-slot='tabs-content'] {
+  min-width: 0;
 }
 .section {
   padding: 20px 0;
@@ -411,6 +427,26 @@ h3 {
 }
 .tabbar {
   margin-bottom: 20px;
+  max-width: 100%;
+  justify-content: flex-start;
+  overflow-x: auto;
+  flex-shrink: 0;
+  scrollbar-width: thin;
+}
+.tabbar [data-slot='tabs-trigger'] {
+  flex: 0 0 auto;
+}
+.detail-tabbar {
+  margin-bottom: 8px;
+}
+#workbench {
+  scroll-margin-top: 20px;
+}
+.data-table td:first-child {
+  min-width: 220px;
+  max-width: 360px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .data-table th {
   font-size: 13px;
@@ -467,6 +503,17 @@ h3 {
   }
   .topbar {
     padding: 16px;
+    gap: 12px;
+  }
+  .brand {
+    white-space: nowrap;
+  }
+  .brand-mark,
+  .footer-note > svg {
+    flex-shrink: 0;
+  }
+  .workspace-label {
+    display: none;
   }
   .top-note {
     display: none;
@@ -513,6 +560,16 @@ h3 {
   padding: 22px;
   margin: 20px 0;
   background: var(--card);
+  overflow-wrap: anywhere;
+}
+.scheduler-panel .tag {
+  white-space: normal;
+}
+.scheduler-status {
+  margin-top: 8px;
+}
+.scheduler-details > .sub {
+  margin-top: 8px;
 }
 .scheduler-heading {
   display: flex;
@@ -642,6 +699,9 @@ h3 {
   align-items: end;
   padding: 16px 24px;
 }
+.record-status {
+  padding: 8px 24px;
+}
 .record-filters .field {
   flex: 1;
   min-width: 150px;
@@ -717,4 +777,21 @@ h3 {
 }
 .record-pagination .sub {
   margin-right: auto;
+}
+@media (max-width: 580px) {
+  .record-filters,
+  .record-toolbar,
+  .record-pagination,
+  .record-status {
+    padding-inline: 16px;
+  }
+  .record-table th:first-child,
+  .record-table td:first-child {
+    min-width: 160px;
+    width: 160px;
+    max-width: 160px;
+  }
+  .record-pagination .sub {
+    flex-basis: 100%;
+  }
 }

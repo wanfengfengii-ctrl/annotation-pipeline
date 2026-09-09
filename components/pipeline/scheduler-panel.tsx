@@ -61,11 +61,6 @@ export function SchedulerPanel({
         <div>
           <p className="eyebrow">AUTOMATIC SCHEDULER</p>
           <h2>自动补充与并行执行</h2>
-          <p className="sub">
-            待执行队列为空且有空闲容量时，由 Codex 先生成 0–1
-            项目骨架和全新功能题，再在同一项目生成新功能、迭代、修复、理解和重构题。目标比例
-            7:7:10:1:1，独立题目新建 Terminal 会话，只有 Bug 修复沿用当前会话。
-          </p>
         </div>
         <span className="tag">
           {s
@@ -73,77 +68,86 @@ export function SchedulerPanel({
             : '等待执行器报告资源'}
         </span>
       </div>
-      {s && (
-        <p className="sub">
-          {s.cpu} · {s.cores} 核 / {s.totalGB} GB · 可用及可回收内存约{' '}
-          {s.availableGB} GB · 1 分钟负载 {s.load} · {s.reason}。
-          {s.generating ? '出题占用 1 个槽位。' : ''}
-          {s.recovering
-            ? ` ${s.recovering} 个旧任务等待进程退出，占用相应槽位。`
-            : ''}
-          今日补充 {s.generatedToday} / {s.dailyLimit} 个。
-        </p>
-      )}
-      <p role="status" className="sub">
+      <p role="status" className="sub scheduler-status">
         {local
           ? s?.supply || '等待本机执行器连接'
           : '云端设置仅作用于云端队列；请在本机工作台配置本机执行器。'}
       </p>
-      <p className="sub">
-        GitHub CLI：
-        {runner?.github?.available
-          ? `已连接 ${runner.github.login} · ${runner.github.version}`
-          : runner?.github?.error || '等待执行器检查'}
-      </p>
-      <p className="sub">
-        禁出规则：{s?.ruleVersion || '等待执行器报告'}
-        。自动出题先审核禁出、雷同与难度，再进入队列。
-        {s?.lastAudit
-          ? `最近审核：${s.lastAudit.allowed ? '通过' : '拦截'}，${s.lastAudit.reason}`
-          : ''}
-      </p>
-      <p className="sub">
-        流程规则：{s?.workflowVersion || '等待执行器报告'}
-        。评分包含五维分档、过程与产物证据；每轮生成带 SHA-256 清单的本地归档。
-      </p>
-      <div className="section">
-        <h3>Docker 作业环境</h3>
-        <p className="sub">{s?.docker?.reason || '等待执行器检查 Docker'}</p>
-        {s?.docker?.ready && (
+      <details className="scheduler-details">
+        <summary>资源与流程详情</summary>
+        <p className="sub">
+          待执行队列为空且有空闲容量时，由 Codex 先生成 0–1
+          项目骨架和全新功能题，再在同一项目生成新功能、迭代、修复、理解和重构题。目标比例
+          7:7:10:1:1，独立题目新建 Terminal 会话，只有 Bug 修复沿用当前会话。
+        </p>
+        {s && (
           <p className="sub">
-            Docker 分配 {s.docker.cpus} 核 /{' '}
-            {(s.docker.memoryBytes / 2 ** 30).toFixed(1)} GB，当前{' '}
-            {s.residentContainers} 个项目容器保留。每个容器限制 2 核 / 3
-            GB，同时按宿主机余量限制并行数。
+            {s.cpu} · {s.cores} 核 / {s.totalGB} GB · 可用及可回收内存约{' '}
+            {s.availableGB} GB · 1 分钟负载 {s.load} · {s.reason}。
+            {s.generating ? '出题占用 1 个槽位。' : ''}
+            {s.recovering
+              ? ` ${s.recovering} 个旧任务等待进程退出，占用相应槽位。`
+              : ''}
+            今日补充 {s.generatedToday} / {s.dailyLimit} 个。
           </p>
         )}
-        <p className="sub mono">
-          {s?.docker?.image ||
-            'adminfather/benzhi-claude-code:20260909-isolated-git'}
+        <p className="sub">
+          GitHub CLI：
+          {runner?.github?.available
+            ? `已连接 ${runner.github.login} · ${runner.github.version}`
+            : runner?.github?.error || '等待执行器检查'}
         </p>
         <p className="sub">
-          新容器启动后导入骨架或上题代码；初始题加最多两轮 Bug
-          修复，共三条对话，每会话保留十次调用硬上限。0-1 与 Feature
-          每项目各最多十题。结束后核验并导出完整轨迹，保留代码。
+          禁出规则：{s?.ruleVersion || '等待执行器报告'}
+          。自动出题先审核禁出、雷同与难度，再进入队列。
+          {s?.lastAudit
+            ? `最近审核：${s.lastAudit.allowed ? '通过' : '拦截'}，${s.lastAudit.reason}`
+            : ''}
         </p>
         <p className="sub">
-          模型及 1,000,000 tokens
-          配置沿用现状，执行器不覆盖模型、上下文或挂载宿主机配置。
+          流程规则：{s?.workflowVersion || '等待执行器报告'}
+          。评分包含五维分档、过程与产物证据；每轮生成带 SHA-256
+          清单的本地归档。
         </p>
-      </div>
-      {s?.mix && (
+        <div className="section">
+          <h3>Docker 作业环境</h3>
+          <p className="sub">{s?.docker?.reason || '等待执行器检查 Docker'}</p>
+          {s?.docker?.ready && (
+            <p className="sub">
+              Docker 分配 {s.docker.cpus} 核 /{' '}
+              {(s.docker.memoryBytes / 2 ** 30).toFixed(1)} GB，当前{' '}
+              {s.residentContainers} 个项目容器保留。每个容器限制 2 核 / 3
+              GB，同时按宿主机余量限制并行数。
+            </p>
+          )}
+          <p className="sub mono">
+            {s?.docker?.image ||
+              'adminfather/benzhi-claude-code:20260909-isolated-git'}
+          </p>
+          <p className="sub">
+            新容器启动后导入骨架或上题代码；初始题加最多两轮 Bug
+            修复，共三条对话，每会话保留十次调用硬上限。0-1 与 Feature
+            每项目各最多十题。结束后核验并导出完整轨迹，保留代码。
+          </p>
+          <p className="sub">
+            模型及 1,000,000 tokens
+            配置沿用现状，执行器不覆盖模型、上下文或挂载宿主机配置。
+          </p>
+        </div>
+        {s?.mix && (
+          <p className="sub">
+            累计有效轮次：
+            {Object.entries(s.mix.totals || s.mix.counts)
+              .map(([name, n]) => `${name} ${String(n)}`)
+              .join(' · ')}
+            。优先补充：{s.mix.suggested}。{s.mix.note}
+          </p>
+        )}
         <p className="sub">
-          累计有效轮次：
-          {Object.entries(s.mix.totals || s.mix.counts)
-            .map(([name, n]) => `${name} ${String(n)}`)
-            .join(' · ')}
-          。优先补充：{s.mix.suggested}。{s.mix.note}
+          待外部完成：提供任务仓库、确认评审者仓库访问权限、原项目人工标注与外部表格提交。AI
+          归档不代表已对外交付。
         </p>
-      )}
-      <p className="sub">
-        待外部完成：提供任务仓库、确认评审者仓库访问权限、原项目人工标注与外部表格提交。AI
-        归档不代表已对外交付。
-      </p>
+      </details>
       <details>
         <summary>调度设置</summary>
         <form onSubmit={save} className="scheduler-form">
@@ -223,13 +227,13 @@ export function SchedulerPanel({
           <Button disabled={busy || !loaded} type="submit">
             {busy ? '保存中…' : '保存调度设置'}
           </Button>
-          {message && (
-            <p role="status" className="sub wide">
-              {message}
-            </p>
-          )}
         </form>
       </details>
+      {message && (
+        <p role="status" className="sub scheduler-status">
+          {message}
+        </p>
+      )}
     </section>
   );
 }
