@@ -13,6 +13,7 @@ import { questionIssues } from '../lib/writing-style.mjs';
 import { questionRules } from '../lib/question-writing.mjs';
 import {
   questionCacheState,
+  upgradeQuestionCache,
   legacyRepairContext,
   preparationContextVersion,
 } from '../lib/question-cache.mjs';
@@ -181,6 +182,7 @@ async function execute({ task, turn }) {
     containers.load(task.id)?.pending,
     turn.id,
   );
+  upgradeQuestionCache(cached, { preserveQuestion });
   if (cached.preparationContextVersion !== preparationContextVersion) {
     if (!preserveQuestion) delete cached.prepare;
     cached.preparationContextVersion = preparationContextVersion;
@@ -311,7 +313,7 @@ async function execute({ task, turn }) {
 本轮产物轨迹：${result.tracePath}
 本轮评分：${JSON.stringify(result.review)}
 已有题目（禁止实质重复）：${JSON.stringify(task.turns.map((r) => ({ category: r.category, prompt: r.requestedPrompt || r.prompt })))}
-读取真实项目目录和测试/错误轨迹，有具体缺陷且当前会话未达到两轮修复时才 action=repair、category=Bug 修复，这会在当前终端追问。不能把未完成的新功能或截断续写改叫 Bug，不生成 action=continue。基础可用后 action=advance，独立新题必须使用已按比例分配的 ${allocatedCategory || '无新题额度，应结束项目'} 类别，不能自行切换类别；新建此前不存在的功能算 0-1，修改已有能力算 Feature。同项目这两类各最多十题。理解与重构按 7:7:10:1:1 的累计目标选择。projectEvidence 写实际文件、现象和新功能与现有功能的边界；baseComplete 反映实际状态。修复达到两轮仍未解决时 needs_input，不换新窗口规避修复上限；所有任务充分覆盖或题额用完时 complete。prompt 以项目名称开头，不加编号，按项目名称、180 至 260 字正文和 1 至 2 个自然段输出。修复说明真实现象与预期，迭代说明已有能力与本次变化，不使用模板或编造人工检查经历。结束时 prompt 写无。`,
+读取真实项目目录和测试/错误轨迹，有具体缺陷且当前会话未达到两轮修复时才 action=repair、category=Bug 修复，这会在当前终端追问。不能把未完成的新功能或截断续写改叫 Bug，不生成 action=continue。基础可用后 action=advance，独立新题必须使用已按比例分配的 ${allocatedCategory || '无新题额度，应结束项目'} 类别，不能自行切换类别；新建此前不存在的功能算 0-1，修改已有能力算 Feature。同项目这两类各最多十题。理解与重构按 7:7:10:1:1 的累计目标选择。projectEvidence 写实际文件、现象和新功能与现有功能的边界；baseComplete 反映实际状态。修复达到两轮仍未解决时 needs_input，不换新窗口规避修复上限；所有任务充分覆盖或题额用完时 complete。独立新题的 prompt 以项目名称开头，不加编号；Bug 修复不写项目名称或标题，直接像同事接着聊项目一样说明哪里出了问题、什么条件下发生、希望怎么改，不重新介绍面向人群，不用落实、核验、既有语义等正式表达。正文统一为 180 至 260 字、1 至 2 个自然段，保留真实复现数值和预期，迭代说明已有能力与本次变化，不使用模板或编造人工检查经历。结束时 prompt 写无。`,
         result.workDir,
         { allocation: { category: allocatedCategory } },
       );
@@ -329,7 +331,7 @@ async function execute({ task, turn }) {
     ) {
       const next = await step(
         'next',
-        `只读判断是否需要下一轮。会话最初目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}\n本轮原始目标：${turn.requestedPrompt || turn.prompt}\n完整验收任务：${result.evaluationPrompt}\n轨迹：${result.tracePath}\n产物目录：${result.workDir}\n本轮评价：${JSON.stringify(result.review)}\n执行结果类型：${result.executionOutcome || 'complete'}\n仅对本题未完成部分或已发现 Bug 提出具体修复，不增加无关功能。需要用户凭据、付费、外部访问或关键决策时 needs_input。完成时 complete；截断未完成时 needs_input；已证实产物问题且本会话未到两轮修复时 repair。prompt 必须是可执行的下一轮完整指令，complete/needs_input 时写“无”。reason 给出实际依据。每个会话最多初始题加两轮 Bug 修复，共三条对话，累计调用最多十次。Bug prompt 不加编号，同样按项目名称和 180 至 260 字的 1 至 2 段正文输出，围绕现有网页流程说明具体问题及预期，不增加无关功能，不允许只写继续。`,
+        `只读判断是否需要下一轮。会话最初目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}\n本轮原始目标：${turn.requestedPrompt || turn.prompt}\n完整验收任务：${result.evaluationPrompt}\n轨迹：${result.tracePath}\n产物目录：${result.workDir}\n本轮评价：${JSON.stringify(result.review)}\n执行结果类型：${result.executionOutcome || 'complete'}\n仅对本题未完成部分或已发现 Bug 提出具体修复，不增加无关功能。需要用户凭据、付费、外部访问或关键决策时 needs_input。完成时 complete；截断未完成时 needs_input；已证实产物问题且本会话未到两轮修复时 repair。prompt 必须是可执行的下一轮完整指令，complete/needs_input 时写“无”。reason 给出实际依据。每个会话最多初始题加两轮 Bug 修复，共三条对话，累计调用最多十次。Bug prompt 不写项目名称、标题或编号，直接用 180 至 260 字的 1 至 2 段正文接着描述问题，像同事说话一样写清发生条件、实际结果和希望怎么改，不重新介绍面向人群，不用落实、核验、既有语义等正式表达。保留真实复现数值，围绕既有业务流程说明问题及预期，不增加无关功能，不允许只写继续。`,
         result.workDir,
       );
       if (
@@ -437,7 +439,10 @@ async function execute({ task, turn }) {
       const firstTurn = previousTurns.length === 0;
       const previousTurn = previousTurns.at(-1);
       const legacyRepair = legacyRepairContext(task, turn);
-      const questionContext = { legacyRepair: !!legacyRepair };
+      const questionContext = {
+        legacyRepair: !!legacyRepair,
+        category: turn.category,
+      };
       if (legacyRepair)
         automation.questionScope = {
           type: 'historical-repair',
@@ -493,7 +498,7 @@ async function execute({ task, turn }) {
       });
       preparation = await step(
         'prepare',
-        `${seriesPrompt(task)}\n本题已分配分类：${turn.category}，category 必须保持该值，准备阶段不能更换题型。\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n当前容器内工作目录固定为 /workspace，容器已启动，项目骨架或上题归档代码已准备好，宿主机参考仓库不在容器里。0-1 在该项目内实现全新功能，Feature 迭代现有能力。请读取当前任务目录，准备交给 Claude 的任务 prompt、分类、难度、技术栈和验收条件。题目首行只写项目名称，不加编号，正文用 180 至 260 字自然描述业务，界面要求按下述适用范围执行，原始题目措辞不是格式模板。保留业务目标和必要边界，不擅自增加业务需求；当前目录、权限、评测来源和技术实现细节不附加到 prompt。acceptance 只放实际可执行的验收条件，不混入出题审核、难度分析或待补信息；正文保留用户可见的验收行为。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions(questionContext)}`,
+        `${seriesPrompt(task)}\n本题已分配分类：${turn.category}，category 必须保持该值，准备阶段不能更换题型。\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n当前容器内工作目录固定为 /workspace，容器已启动，项目骨架或上题归档代码已准备好，宿主机参考仓库不在容器里。0-1 在该项目内实现全新功能，Feature 迭代现有能力。请读取当前任务目录，准备交给 Claude 的任务 prompt、分类、难度、技术栈和验收条件。${turn.category === 'Bug 修复' ? 'Bug 修复不写项目名称、标题或编号，直接从问题现象开始，用同事聊天的口吻说明发生条件、实际结果和希望怎么改，不重新介绍面向人群，保留真实数值，不用落实、核验、既有语义等正式表达' : '题目首行只写项目名称，不加编号'}，正文用 180 至 260 字自然描述业务，界面要求按下述适用范围执行，原始题目措辞不是格式模板。保留业务目标和必要边界，不擅自增加业务需求；当前目录、权限、评测来源和技术实现细节不附加到 prompt。acceptance 只放实际可执行的验收条件，不混入出题审核、难度分析或待补信息；正文保留用户可见的验收行为。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions(questionContext)}`,
         task.workDir || task.repoPath,
         { allocation: { category: turn.category }, questionContext },
       );
@@ -519,7 +524,7 @@ async function execute({ task, turn }) {
       if (
         !preserveQuestion &&
         !continuation &&
-        questionIssues(preparation.value.prompt).length
+        questionIssues(preparation.value.prompt, questionContext).length
       )
         throw Error('执行前题目格式校验未通过');
       cached.prepare = preparation;
@@ -548,7 +553,7 @@ async function execute({ task, turn }) {
         .slice(0, 200);
       const audit = await step(
         'policy',
-        `${policyInstructions({ questionStyle: questionStyleApplies, ...questionContext })}\n${!questionStyleApplies ? '本题已在终端发送，保留原始题目，不追溯应用新的题目格式与内容标准；questionCompliant 写 false，questionChecks、workflowFeatures、businessDetails 写空数组，allowed 只按原禁出和难度规则判断。' : ''}\n轮次上下文：${roundContext}\n独立审核用户原目标与准备后的实际任务，两个都必须合规。若当前输入仅为继续或续写，必须根据前序原始目标判断。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选 repoPath 是本轮实际容器产物在本机的映射目录，审核必须读取此处对应项目；原参考仓库仅用于最初选题，不能拿它的代码判断本轮产物。此前复现数值引用 roundContext.previousVerification 给出的独立报告和日志，不在 Claude 原轨迹中寻找独立验收的工具调用。\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同且难度合格时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
+        `${policyInstructions({ questionStyle: questionStyleApplies, ...questionContext })}\n${!questionStyleApplies ? '本题已在终端发送，保留原始题目，不追溯应用新的题目格式与内容标准；questionCompliant 写 false，questionChecks、workflowFeatures、businessDetails 写空数组，allowed 只按原禁出和难度规则判断。' : ''}\n${preserveQuestion ? '这是已发送题目的原会话接续，当前目录已包含 Claude 执行后的改动。按发送时的原题、前序验收报告和复现证据审核禁出与难度；当前代码已修改或已增加回归测试是执行进展，不能据此否定发送前已经复现的缺陷，也不能要求退回旧代码或重新复现旧缺陷才允许收集本轮结果。本轮修复是否有效由后续独立运行验收判断，不在出题审核中预先判定。' : ''}\n轮次上下文：${roundContext}\n独立审核用户原目标与准备后的实际任务，两个都必须合规。若当前输入仅为继续或续写，必须根据前序原始目标判断。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选 repoPath 是本轮实际容器产物在本机的映射目录，审核必须读取此处对应项目；原参考仓库仅用于最初选题，不能拿它的代码判断本轮产物。此前复现数值引用 roundContext.previousVerification 给出的独立报告和日志，不在 Claude 原轨迹中寻找独立验收的工具调用。\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同且难度合格时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
         candidate.repoPath,
         { questionContext },
       );

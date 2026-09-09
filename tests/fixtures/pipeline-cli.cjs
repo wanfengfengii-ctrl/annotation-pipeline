@@ -5,7 +5,7 @@ const fs = require('fs'),
   name = path.basename(process.argv[1]),
   sha = 'a'.repeat(40),
   dir = process.env.FIXTURE_BIN;
-const { question, questionAudit } = require('./question.cjs');
+const { question, repair, questionAudit } = require('./question.cjs');
 if (a.includes('--version')) {
   console.log(name + ' fixture');
   process.exit(0);
@@ -167,7 +167,11 @@ process.stdin.on('end', () => {
       stack: 'fixture',
     },
     prepare: {
-      prompt: question('Synthetic prepared goal ' + count),
+      prompt:
+        JSON.parse(fs.readFileSync(schema, 'utf8')).properties.category
+          ?.enum?.[0] === 'Bug 修复'
+          ? repair(count)
+          : question('Synthetic prepared goal ' + count),
       category:
         JSON.parse(fs.readFileSync(schema, 'utf8')).properties.category
           ?.enum?.[0] || '代码测试',
@@ -239,7 +243,9 @@ process.stdin.on('end', () => {
       prompt:
         process.env.FIXTURE_STOP_PROJECT || !cats[count]
           ? '无'
-          : question('Synthetic project round ' + (count + 1)),
+          : cats[count] === 'Bug 修复'
+            ? repair(count + 1)
+            : question('Synthetic project round ' + (count + 1)),
       category: cats[count] || 'Feature 迭代',
       difficulty: '中等',
       reason: 'synthetic file evidence',

@@ -13,6 +13,7 @@ import { codexStage } from '../scripts/codex-stages.mjs';
 import fixture from './fixtures/question.cjs';
 import {
   questionCacheState,
+  upgradeQuestionCache,
   legacyRepairContext,
 } from '../lib/question-cache.mjs';
 import { policyInstructions } from '../lib/task-policy.mjs';
@@ -48,6 +49,38 @@ test('规则升级保留正在终端执行的原题，旧题不追溯套格式�
     /不能重新生成或重发/,
   );
 });
+test('口语规则升级重生成未发题和后续草稿，保留已发原文、评分和轨迹', () => {
+  const old = {
+    questionRuleVersion: '2026-09-09.questions2',
+    prepare: { value: { prompt: 'Webhook 可靠投递服务\n历史修复原文' } },
+    next: { value: { prompt: '旧规则的下一题草稿' } },
+    score: { value: { scores: [3, 4, 4, 3, 3] } },
+    policy: { questionRuleVersion: '2026-09-09.questions2' },
+  };
+  const sent = structuredClone(old);
+  const state = questionCacheState(sent, { turnId: 'repair' }, 'repair');
+  assert.equal(state.questionStyleApplies, false);
+  upgradeQuestionCache(sent, state);
+  assert.deepEqual(sent.prepare, old.prepare);
+  assert.deepEqual(sent.score, old.score);
+  assert.equal(sent.next, undefined);
+  assert.equal(sent.questionRuleVersion, questionRules.version);
+  assert.equal(
+    questionCacheState(sent, { turnId: 'repair' }, 'repair')
+      .questionStyleApplies,
+    false,
+  );
+  const draft = structuredClone(old);
+  upgradeQuestionCache(draft, questionCacheState(draft, null, 'repair'));
+  assert.equal(draft.prepare, undefined);
+  assert.equal(draft.next, undefined);
+  draft.prepare = { value: { prompt: fixture.repair() } };
+  draft.next = { value: { prompt: fixture.repair(2) } };
+  const current = structuredClone(draft);
+  upgradeQuestionCache(draft, { preserveQuestion: false });
+  assert.deepEqual(draft, current);
+});
+
 test('仅已执行历史题的同会话真实修复继承界面范围，新题及未复现问题不能豁免', () => {
   const root = {
     id: 'root',
@@ -171,12 +204,13 @@ test('题目使用无编号的项目名称和一至两段正文，不追加项�
   assert.match(writingInstructions('score'), /一段/);
 });
 
-test('首题、准备、迭代和 Bug 追问统一检查长度、段落、语气和编排信息', () => {
+test('独立新题检查项目名称、长度、段落、语气和编排信息', () => {
   for (const stage of ['generate', 'prepare', 'next', 'project-next']) {
     assert.deepEqual(
       checkWriting(stage, {
         prompt: fixture.question('投递结果对照工作台'),
-        action: 'repair',
+        action: 'advance',
+        category: 'Feature 迭代',
         reason: '现有结果与预期不一致',
       }).issues,
       [],
@@ -197,7 +231,8 @@ test('首题、准备、迭代和 Bug 追问统一检查长度、段落、语气
       assert.ok(
         checkWriting(stage, {
           prompt,
-          action: 'repair',
+          action: 'advance',
+          category: 'Feature 迭代',
           reason: '现有结果与预期不一致',
         }).issues.length,
         stage + ': ' + prompt,
@@ -216,6 +251,51 @@ test('首题、准备、迭代和 Bug 追问统一检查长度、段落、语气
     }).issues.length,
   );
   assert.ok(proseIssues(fixture.body).length, '点评仍不允许分段');
+});
+
+test('Bug 准备和追问直接用口语正文，拒绝项目标题和正式措辞', () => {
+  const prompt = fixture.repair();
+  for (const stage of ['prepare', 'next', 'project-next']) {
+    const context =
+      stage === 'prepare' ? { category: 'Bug 修复' } : { action: 'repair' };
+    assert.deepEqual(
+      checkWriting(stage, { ...context, prompt, reason: '已有问题需要修复' })
+        .issues,
+      [],
+      stage,
+    );
+    for (const bad of [
+      'Webhook 可靠投递服务\n' + prompt,
+      'Webhook 可靠投递服务\n' + prompt.replace(/\n+/g, ''),
+      prompt.replace('把这里改好', '请落实修复并核验既有重试语义'),
+      prompt.replace('现在', '面向维护服务的开发者，现在'),
+      prompt.replace('现在', '现在可能'),
+      prompt.replace('现在', '现在竟然'),
+      prompt.replace('现在', '现在“事件”'),
+      '需要修复。',
+    ])
+      assert.ok(
+        checkWriting(stage, {
+          ...context,
+          prompt: bad,
+          reason: '已有问题需要修复',
+        }).issues.length,
+        stage + ': ' + bad,
+      );
+  }
+  const parts = questionParts(prompt, { category: 'Bug 修复' });
+  assert.equal(parts.title, '');
+  assert.equal(parts.paragraphs.length, 2);
+  assert.match(parts.body, /^现在事件/);
+  assert.ok(parts.bodyLength >= 180 && parts.bodyLength <= 260);
+  assert.match(
+    policyInstructions({ category: 'Bug 修复' }),
+    /audience：沿用原题的实际使用场景/,
+  );
+  assert.match(
+    policyInstructions({ category: 'Bug 修复' }),
+    /language：Bug 修复没有项目名称或标题/,
+  );
 });
 
 test('业务内容审核逐项留证，不允许数量不符、缺少依据或否决结果通过', () => {

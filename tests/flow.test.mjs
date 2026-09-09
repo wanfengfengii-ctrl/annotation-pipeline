@@ -43,7 +43,11 @@ try {
   assert.equal(new Set(t.turns.map((r) => r.sessionId)).size, 22);
   assert.equal(new Set(t.turns.map((r) => r.promptId)).size, 32);
   for (const r of t.turns) {
-    assert.deepEqual(questionIssues(r.prompt), [], r.category);
+    assert.deepEqual(
+      questionIssues(r.prompt, { category: r.category }),
+      [],
+      r.category,
+    );
     assert.equal(
       r.automation.policy.questionRuleVersion,
       questionRules.version,
