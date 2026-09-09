@@ -19,6 +19,10 @@ import {
   writeRuntimeVerificationReport,
   reuseRuntimeVerification,
 } from '../scripts/runtime-verification.mjs';
+import {
+  assertRegressionNextDecision,
+  runtimeReviewContext,
+} from '../scripts/project-regression-context.mjs';
 
 const sha = (v) => createHash('sha256').update(v).digest('hex');
 function fixture(
@@ -241,4 +245,256 @@ test('recovery rejects mismatched execution records and changed project source',
       }),
     /项目源码/,
   );
+});
+
+function withHistoricalGeometry(f, { exitCode = 1, timedOut = false } = {}) {
+  const historyRoot = path.join(f.dir, 'original.runtime');
+  mkdirSync(historyRoot);
+  const sourceLogPath = path.join(historyRoot, 'geometry.log');
+  writeFileSync(sourceLogPath, 'expected aligned panels; actual stair steps\n');
+  const sourceReportPath = path.join(historyRoot, 'report.json');
+  writeFileSync(
+    sourceReportPath,
+    JSON.stringify({
+      checks: [
+        { id: 'geometry', outcome: 'reproduced', logPath: sourceLogPath },
+      ],
+    }),
+  );
+  const regressionContext = {
+    version: '2026-09-10.regression1',
+    taskId: path.basename(f.dir),
+    questionRootId: 'original',
+    checks: [
+      {
+        id: 'geometry',
+        scope: 'inherited-regression',
+        requirement:
+          'Paper proportions and panel positions match the selected format',
+        sourcePrompt: 'Build a printable paper layout preview',
+        sourceAcceptance: [
+          'Paper proportions are correct; panel top edges align',
+        ],
+        sourceReportPath,
+        sourceReportSha256: sha(readFileSync(sourceReportPath)),
+        sourceLogPath,
+        sourceLogSha256: sha(readFileSync(sourceLogPath)),
+      },
+    ],
+  };
+  const logPath = path.join(f.root, 'geometry.log');
+  writeFileSync(
+    logPath,
+    exitCode === 2
+      ? 'BLOCKED browser unavailable\n'
+      : 'FAIL expected ratio 1.403 and aligned panels; actual 0.703 and stair steps\n',
+  );
+  f.plan.value.checks.push({
+    id: 'geometry',
+    kind: 'reproduction',
+    command: 'node /tmp/geometry.js',
+    expected: 'Paper proportions are correct; panel top edges align',
+    requirement: regressionContext.checks[0].requirement,
+    codeEvidence: 'app.js:1',
+    timeoutSeconds: 10,
+  });
+  f.runs.push({
+    id: 'geometry',
+    exitCode,
+    timedOut,
+    limited: false,
+    sourceChanged: false,
+    logPath,
+    logSha256: sha(readFileSync(logPath)),
+  });
+  writeFileSync(
+    f.preparation.executionPath,
+    JSON.stringify({ plan: f.plan.value, runs: f.runs }),
+  );
+  f.preparation.prompt = 'Fix native drag and drop only';
+  f.preparation.acceptance = ['Native dragging reorders page content'];
+  f.preparation.regressionContext = regressionContext;
+  f.regressionContext = regressionContext;
+  Object.assign(f.reportInput, {
+    prompt: f.preparation.prompt,
+    acceptance: f.preparation.acceptance,
+    regressionContext,
+  });
+  return f;
+}
+
+test('historical business failure remains a project bug while passing current work is scored separately', (t) => {
+  const f = withHistoricalGeometry(fixture(t));
+  const prepared = prepareRuntimeDiagnosis(f.preparation);
+  assert.match(prepared.instruction, /Fix native drag and drop only/);
+  assert.match(
+    prepared.instruction,
+    /Paper proportions are correct; panel top edges align/,
+  );
+  assert.match(
+    prepared.instruction,
+    /固定 ID 按该项 sourcePrompt\/sourceAcceptance/,
+  );
+  assert.match(
+    prepared.instruction,
+    /历史回归未被本题选中，不是 blocked 的理由/,
+  );
+  assert.doesNotMatch(prepared.instruction, /只有原题范围内、命令确实执行/);
+  const diagnosis = {
+    ...f.diagnosis,
+    value: {
+      summary: 'Current work passed; historical paper geometry still fails',
+      checks: [
+        ...f.diagnosis.value.checks,
+        {
+          id: 'geometry',
+          outcome: 'reproduced',
+          evidenceLine: 1,
+          observed:
+            'Current measurement still violates the original paper geometry requirement',
+        },
+      ],
+    },
+  };
+  const originalLog = readFileSync(f.runs[1].logPath);
+  const report = writeRuntimeVerificationReport({
+    ...f.reportInput,
+    diagnosis,
+    diagnosisEvidence: prepared.evidence,
+  });
+  assert.equal(report.status, 'bugs');
+  const scoring = runtimeReviewContext(report, { scoring: true });
+  assert.equal(scoring.status, 'passed');
+  assert.equal(scoring.projectStatus, 'bugs');
+  assert.deepEqual(scoring.excludedRegressionCheckIds, ['geometry']);
+  assert.deepEqual(
+    scoring.checks.map((c) => c.id),
+    ['acceptance'],
+  );
+  assert.throws(
+    () => assertRegressionNextDecision(report, { action: 'complete' }),
+    /仍复现缺陷/,
+  );
+  assert.deepEqual(readFileSync(f.runs[1].logPath), originalLog);
+});
+
+test('historical scope never authorizes turning missing execution into a reproduced bug', (t) => {
+  for (const failure of [{ exitCode: 2 }, { exitCode: 1, timedOut: true }]) {
+    const f = withHistoricalGeometry(fixture(t), failure);
+    const prepared = prepareRuntimeDiagnosis(f.preparation);
+    assert.match(
+      prepared.instruction,
+      /测试假设错误、证据不足或环境与执行故障仍按下方规则 blocked/,
+    );
+    const verdict = {
+      summary: 'Historical check was blocked',
+      checks: [
+        ...f.diagnosis.value.checks,
+        {
+          id: 'geometry',
+          outcome: 'blocked',
+          observed: 'Execution unavailable',
+          evidenceLine: 1,
+        },
+      ],
+    };
+    assert.equal(
+      finalizeRuntimeReport(f.plan.value, f.runs, verdict).status,
+      'blocked',
+    );
+    verdict.checks[1].outcome = 'reproduced';
+    assert.throws(
+      () => finalizeRuntimeReport(f.plan.value, f.runs, verdict),
+      /真实失败的业务断言|只能标记阻塞/,
+    );
+  }
+});
+
+test('scope rediagnosis writes a new report beside an existing report and rejoins standard reuse without changing execution', (t) => {
+  const f = withHistoricalGeometry(fixture(t));
+  const previous = prepareRuntimeDiagnosis(f.preparation);
+  const oldDiagnosis = {
+    ...f.diagnosis,
+    value: {
+      summary: 'Incorrectly treated inherited scope as blocked',
+      checks: [
+        ...f.diagnosis.value.checks,
+        {
+          id: 'geometry',
+          outcome: 'blocked',
+          evidenceLine: 1,
+          observed: 'Geometry is outside the current drag request',
+        },
+      ],
+    },
+  };
+  const oldReport = writeRuntimeVerificationReport({
+    ...f.reportInput,
+    diagnosis: oldDiagnosis,
+    diagnosisEvidence: previous.evidence,
+  });
+  const retained = [
+    oldReport.reportPath,
+    f.preparation.executionPath,
+    ...f.runs.map((run) => run.logPath),
+    ...previous.evidence.logs.map((log) => log.numberedPath),
+  ].map((file) => [file, readFileSync(file)]);
+  const prepared = prepareRuntimeDiagnosis(f.preparation);
+  assert.notEqual(
+    prepared.evidence.logs[0].numberedPath,
+    previous.evidence.logs[0].numberedPath,
+  );
+  const diagnosis = {
+    ...oldDiagnosis,
+    tracePath: path.join(
+      f.dir,
+      'turn.attempt-5.scope-rediagnosis.events.jsonl',
+    ),
+    value: {
+      summary:
+        'Current work passed; inherited geometry remains a reproduced defect',
+      checks: [
+        ...f.diagnosis.value.checks,
+        {
+          id: 'geometry',
+          outcome: 'reproduced',
+          evidenceLine: 1,
+          observed:
+            'This execution reproduces incorrect geometry required by the source question',
+        },
+      ],
+    },
+  };
+  writeFileSync(diagnosis.tracePath, '{}\n');
+  const reportPath = path.join(f.root, 'report.diagnosis-scope-test.json');
+  const input = {
+    ...f.reportInput,
+    reportPath,
+    diagnosis,
+    diagnosisEvidence: prepared.evidence,
+  };
+  const report = writeRuntimeVerificationReport(input);
+  assert.equal(oldReport.status, 'blocked');
+  assert.equal(report.status, 'bugs');
+  assert.equal(
+    reuseRuntimeVerification(report, {
+      ...f,
+      prompt: f.preparation.prompt,
+      acceptance: f.preparation.acceptance,
+    }),
+    report,
+  );
+  assert.equal(
+    runtimeReviewContext(report, { scoring: true }).status,
+    'passed',
+  );
+  for (const [file, bytes] of retained)
+    assert.deepEqual(readFileSync(file), bytes);
+  assert.throws(() => writeRuntimeVerificationReport(input), /EEXIST/);
+});
+
+test('a diagnosis without historical context keeps the current question scope', (t) => {
+  const prepared = prepareRuntimeDiagnosis(fixture(t).preparation);
+  assert.match(prepared.instruction, /只有原题范围内、命令确实执行/);
+  assert.doesNotMatch(prepared.instruction, /历史回归未被本题选中/);
 });
