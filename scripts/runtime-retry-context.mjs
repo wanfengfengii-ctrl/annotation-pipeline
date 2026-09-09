@@ -12,6 +12,7 @@ import {
   runtimeEvidenceLines,
   validateCodeRef,
   finalizeRuntimeReport,
+  verifyRegressionEvidence,
 } from './runtime-verification.mjs';
 
 const hash = (data) => createHash('sha256').update(data).digest('hex');
@@ -52,6 +53,11 @@ export function runtimeRetryContext(report, context) {
     )
       return null;
     const { reportSha256, ...cached } = report;
+    verifyRegressionEvidence(report.regressionContext, dir);
+    if (
+      !same(report.regressionContext || null, context.regressionContext || null)
+    )
+      return null;
     if (
       !same(JSON.parse(readFileSync(report.reportPath, 'utf8')), cached) ||
       !same(

@@ -50,6 +50,12 @@ import {
 } from './runtime-verification.mjs';
 import { runtimeRetryContext } from './runtime-retry-context.mjs';
 import {
+  projectRegressionContext,
+  regressionScoringInstructions,
+  runtimeReviewContext,
+  assertRegressionNextDecision,
+} from './project-regression-context.mjs';
+import {
   runtimeVersion,
   runtimeRepairEvidence,
 } from '../lib/runtime-verification.mjs';
@@ -233,39 +239,18 @@ async function execute({ task, turn }) {
       prompt +=
         '\n独立运行验收（不得将其工具调用归为 Claude 的行为）：' +
         JSON.stringify(
-          automation.runtimeVerification
-            ? {
-                status: automation.runtimeVerification.status,
-                summary: automation.runtimeVerification.summary,
-                reportPath: automation.runtimeVerification.reportPath,
-                checks: automation.runtimeVerification.checks.map(
-                  ({
-                    id,
-                    kind,
-                    outcome,
-                    requirement,
-                    expected,
-                    observed,
-                    codeEvidence,
-                    logPath,
-                    evidenceLine,
-                  }) => ({
-                    id,
-                    kind,
-                    outcome,
-                    requirement,
-                    expected,
-                    observed,
-                    codeEvidence,
-                    logPath,
-                    evidenceLine,
-                  }),
-                ),
-              }
-            : null,
+          runtimeReviewContext(automation.runtimeVerification, {
+            scoring: ['score', 'delivery'].includes(name),
+          }),
         ) +
         '\nBug 修复题只能覆盖其中 outcome=reproduced 的原题缺陷，结构化 repairCheckIds 填对应检查 id，非 repair 时填空数组，不把技术 id 塞进题目正文；没有已复现缺陷不能生成 repair，有已复现缺陷且修复额度尚有余量时必须优先 repair。静态怀疑、未复现和环境阻塞不能生成 Bug 题。';
     }
+    if (['score', 'delivery'].includes(name))
+      prompt +=
+        '\n' +
+        regressionScoringInstructions(
+          automation.runtimeVerification?.regressionContext,
+        );
     if (cached[name] && name !== 'policy' && name !== 'snapshot')
       return cached[name];
     const value = await codexStage({
@@ -325,6 +310,7 @@ async function execute({ task, turn }) {
       )
         throw Error('没有已复现的业务缺陷，不能生成 Bug 修复题');
       cached.next = next;
+      assertRegressionNextDecision(automation.runtimeVerification, next.value);
       persist();
       automation.next = next;
     } else if (
@@ -347,6 +333,7 @@ async function execute({ task, turn }) {
       )
         throw Error('没有已复现的业务缺陷，不能生成 Bug 修复题');
       cached.next = next;
+      assertRegressionNextDecision(automation.runtimeVerification, next.value);
       persist();
       automation.next = next;
     }
@@ -704,12 +691,29 @@ async function execute({ task, turn }) {
       delete cached.score;
       delete cached.delivery;
       delete cached.next;
+      const regressionContext = projectRegressionContext(task, turn, {
+        dir,
+        imageId: result.container.imageId,
+      });
+      if (regressionContext) {
+        const priorDecision = previousTurn?.automation?.next?.value;
+        const selected = new Set(
+          Array.isArray(turn.repairCheckIds)
+            ? turn.repairCheckIds
+            : priorDecision?.prompt === (turn.requestedPrompt || turn.prompt)
+              ? priorDecision.repairCheckIds || []
+              : [],
+        );
+        for (const check of regressionContext.checks)
+          if (selected.has(check.id)) check.scope = 'question';
+      }
       const runtimeContext = {
         workDir: result.workDir,
         dir,
         imageId: result.container.imageId,
         prompt: result.evaluationPrompt || preparation.value.prompt,
         acceptance: preparation.value.acceptance,
+        regressionContext,
       };
       const previousReceipt = path.join(dir, turn.id + '.result.json');
       const reused = reuseRuntimeVerification(cached.runtimeVerification, {
@@ -727,6 +731,10 @@ async function execute({ task, turn }) {
           turnId: turn.id + '.attempt-' + cached.attempt,
           retryContext: runtimeRetryContext(cached.runtimeVerification, {
             ...runtimeContext,
+            // Valid old failure feedback remains useful after adding regression
+            // coverage, but can never be reused as the new completed report.
+            regressionContext:
+              cached.runtimeVerification?.regressionContext || null,
             taskId: task.id,
             turnId: turn.id,
           }),
@@ -794,7 +802,7 @@ async function execute({ task, turn }) {
         );
       const delivery = await step(
         'delivery',
-        `对以下 AI 评测数据做交付校验：${JSON.stringify({ snapshot: result.snapshot, sessionId: result.sessionId, promptId: result.promptId, tracePath: result.tracePath, prompt: preparation.value.prompt, evaluationPrompt: result.evaluationPrompt, executionOutcome: result.executionOutcome, review: result.review, processFindings: score.value.processFindings, artifactFindings: score.value.artifactFindings })}\n逐项核对 When/What/Impact/正确做法、过程与产物证据、模型归因和分数分档一致性；检查五维分数与证据是否一致、是否具体可追溯、是否存在虚假成功。基于实际轨迹与代码。passed 只代表内部 AI 评测数据是否完整一致，不能声称满足原项目人工标注规则。不要向腾讯文档或其他平台提交；返回校验清单和结论。`,
+        `${scoreInstructions()}\n以上是本次交付校验的完整五维定义和分档依据。runtime 的 expected 为执行前预期，不是当前执行状态；当前状态只以 outcome、observed、退出码及已验真日志为准，不要把历史计划中的尚未执行当作本次验收未运行。\n对以下 AI 评测数据做交付校验：${JSON.stringify({ snapshot: result.snapshot, sessionId: result.sessionId, promptId: result.promptId, tracePath: result.tracePath, prompt: preparation.value.prompt, evaluationPrompt: result.evaluationPrompt, executionOutcome: result.executionOutcome, review: result.review, processFindings: score.value.processFindings, artifactFindings: score.value.artifactFindings })}\n逐项核对 When/What/Impact/正确做法、过程与产物证据、模型归因和分数分档一致性；检查五维分数与证据是否一致、是否具体可追溯、是否存在虚假成功。基于实际轨迹与代码。passed 只代表内部 AI 评测数据是否完整一致，不能声称满足原项目人工标注规则。不要向腾讯文档或其他平台提交；返回校验清单和结论。`,
         result.workDir,
       );
       automation.delivery = delivery;

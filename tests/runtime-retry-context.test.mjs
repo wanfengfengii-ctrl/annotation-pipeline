@@ -348,6 +348,10 @@ test('planning preserves dependency provenance and counts original tests from na
         assert.match(instruction, /保持原测试入口或原发现范围/);
         assert.match(instruction, /不虚构预期测试数/);
         assert.match(instruction, /未取得真实结果仍按 blocked 处理/);
+        assert.match(instruction, /必须同时检查 signalCode/);
+        assert.match(instruction, /清理函数可重复调用/);
+        assert.match(instruction, /后续等待也必须有时限/);
+        assert.match(instruction, /清理失败或超时仍是 blocked/);
         throw stop;
       },
     }),

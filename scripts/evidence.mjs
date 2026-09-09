@@ -79,7 +79,7 @@ export function createEvidenceArchive({
       sha256,
     });
   }
-  function addRuntimeEvidence(src, name, sha256) {
+  function addRuntimeEvidence(src, name, sha256, alreadyAdded = false) {
     if (
       typeof src !== 'string' ||
       !/^[a-f0-9]{64}$/.test(sha256 || '') ||
@@ -88,6 +88,10 @@ export function createEvidenceArchive({
       !realpathSync(src).startsWith(realpathSync(dir) + path.sep)
     )
       throw Error('独立验收附加证据无效：' + name);
+    if (alreadyAdded) {
+      if (hashFile(src) !== sha256) throw Error('交付证据摘要不一致：' + name);
+      return;
+    }
     // Hash the same bytes that are copied; never rewrite the original log/view.
     add(src, name, sha256);
   }
@@ -129,6 +133,20 @@ export function createEvidenceArchive({
       throw Error('独立验收报告摘要不一致');
     add(runtime.reportPath, 'runtime/report.json');
     add(runtime.executionPath, 'runtime/execution.json');
+    if (runtime.regressionContext) {
+      const seen = new Set();
+      for (const c of runtime.regressionContext.checks) {
+        for (const [file, sha256, extension] of [
+          [c.sourceReportPath, c.sourceReportSha256, 'report.json'],
+          [c.sourceLogPath, c.sourceLogSha256, 'log'],
+        ]) {
+          const name = 'runtime/regression-history/' + sha256 + '.' + extension;
+          // Validate each reference even when another check shares its content.
+          addRuntimeEvidence(file, name, sha256, seen.has(name));
+          seen.add(name);
+        }
+      }
+    }
     for (const c of runtime.checks) {
       if (hashFile(c.logPath) !== c.logSha256)
         throw Error('独立验收日志摘要不一致');
