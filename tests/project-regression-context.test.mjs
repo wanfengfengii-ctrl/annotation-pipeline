@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
   rmSync,
 } from 'node:fs';
@@ -15,6 +16,7 @@ import {
   assertRegressionPlanCoverage,
   regressionScoringInstructions,
   runtimeReviewContext,
+  runtimeEvidenceInstructions,
   assertRegressionNextDecision,
 } from '../scripts/project-regression-context.mjs';
 import {
@@ -112,6 +114,200 @@ test('scoped review does not treat missing business evidence as a pass or inheri
   );
   assert.deepEqual(runtimeReviewContext(report, { scoring: true }).checks, []);
   assert.equal(runtimeReviewContext(null), null);
+});
+
+function reviewFixture(t) {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'runtime-review-lf-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const logPath = path.join(root, 'browser.log');
+  const numberedPath = path.join(root, 'browser.lines.jsonl');
+  const text = 'progress 1\rprogress 2\r\ninstall done\r\nCanvas: true\nPASS\n';
+  writeFileSync(logPath, text);
+  const rows = text.split('\n').map((line, index) => ({
+    line: index + 1,
+    text: line,
+  }));
+  writeFileSync(
+    numberedPath,
+    rows.map((row) => JSON.stringify(row)).join('\n') + '\n',
+  );
+  const report = {
+    executed: true,
+    status: 'passed',
+    summary: 'Browser really started',
+    reportPath: path.join(root, 'report.json'),
+    checks: [
+      {
+        ...spec('browser', 'acceptance'),
+        outcome: 'passed',
+        observed: 'Canvas works',
+        logPath,
+        logSha256: hash(readFileSync(logPath)),
+        evidenceLine: 4,
+      },
+    ],
+    diagnosisEvidence: {
+      version: '2026-09-10.lf1',
+      logs: [
+        {
+          id: 'browser',
+          logPath,
+          logSha256: hash(readFileSync(logPath)),
+          numberedPath,
+          numberedSha256: hash(readFileSync(numberedPath)),
+          lineCount: rows.length,
+        },
+      ],
+    },
+  };
+  const persist = () => {
+    const { reportSha256: _previousHash, ...onDisk } = report;
+    writeFileSync(report.reportPath, JSON.stringify(onDisk));
+    report.reportSha256 = hash(readFileSync(report.reportPath));
+  };
+  persist();
+  return { root, report, logPath, numberedPath, persist, rows };
+}
+
+test('review exposes verified LF coordinates and exact text without CR renumbering or report mutation', (t) => {
+  const f = reviewFixture(t);
+  const original = structuredClone(f.report);
+  const originalReport = readFileSync(f.report.reportPath);
+  for (const scoring of [true, false]) {
+    const check = runtimeReviewContext(f.report, { scoring }).checks[0];
+    assert.equal(check.evidenceCoordinatesVerified, true);
+    assert.equal(check.evidenceLineBasis, 'LF');
+    assert.equal(check.evidenceLine, 4);
+    assert.equal(check.exactEvidenceText, 'PASS');
+    assert.equal(check.lineCount, 5);
+    assert.equal(check.numberedPath, f.numberedPath);
+    assert.equal(check.numberedSha256, hash(readFileSync(f.numberedPath)));
+  }
+  assert.equal(
+    readFileSync(f.logPath, 'utf8').split(/\r\n|\r|\n/)[3],
+    'Canvas: true',
+  );
+  assert.deepEqual(f.report, original);
+  assert.deepEqual(readFileSync(f.report.reportPath), originalReport);
+  assert.match(runtimeEvidenceInstructions(), /read_text\(\)\.splitlines\(\)/);
+  assert.match(runtimeEvidenceInstructions(), /JSONL.*line 字段/);
+  assert.match(
+    runtimeEvidenceInstructions(),
+    /evidenceCoordinatesVerified=false/,
+  );
+});
+
+test('legacy reports without numbered views explicitly expose no verified coordinates', () => {
+  const report = {
+    executed: true,
+    status: 'passed',
+    checks: [
+      { ...spec('old', 'acceptance'), outcome: 'passed', evidenceLine: 7 },
+    ],
+  };
+  const check = runtimeReviewContext(report).checks[0];
+  assert.equal(check.evidenceLine, 7);
+  assert.equal(check.evidenceCoordinatesVerified, false);
+  for (const key of [
+    'evidenceLineBasis',
+    'numberedPath',
+    'numberedSha256',
+    'lineCount',
+    'exactEvidenceText',
+  ])
+    assert.equal(check[key], null);
+});
+
+test('modern review rejects missing or changed report, original log and numbered view', (t) => {
+  for (const kind of [
+    'missing-view-metadata',
+    'null-view-metadata',
+    'report',
+    'log',
+    'view',
+    'missing-log',
+    'missing-view',
+    'missing-report',
+  ]) {
+    const f = reviewFixture(t);
+    if (kind === 'missing-view-metadata') delete f.report.diagnosisEvidence;
+    if (kind === 'null-view-metadata') f.report.diagnosisEvidence = null;
+    if (kind === 'report') writeFileSync(f.report.reportPath, '{}');
+    if (kind === 'log') writeFileSync(f.logPath, 'Forged PASS\n');
+    if (kind === 'view') writeFileSync(f.numberedPath, '{}\n');
+    if (kind === 'missing-log') rmSync(f.logPath);
+    if (kind === 'missing-view') rmSync(f.numberedPath);
+    if (kind === 'missing-report') rmSync(f.report.reportPath);
+    assert.throws(() => runtimeReviewContext(f.report), undefined, kind);
+  }
+});
+
+test('modern review binds metadata to the report, check IDs, logs and evidence line', (t) => {
+  for (const kind of [
+    'check-id',
+    'check-line',
+    'check-log',
+    'view-id',
+    'view-log',
+    'view-count',
+    'duplicate-check',
+    'duplicate-view',
+    'out-of-range',
+    'noninteger-line',
+  ]) {
+    const f = reviewFixture(t);
+    const check = f.report.checks[0];
+    const view = f.report.diagnosisEvidence.logs[0];
+    if (kind === 'check-id') check.id = 'different';
+    if (kind === 'check-line') check.evidenceLine = 3;
+    if (kind === 'check-log') check.logPath = f.numberedPath;
+    if (kind === 'view-id') view.id = 'different';
+    if (kind === 'view-log') view.logPath = f.numberedPath;
+    if (kind === 'view-count') view.lineCount++;
+    if (kind === 'duplicate-check') f.report.checks.push({ ...check });
+    if (kind === 'duplicate-view')
+      f.report.diagnosisEvidence.logs.push({ ...view });
+    if (kind === 'out-of-range') check.evidenceLine = 6;
+    if (kind === 'noninteger-line') check.evidenceLine = 1.5;
+    assert.throws(() => runtimeReviewContext(f.report), undefined, kind);
+  }
+});
+
+test('matching file hashes alone cannot authorize altered row content, numbering or line counts', (t) => {
+  for (const kind of [
+    'text',
+    'number',
+    'count',
+    'outside-directory',
+    'symlink',
+  ]) {
+    const f = reviewFixture(t);
+    const view = f.report.diagnosisEvidence.logs[0];
+    if (kind === 'text') f.rows[3].text = 'Invented observed result';
+    if (kind === 'number') f.rows[3].line = 5;
+    if (kind === 'count') f.rows.pop();
+    writeFileSync(
+      f.numberedPath,
+      f.rows.map((row) => JSON.stringify(row)).join('\n') + '\n',
+    );
+    if (kind === 'outside-directory') {
+      const outside = mkdtempSync(
+        path.join(os.tmpdir(), 'runtime-review-outside-'),
+      );
+      t.after(() => rmSync(outside, { recursive: true, force: true }));
+      view.numberedPath = path.join(outside, 'numbered.jsonl');
+      writeFileSync(view.numberedPath, readFileSync(f.numberedPath));
+    }
+    if (kind === 'symlink') {
+      const target = path.join(f.root, 'original-view.jsonl');
+      writeFileSync(target, readFileSync(f.numberedPath));
+      rmSync(f.numberedPath);
+      symlinkSync(target, f.numberedPath);
+    }
+    view.numberedSha256 = hash(readFileSync(view.numberedPath));
+    f.persist();
+    assert.throws(() => runtimeReviewContext(f.report), undefined, kind);
+  }
 });
 
 function fixture(t, { omitted = false } = {}) {

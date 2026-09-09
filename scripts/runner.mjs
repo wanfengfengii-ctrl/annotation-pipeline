@@ -1,6 +1,8 @@
 import { installScaffold } from './project-scaffold.mjs';
 import { createRunnerApi } from './runner-api.mjs';
 import { continuationContext } from '../lib/round-context.mjs';
+import { questionRoot } from '../lib/question-session.mjs';
+import { policySessionContext } from '../lib/policy-session-context.mjs';
 import {
   seriesVersion,
   seriesPrompt,
@@ -50,9 +52,15 @@ import {
 } from './runtime-verification.mjs';
 import { runtimeRetryContext } from './runtime-retry-context.mjs';
 import {
+  submittedPolicyEvidence,
+  submittedPolicyInstructions,
+  assertSubmittedPolicyDeliverable,
+} from './submitted-policy.mjs';
+import {
   projectRegressionContext,
   regressionScoringInstructions,
   runtimeReviewContext,
+  runtimeEvidenceInstructions,
   assertRegressionNextDecision,
 } from './project-regression-context.mjs';
 import {
@@ -180,6 +188,8 @@ async function execute({ task, turn }) {
   const cached = existsSync(cachePath)
     ? JSON.parse(readFileSync(cachePath, 'utf8'))
     : {};
+  if (cached.submittedPolicyEvidence && !cached.claude?.success)
+    throw Error('已发送题目存在审核异议，不能回退初始化容器或重新执行 Claude');
   const persist = () =>
     writeFileSync(cachePath, JSON.stringify(cached, null, 2), { mode: 0o600 });
   // A Terminal interaction can outlive its runner. Preserve the exact submitted
@@ -248,9 +258,16 @@ async function execute({ task, turn }) {
     if (['score', 'delivery'].includes(name))
       prompt +=
         '\n' +
+        runtimeEvidenceInstructions() +
+        '\n' +
         regressionScoringInstructions(
           automation.runtimeVerification?.regressionContext,
         );
+    if (
+      ['runtime-plan', 'runtime-diagnose', 'score', 'delivery'].includes(name)
+    )
+      prompt +=
+        '\n' + submittedPolicyInstructions(automation.submittedPolicyEvidence);
     if (cached[name] && name !== 'policy' && name !== 'snapshot')
       return cached[name];
     const value = await codexStage({
@@ -448,6 +465,7 @@ async function execute({ task, turn }) {
       const roundContext = JSON.stringify({
         firstTurn,
         allowFollowupFix,
+        questionSession: policySessionContext(task, turn),
         actualWorkspace: task.workDir,
         projectDirectory: task.projectSeries?.directory,
         legacyRepair,
@@ -478,6 +496,10 @@ async function execute({ task, turn }) {
         },
         previousGoal: previousTurn?.prompt,
         previousGoals: previousTurns.map((r) => ({
+          id: r.id,
+          questionRootId: questionRoot(task, r),
+          sessionId: r.sessionId || null,
+          category: r.category,
           requestedGoal: r.requestedPrompt,
           preparedGoal: r.prompt.slice(0, 4000),
         })),
@@ -540,15 +562,34 @@ async function execute({ task, turn }) {
       const history = context.history
         .filter((t) => t.id !== task.id)
         .slice(0, 200);
-      const audit = await step(
-        'policy',
-        `${policyInstructions({ questionStyle: questionStyleApplies, ...questionContext })}\n${!questionStyleApplies ? '本题已在终端发送，保留原始题目，不追溯应用新的题目格式与内容标准；questionCompliant 写 false，questionChecks、workflowFeatures、businessDetails 写空数组，allowed 只按原禁出和难度规则判断。' : ''}\n${preserveQuestion ? '这是已发送题目的原会话接续，当前目录已包含 Claude 执行后的改动。按发送时的原题、前序验收报告和复现证据审核禁出与难度；当前代码已修改或已增加回归测试是执行进展，不能据此否定发送前已经复现的缺陷，也不能要求退回旧代码或重新复现旧缺陷才允许收集本轮结果。本轮修复是否有效由后续独立运行验收判断，不在出题审核中预先判定。' : ''}\n轮次上下文：${roundContext}\n独立审核用户原目标与准备后的实际任务，两个都必须合规。若当前输入仅为继续或续写，必须根据前序原始目标判断。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选 repoPath 是本轮实际容器产物在本机的映射目录，审核必须读取此处对应项目；原参考仓库仅用于最初选题，不能拿它的代码判断本轮产物。此前复现数值引用 roundContext.previousVerification 给出的独立报告和日志，不在 Claude 原轨迹中寻找独立验收的工具调用。\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同且难度合格时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
-        candidate.repoPath,
-        { questionContext },
-      );
+      // A completed interaction with a later factual rejection can only finish
+      // collecting evidence. The rejection stays effective through delivery.
+      const submittedEvidence = await submittedPolicyEvidence({
+        dir,
+        turnId: turn.id,
+        cached,
+        candidate,
+      });
+      const latestRejection = submittedEvidence?.postExecutionPolicy
+        .filter((record) => record.disputed === true)
+        .at(-1);
+      const audit = latestRejection
+        ? {
+            ...structuredClone(latestRejection),
+            accepted: false,
+            rejection: latestRejection.value.reason,
+          }
+        : await step(
+            'policy',
+            `${policyInstructions({ questionStyle: questionStyleApplies, ...questionContext })}\n${!questionStyleApplies ? '本题已在终端发送，保留原始题目，不追溯应用新的题目格式与内容标准；questionCompliant 写 false，questionChecks、workflowFeatures、businessDetails 写空数组，allowed 只按原禁出和难度规则判断。' : ''}\n${preserveQuestion ? '这是已发送题目的原会话接续，当前目录已包含 Claude 执行后的改动。按发送时的原题、前序验收报告和复现证据审核禁出与难度；当前代码已修改或已增加回归测试是执行进展，不能据此否定发送前已经复现的缺陷，也不能要求退回旧代码或重新复现旧缺陷才允许收集本轮结果。本轮修复是否有效由后续独立运行验收判断，不在出题审核中预先判定。' : ''}\n轮次上下文：${roundContext}\nquestionSession 是程序按 questionRootId 和实际 SessionID 分组的本会话记录及额度，只按其中同一原题的前序轮次计算 Bug 修复次数；previousGoals 还包含该项目其他独立会话，仅提供项目背景，不能把不同 questionRootId 或不同 SessionID 的历史 Bug 算进本会话。当前候选是否超限以 questionSession 的结构化计数核对，不能凭项目整体题目数量推断。独立审核用户原目标与准备后的实际任务，两个都必须合规。若当前输入仅为继续或续写，必须根据前序原始目标判断。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选 repoPath 是本轮实际容器产物在本机的映射目录，审核必须读取此处对应项目；原参考仓库仅用于最初选题，不能拿它的代码判断本轮产物。此前复现数值引用 roundContext.previousVerification 给出的独立报告和日志，不在 Claude 原轨迹中寻找独立验收的工具调用。\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同且难度合格时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
+            candidate.repoPath,
+            { questionContext },
+          );
       audit.proposedDifficulty = candidate.difficulty;
-      candidate.difficulty = audit.value.assessedDifficulty;
-      preparation.value.difficulty = audit.value.assessedDifficulty;
+      if (!submittedEvidence) {
+        candidate.difficulty = audit.value.assessedDifficulty;
+        preparation.value.difficulty = audit.value.assessedDifficulty;
+      }
       audit.roundContext = {
         firstTurn,
         allowFollowupFix,
@@ -561,12 +602,17 @@ async function execute({ task, turn }) {
         audit.questionRuleVersion = questionRules.version;
       audit.candidateDigest = await candidateDigest(candidate);
       automation.policy = audit;
-      assertPolicyAudit(audit, audit.candidateDigest, {
-        firstTurn,
-        allowFollowupFix,
-        requireQuestionStyle: questionStyleApplies,
-      });
-      cached.policy = audit;
+      if (submittedEvidence) {
+        automation.submittedPolicyEvidence = submittedEvidence;
+        cached.submittedPolicyEvidence = submittedEvidence;
+      } else {
+        assertPolicyAudit(audit, audit.candidateDigest, {
+          firstTurn,
+          allowFollowupFix,
+          requireQuestionStyle: questionStyleApplies,
+        });
+        cached.policy = audit;
+      }
       persist();
       const container = cached.claude?.container || task.container;
       if (!container || !validDockerSnapshot(container.snapshot))
@@ -716,14 +762,16 @@ async function execute({ task, turn }) {
         regressionContext,
       };
       const previousReceipt = path.join(dir, turn.id + '.result.json');
-      const reused = reuseRuntimeVerification(cached.runtimeVerification, {
-        ...runtimeContext,
-        taskId: task.id,
-        turnId: turn.id,
-        previousResult: existsSync(previousReceipt)
-          ? JSON.parse(readFileSync(previousReceipt, 'utf8'))
-          : null,
-      });
+      const reused = submittedEvidence
+        ? null
+        : reuseRuntimeVerification(cached.runtimeVerification, {
+            ...runtimeContext,
+            taskId: task.id,
+            turnId: turn.id,
+            previousResult: existsSync(previousReceipt)
+              ? JSON.parse(readFileSync(previousReceipt, 'utf8'))
+              : null,
+          });
       automation.runtimeVerification =
         reused ||
         (await verifyRuntime({
@@ -806,6 +854,13 @@ async function execute({ task, turn }) {
         result.workDir,
       );
       automation.delivery = delivery;
+      // Never let a later successful AI assessment erase a submitted question's
+      // factual rejection or create an exportable archive from it.
+      if (automation.submittedPolicyEvidence) {
+        cached.delivery = delivery;
+        persist();
+        assertSubmittedPolicyDeliverable(automation.submittedPolicyEvidence);
+      }
       if (!delivery.value.passed)
         throw new Error('Codex 交付校验未通过：' + delivery.value.summary);
       cached.delivery = delivery;
