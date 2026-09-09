@@ -8,6 +8,7 @@ import {
   symlinkSync,
   existsSync,
   rmSync,
+  copyFileSync,
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,6 +26,7 @@ import {
   runtimeInputDigest,
   reuseRuntimeVerification,
   runtimeCommandArgs,
+  probeRuntimeEnvironment,
   verifyRuntime,
 } from '../scripts/runtime-verification.mjs';
 import { schemas } from '../scripts/codex-stages.mjs';
@@ -41,6 +43,42 @@ function fixture(t) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'runtime-check-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
+}
+const probeCapabilities = {
+  commands: {
+    bash: true,
+    node: true,
+    npm: true,
+    python3: true,
+    pip: false,
+    pip3: false,
+    'apt-get': true,
+    apk: false,
+    dnf: false,
+    yum: false,
+    chromium: false,
+    'chromium-browser': false,
+    'google-chrome': false,
+    firefox: false,
+  },
+  pythonModules: {
+    venv: true,
+    ensurepip: false,
+    pip: false,
+    playwright: false,
+  },
+};
+function dockerResult(output, options = {}, patch = {}) {
+  if (options.logPath) writeFileSync(options.logPath, output);
+  return {
+    exitCode: 0,
+    timedOut: false,
+    limited: false,
+    output,
+    logPath: options.logPath,
+    logSha256: createHash('sha256').update(output).digest('hex'),
+    ...patch,
+  };
 }
 function runVerificationShell(command, options = {}) {
   const args = runtimeCommandArgs('verification-test', command),
@@ -109,12 +147,13 @@ test('Verification ignores shell startup files and previous steps exported varia
   assert.equal(next.stdout, '||unset\n');
   assert.equal(next.stderr, '');
 });
-test('Runtime planning is told the exact Bash contract before any container starts', async (t) => {
+test('Runtime planning receives measured capabilities and Bash contract after isolated probe cleanup', async (t) => {
   const dir = fixture(t),
     workDir = path.join(dir, 'source');
   mkdirSync(workDir);
   writeFileSync(path.join(workDir, 'app.js'), 'export const value = 1;\n');
   const stopAfterPlan = new Error('stop after checking planner instructions');
+  const calls = [];
   await assert.rejects(
     verifyRuntime({
       dir,
@@ -123,17 +162,164 @@ test('Runtime planning is told the exact Bash contract before any container star
       imageId: 'sha256:' + 'a'.repeat(64),
       prompt: '显示结果',
       acceptance: ['result=1'],
+      docker: async (args, options) => {
+        calls.push(args);
+        assert.equal(calls.length <= 2, true);
+        return dockerResult(
+          args[0] === 'run' ? JSON.stringify(probeCapabilities) : 'removed',
+          options,
+        );
+      },
       step: async (stage, instruction, cwd) => {
         assert.equal(stage, 'runtime-plan');
         assert.equal(cwd, workDir);
         assert.match(instruction, /\/bin\/bash --noprofile --norc -c/);
         assert.match(instruction, /BASH_ENV 和 ENV 清空/);
         assert.match(instruction, /上一检查步骤 export 的环境变量不会继承/);
+        assert.match(instruction, /"venv":true,"ensurepip":false/);
+        assert.match(instruction, /"node":true,"npm":true/);
+        assert.match(instruction, /不能直接依赖 python3 -m venv/);
+        assert.match(instruction, /npm 在 \/tmp 下的独立目录安装 Playwright/);
+        assert.match(instruction, /真实启动 headless 浏览器验证/);
+        assert.match(instruction, /安装或启动失败属于环境 blocked/);
+        assert.equal(calls.length, 2);
+        assert.equal(calls[1][0], 'rm');
         throw stopAfterPlan;
       },
     }),
     (error) => error === stopAfterPlan,
   );
+});
+test('Environment probe is bounded, has no mounts or network, and removes its exact container', async (t) => {
+  const root = fixture(t),
+    calls = [],
+    imageId = 'sha256:' + 'a'.repeat(64);
+  const probe = await probeRuntimeEnvironment({
+    imageId,
+    root,
+    docker: async (args, options = {}) => {
+      calls.push({ args, options });
+      return dockerResult(
+        args[0] === 'run' ? JSON.stringify(probeCapabilities) : 'removed',
+        options,
+      );
+    },
+  });
+  const args = calls[0].args;
+  assert.equal(args[args.indexOf('--network') + 1], 'none');
+  assert.equal(args[args.indexOf('--memory') + 1], '128m');
+  assert.equal(args[args.indexOf('--pids-limit') + 1], '64');
+  assert.equal(args[args.indexOf('--cpus') + 1], '0.25');
+  assert(args.includes('--read-only'));
+  assert(args.includes('BASH_ENV='));
+  assert(args.includes('ENV='));
+  assert(
+    !args.some((a) => ['--mount', '-v', '--volume', '--env-file'].includes(a)),
+  );
+  assert.equal(calls[0].options.timeoutSeconds, 30);
+  assert.deepEqual(calls[1].args, [
+    'rm',
+    '--force',
+    args[args.indexOf('--name') + 1],
+  ]);
+  assert.deepEqual(probe.capabilities, probeCapabilities);
+  assert.equal(probe.imageId, imageId);
+  assert.equal(
+    probe.logSha256,
+    createHash('sha256').update(readFileSync(probe.logPath)).digest('hex'),
+  );
+});
+test('Probe failures leave capabilities unknown, skip planning and always attempt cleanup', async (t) => {
+  const dir = fixture(t),
+    workDir = path.join(dir, 'source');
+  mkdirSync(workDir);
+  writeFileSync(path.join(workDir, 'app.js'), 'export const value = 1;\n');
+  for (const failure of [
+    { exitCode: 2 },
+    { timedOut: true },
+    { limited: true },
+    { output: '{invalid' },
+  ]) {
+    const calls = [];
+    await assert.rejects(
+      verifyRuntime({
+        dir,
+        workDir,
+        turnId: 'turn',
+        imageId: 'sha256:' + 'a'.repeat(64),
+        prompt: '显示结果',
+        acceptance: ['result=1'],
+        docker: async (args, options) => {
+          calls.push(args);
+          return dockerResult(
+            args[0] === 'run' ? JSON.stringify(probeCapabilities) : 'removed',
+            options,
+            args[0] === 'run' ? failure : {},
+          );
+        },
+        step: async () =>
+          assert.fail('A failed probe must not reach the planner'),
+      }),
+      /环境能力未知/,
+    );
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1], [
+      'rm',
+      '--force',
+      calls[0][calls[0].indexOf('--name') + 1],
+    ]);
+  }
+});
+test('Probe cleanup is attempted when Docker throws and cleanup failure stays visible', async (t) => {
+  const root = fixture(t),
+    imageId = 'sha256:' + 'a'.repeat(64),
+    calls = [];
+  await assert.rejects(
+    probeRuntimeEnvironment({
+      root,
+      imageId,
+      docker: async (args) => {
+        calls.push(args);
+        if (args[0] === 'run') throw Error('Docker unavailable');
+        return dockerResult('No such container', {}, { exitCode: 1 });
+      },
+    }),
+    /环境能力未知/,
+  );
+  assert.equal(calls.length, 2);
+  await assert.rejects(
+    probeRuntimeEnvironment({
+      root,
+      imageId,
+      docker: async (args, options) =>
+        args[0] === 'run'
+          ? dockerResult(JSON.stringify(probeCapabilities), options)
+          : dockerResult('cannot remove', {}, { exitCode: 1 }),
+    }),
+    /探测容器清理失败/,
+  );
+});
+test('The actual fixture CLI supplies the same probe contract without launching Docker', async (t) => {
+  const root = fixture(t),
+    cli = path.join(root, 'docker');
+  copyFileSync('tests/fixtures/pipeline-cli.cjs', cli);
+  copyFileSync('tests/fixtures/question.cjs', path.join(root, 'question.cjs'));
+  writeFileSync(path.join(root, 'package.json'), '{"type":"commonjs"}');
+  const probe = await probeRuntimeEnvironment({
+    root,
+    imageId: 'sha256:' + 'a'.repeat(64),
+    docker: async (args, options) => {
+      const result = spawnSync(process.execPath, [cli, ...args], {
+        env: { PATH: process.env.PATH, FIXTURE_BIN: root },
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 0, result.stderr);
+      return dockerResult(result.stdout, options);
+    },
+  });
+  assert.deepEqual(probe.capabilities, probeCapabilities);
 });
 test('Runtime plans require real acceptance, unique IDs and bounded execution', () => {
   assert.equal(
@@ -353,6 +539,138 @@ test('Completed verification is reusable only for identical inputs, source and i
       previousResult: { ...receipt, evaluationPrompt: 'changed' },
     }),
     null,
+  );
+  const probeLog = path.join(runDir, 'environment-probe.log');
+  writeFileSync(probeLog, JSON.stringify(probeCapabilities));
+  const withProbe = saved({
+    ...report,
+    environmentProbe: {
+      version: '2026-09-10.env1',
+      imageId: context.imageId,
+      capabilities: probeCapabilities,
+      logPath: probeLog,
+      logSha256: createHash('sha256')
+        .update(readFileSync(probeLog))
+        .digest('hex'),
+    },
+  });
+  assert.equal(reuseRuntimeVerification(withProbe, context), withProbe);
+  writeFileSync(probeLog, '{}');
+  assert.equal(reuseRuntimeVerification(withProbe, context), null);
+  writeFileSync(probeLog, JSON.stringify(probeCapabilities));
+  const differentProbeImage = saved({
+    ...report,
+    environmentProbe: { ...withProbe.environmentProbe, imageId: 'different' },
+  });
+  assert.equal(reuseRuntimeVerification(differentProbeImage, context), null);
+  const differentCapabilities = saved({
+    ...report,
+    environmentProbe: {
+      ...withProbe.environmentProbe,
+      capabilities: {
+        ...probeCapabilities,
+        pythonModules: { ...probeCapabilities.pythonModules, ensurepip: true },
+      },
+    },
+  });
+  assert.equal(reuseRuntimeVerification(differentCapabilities, context), null);
+  const outsideProbeLog = path.join(fixture(t), 'environment-probe.log');
+  copyFileSync(probeLog, outsideProbeLog);
+  const outsideProbe = saved({
+    ...report,
+    environmentProbe: {
+      ...withProbe.environmentProbe,
+      logPath: outsideProbeLog,
+    },
+  });
+  assert.equal(reuseRuntimeVerification(outsideProbe, context), null);
+});
+test('Setup dependency failure remains blocked with bound probe evidence and untouched original source', async (t) => {
+  const dir = fixture(t),
+    workDir = path.join(dir, 'source'),
+    calls = [],
+    setup = {
+      ...spec,
+      id: 'setup_browser',
+      kind: 'setup',
+      codeEvidence: '无',
+      command: 'prepare test browser',
+    };
+  mkdirSync(workDir);
+  writeFileSync(path.join(workDir, 'app.py'), 'print(1)\n');
+  const report = await verifyRuntime({
+    dir,
+    workDir,
+    turnId: 'turn',
+    imageId: 'sha256:' + 'a'.repeat(64),
+    prompt: '显示结果',
+    acceptance: ['result=1'],
+    docker: async (args, options) => {
+      calls.push(args);
+      if (args.includes('annotation.verification-probe=true'))
+        return dockerResult(JSON.stringify(probeCapabilities), options);
+      if (args[0] === 'exec')
+        return dockerResult(
+          'ENVIRONMENT_BLOCKED: browser download failed\n',
+          options,
+          {
+            exitCode: 2,
+          },
+        );
+      return dockerResult('container', options);
+    },
+    step: async (stage) => {
+      if (stage === 'runtime-running') return;
+      const tracePath = path.join(dir, stage + '.jsonl');
+      writeFileSync(tracePath, '{}\n');
+      return {
+        tracePath,
+        value:
+          stage === 'runtime-plan'
+            ? { summary: 'prepare then test', checks: [setup, spec] }
+            : {
+                summary:
+                  'browser dependency unavailable; business checks not run',
+                checks: [
+                  {
+                    id: setup.id,
+                    outcome: 'blocked',
+                    observed: 'browser download failed',
+                    evidenceLine: 1,
+                  },
+                ],
+              },
+      };
+    },
+  });
+  assert.equal(report.status, 'blocked');
+  assert.deepEqual(report.environmentProbe.capabilities, probeCapabilities);
+  assert.equal(report.checks.length, 1);
+  assert.equal(report.checks[0].outcome, 'blocked');
+  assert.equal(calls.filter((args) => args[0] === 'exec').length, 1);
+  assert.equal(calls.at(-1)[0], 'rm');
+  assert.equal(
+    readFileSync(path.join(workDir, 'app.py'), 'utf8'),
+    'print(1)\n',
+  );
+  const saved = JSON.parse(readFileSync(report.reportPath, 'utf8'));
+  assert.deepEqual(saved.environmentProbe, report.environmentProbe);
+  assert.equal(
+    report.reportSha256,
+    createHash('sha256').update(readFileSync(report.reportPath)).digest('hex'),
+  );
+  assert.throws(() =>
+    finalizeRuntimeReport(report.plan.value, report.checks, {
+      summary: 'incorrect business verdict',
+      checks: [
+        {
+          id: setup.id,
+          outcome: 'reproduced',
+          observed: 'missing browser',
+          evidenceLine: 1,
+        },
+      ],
+    }),
   );
 });
 test('Diagnosis requires real failed assertions and valid immutable logs', (t) => {

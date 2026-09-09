@@ -17,6 +17,148 @@ import {
   validateRuntimeVerdict,
 } from '../lib/runtime-verification.mjs';
 const hash = (b) => createHash('sha256').update(b).digest('hex');
+const environmentProbeVersion = '2026-09-10.env1';
+const environmentCommands = [
+  'bash',
+  'node',
+  'npm',
+  'python3',
+  'pip',
+  'pip3',
+  'apt-get',
+  'apk',
+  'dnf',
+  'yum',
+  'chromium',
+  'chromium-browser',
+  'google-chrome',
+  'firefox',
+];
+const pythonModules = ['venv', 'ensurepip', 'pip', 'playwright'];
+// This fixed probe only reports capabilities; it never runs project code or
+// package-manager commands, reads credentials, or installs dependencies.
+const environmentProbeCommand = `set -Eeuo pipefail
+printf '{"commands":{'
+separator=''
+for tool in ${environmentCommands.join(' ')}; do
+  available=false
+  if command -v "$tool" >/dev/null 2>&1; then available=true; fi
+  printf '%s"%s":%s' "$separator" "$tool" "$available"
+  separator=','
+done
+printf '},"pythonModules":'
+if command -v python3 >/dev/null 2>&1; then
+  python3 -I -B -c 'import importlib.util, json; print(json.dumps({name: importlib.util.find_spec(name) is not None for name in ${JSON.stringify(pythonModules)}}))'
+else
+  printf 'null'
+fi
+printf '}\\n'`;
+function parseEnvironmentCapabilities(output) {
+  const value = JSON.parse(output);
+  const booleanFields = (v, fields) =>
+    v &&
+    typeof v === 'object' &&
+    Object.keys(v).length === fields.length &&
+    fields.every((key) => typeof v[key] === 'boolean');
+  if (
+    !value ||
+    Object.keys(value).length !== 2 ||
+    !booleanFields(value.commands, environmentCommands) ||
+    (value.commands.python3
+      ? !booleanFields(value.pythonModules, pythonModules)
+      : value.pythonModules !== null)
+  )
+    throw Error('环境能力记录格式无效');
+  return value;
+}
+export async function probeRuntimeEnvironment({
+  imageId,
+  root,
+  onChild = () => {},
+  docker = runDocker,
+}) {
+  if (!/^sha256:[a-f0-9]{64}$/.test(imageId || ''))
+    throw Error('独立镜像环境探测缺少不可变镜像 ID');
+  const name = 'annotation-verify-probe-' + randomUUID(),
+    logPath = path.join(root, 'environment-probe.log');
+  let probe, failure;
+  try {
+    const run = await docker(
+      [
+        'run',
+        '--rm',
+        '--name',
+        name,
+        '--label',
+        'annotation.verification-probe=true',
+        '--network',
+        'none',
+        '--read-only',
+        '--cap-drop',
+        'ALL',
+        '--cpus',
+        '0.25',
+        '--memory',
+        '128m',
+        '--pids-limit',
+        '64',
+        '--user',
+        '0:0',
+        '--security-opt',
+        'no-new-privileges',
+        '--env',
+        'BASH_ENV=',
+        '--env',
+        'ENV=',
+        '--workdir',
+        '/',
+        '--entrypoint',
+        '/bin/bash',
+        imageId,
+        '--noprofile',
+        '--norc',
+        '-c',
+        environmentProbeCommand,
+      ],
+      { timeoutSeconds: 30, onChild, logPath },
+    );
+    if (run.exitCode !== 0 || run.timedOut || run.limited)
+      throw Error('独立镜像环境探测失败，环境能力未知；日志：' + logPath);
+    let capabilities;
+    try {
+      capabilities = parseEnvironmentCapabilities(run.output);
+    } catch {
+      throw Error('独立镜像环境探测输出无效，环境能力未知；日志：' + logPath);
+    }
+    probe = {
+      version: environmentProbeVersion,
+      imageId,
+      capabilities,
+      logPath,
+      logSha256: run.logSha256,
+      checkedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    failure = error.message.includes('环境能力未知')
+      ? error
+      : Error('独立镜像环境探测失败，环境能力未知；日志：' + logPath);
+  } finally {
+    // Killing a timed-out Docker client does not stop its container. Always
+    // remove this exact probe name, including startup and parsing failures.
+    try {
+      const cleanup = await docker(['rm', '--force', name]);
+      if (
+        cleanup.exitCode !== 0 &&
+        !cleanup.output.includes('No such container')
+      )
+        failure = Error('独立镜像探测容器清理失败；容器：' + name);
+    } catch {
+      failure = Error('独立镜像探测容器清理失败；容器：' + name);
+    }
+  }
+  if (failure) throw failure;
+  return probe;
+}
 const ignored =
   /(^|\/)(\.git|node_modules|\.venv|venv|__pycache__|\.next|\.claude|\.codex|\.env[^/]*|.ssh|.npmrc|.netrc|credentials[^/]*|[^/]*\.(pem|key|p12))($|\/)/i;
 export function copyVerificationSource(source, dest) {
@@ -121,6 +263,25 @@ export function reuseRuntimeVerification(report, context) {
       ...report.checks.map((c) => c.logPath),
     ])
       if (!withinTask(file) || !lstatSync(file).isFile()) return null;
+    // Older valid reports did not collect a probe. New reports must retain
+    // their exact capability evidence, bound to the same immutable image.
+    if (report.environmentProbe) {
+      const probe = report.environmentProbe;
+      if (
+        probe.version !== environmentProbeVersion ||
+        probe.imageId !== context.imageId ||
+        !withinTask(probe.logPath) ||
+        !lstatSync(probe.logPath).isFile()
+      )
+        return null;
+      const output = readFileSync(probe.logPath, 'utf8');
+      if (
+        hash(output) !== probe.logSha256 ||
+        JSON.stringify(parseEnvironmentCapabilities(output)) !==
+          JSON.stringify(probe.capabilities)
+      )
+        return null;
+    }
     const execution = JSON.parse(readFileSync(report.executionPath, 'utf8'));
     if (
       JSON.stringify(execution.plan) !== JSON.stringify(report.plan.value) ||
@@ -316,6 +477,7 @@ export async function verifyRuntime({
   acceptance,
   step,
   onChild = () => {},
+  docker = runDocker,
 }) {
   if (!/^sha256:[a-f0-9]{64}$/.test(imageId || ''))
     throw Error('独立验收缺少不可变镜像 ID');
@@ -327,9 +489,17 @@ export async function verifyRuntime({
     path.join(root, 'source-manifest.json'),
     JSON.stringify(manifest, null, 2),
   );
+  const environmentProbe = await probeRuntimeEnvironment({
+    imageId,
+    root,
+    onChild,
+    docker,
+  });
+  const environmentInstructions = `执行器已在相同不可变镜像的独立、无挂载、无网络探测容器实测环境能力：${JSON.stringify(environmentProbe.capabilities)}。此探测未安装依赖，正式验收容器仍从同一原始镜像重新启动；命令或模块存在不代表依赖完整、网络下载可用或浏览器能启动。Python venv 模块存在而 ensurepip 缺失时，不能直接依赖 python3 -m venv 创建带 pip 的环境。若 Node/npm 可用，浏览器验收可优先通过 npm 在 /tmp 下的独立目录安装 Playwright，Python 业务本身仍可用已有 Python 启动；若选 Python 验收工具链，须先在 setup 补齐 venv、ensurepip 和 pip。不要为测试工具链缺失要求修改业务源码，也不要重复执行已知缺前提的安装方式就结束验收。浏览器包、浏览器二进制及系统依赖需要分别准备，并在 setup 中真实启动 headless 浏览器验证；安装或启动失败属于环境 blocked，不是业务 Bug。\n`;
   const plan = await step(
     'runtime-plan',
-    `先完整阅读当前项目代码，结合原题验收找出疑似真实缺陷，再设计可运行的验收和复现脚本。原题：${prompt}\n验收条件：${JSON.stringify(acceptance)}\n执行器会在镜像 ${imageId} 的独立 Docker 容器运行你的 Bash 命令，执行方式固定为 /bin/bash --noprofile --norc -c，BASH_ENV 和 ENV 清空，不加载 shell 启动文件；支持 ERR trap 和 pipefail。工作目录 /workspace 是当前项目的代码副本；原始产物和 Claude 轨迹不会被挂载。不得调用 Claude、Codex、Docker 或访问宿主机。仅使用本地合成测试数据和回环地址，不访问真实业务服务、凭据，不发布或推送。缺失的依赖可在 setup 步骤安装，不要求特定包管理器。排除清单：${JSON.stringify(manifest.omitted)}。\n命令按顺序在同一个容器执行，可以启动后台服务并等待就绪；每一步新 Bash 进程，上一检查步骤 export 的环境变量不会继承，需要的变量应在当前命令内设置。写临时测试或浏览器脚本到 /tmp，不能改项目源码或测试来让结果通过。网页任务须实际启动服务并用 HTTP 或可用的 headless 浏览器验证原题关键流程；适合浏览器的交互不能仅用静态源码或 HTTP 200 代替，需要时在 setup 安装浏览器依赖。至少一个 acceptance 步骤覆盖原题主要行为，每个疑似缺陷单独一个 reproduction 步骤，必须调用真实项目逻辑。check.requirement 写原题已有要求，codeEvidence 提供 1 至 8 个当前目录内相对文件路径:行号，多个引用用分号分隔，每个路径及行号都必须真实存在；setup 可写无。id 以小写字母开头，只含小写字母、数字、下划线或连字符，1 至 128 位且各步唯一。预期、实际、断言结果必须打印。业务断言失败退出码 1，通过退出码 0，环境故障打印清晰原因退出码 2；不要故意打印失败冒充复现，不把无关功能要求当缺陷。首次发现的静态问题未运行前都只是怀疑。总时限最多 900 秒，最多 8 步，每步最多 300 秒。若无法运行，用明确报告阻塞原因并退出 2 的 acceptance 命令，不编造通过。`,
+    environmentInstructions +
+      `先完整阅读当前项目代码，结合原题验收找出疑似真实缺陷，再设计可运行的验收和复现脚本。原题：${prompt}\n验收条件：${JSON.stringify(acceptance)}\n执行器会在镜像 ${imageId} 的独立 Docker 容器运行你的 Bash 命令，执行方式固定为 /bin/bash --noprofile --norc -c，BASH_ENV 和 ENV 清空，不加载 shell 启动文件；支持 ERR trap 和 pipefail。工作目录 /workspace 是当前项目的代码副本；原始产物和 Claude 轨迹不会被挂载。不得调用 Claude、Codex、Docker 或访问宿主机。仅使用本地合成测试数据和回环地址，不访问真实业务服务、凭据，不发布或推送。缺失的依赖可在 setup 步骤安装，不要求特定包管理器。排除清单：${JSON.stringify(manifest.omitted)}。\n命令按顺序在同一个容器执行，可以启动后台服务并等待就绪；每一步新 Bash 进程，上一检查步骤 export 的环境变量不会继承，需要的变量应在当前命令内设置。写临时测试或浏览器脚本到 /tmp，不能改项目源码或测试来让结果通过。网页任务须实际启动服务并用 HTTP 或可用的 headless 浏览器验证原题关键流程；适合浏览器的交互不能仅用静态源码或 HTTP 200 代替，需要时在 setup 安装浏览器依赖。至少一个 acceptance 步骤覆盖原题主要行为，每个疑似缺陷单独一个 reproduction 步骤，必须调用真实项目逻辑。check.requirement 写原题已有要求，codeEvidence 提供 1 至 8 个当前目录内相对文件路径:行号，多个引用用分号分隔，每个路径及行号都必须真实存在；setup 可写无。id 以小写字母开头，只含小写字母、数字、下划线或连字符，1 至 128 位且各步唯一。预期、实际、断言结果必须打印。业务断言失败退出码 1，通过退出码 0，环境故障打印清晰原因退出码 2；不要故意打印失败冒充复现，不把无关功能要求当缺陷。首次发现的静态问题未运行前都只是怀疑。总时限最多 900 秒，最多 8 步，每步最多 300 秒。若无法运行，用明确报告阻塞原因并退出 2 的 acceptance 命令，不编造通过。`,
     workDir,
   );
   validateRuntimePlan(plan.value);
@@ -338,7 +508,7 @@ export async function verifyRuntime({
   const name = 'annotation-verify-' + randomUUID(),
     runs = [];
   try {
-    const start = await runDocker(
+    const start = await docker(
       [
         'run',
         '--detach',
@@ -374,7 +544,7 @@ export async function verifyRuntime({
     for (const c of plan.value.checks) {
       await step('runtime-running', c.id, workDir);
       const logPath = path.join(root, c.id + '.log');
-      const run = await runDocker(runtimeCommandArgs(name, c.command), {
+      const run = await docker(runtimeCommandArgs(name, c.command), {
         timeoutSeconds: c.timeoutSeconds,
         onChild,
         logPath,
@@ -391,7 +561,7 @@ export async function verifyRuntime({
         break;
     }
   } finally {
-    const cleanup = await runDocker(['rm', '--force', name]);
+    const cleanup = await docker(['rm', '--force', name]);
     if (cleanup.exitCode !== 0 && !cleanup.output.includes('No such container'))
       throw Error('验收容器清理失败：' + cleanup.output.slice(-500));
   }
@@ -413,6 +583,7 @@ export async function verifyRuntime({
     ...finalizeRuntimeReport(plan.value, runs, diagnosis.value),
     inputDigest: runtimeInputDigest({ imageId, prompt, acceptance }),
     imageId,
+    environmentProbe,
     sourceManifest: manifest,
     plan,
     diagnosis,

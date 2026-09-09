@@ -11,6 +11,35 @@ if (a.includes('--version')) {
   process.exit(0);
 }
 if (name === 'docker') {
+  if (a[0] === 'run' && a.includes('annotation.verification-probe=true')) {
+    console.log(
+      JSON.stringify({
+        commands: {
+          bash: true,
+          node: true,
+          npm: true,
+          python3: true,
+          pip: false,
+          pip3: false,
+          'apt-get': true,
+          apk: false,
+          dnf: false,
+          yum: false,
+          chromium: false,
+          'chromium-browser': false,
+          'google-chrome': false,
+          firefox: false,
+        },
+        pythonModules: {
+          venv: true,
+          ensurepip: false,
+          pip: false,
+          playwright: false,
+        },
+      }),
+    );
+    process.exit(0);
+  }
   const GiB = 2 ** 30,
     memoryLimitBytes =
       (process.env.RUNNER_RESOURCE_PROFILE === 'lightweight' ? 1.5 : 3) * GiB,
