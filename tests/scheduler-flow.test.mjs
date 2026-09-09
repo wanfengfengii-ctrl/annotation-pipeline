@@ -12,8 +12,7 @@ const f = fixture('docker-scheduler', {
     FIXTURE_DOCKER_GB: '8',
     FIXTURE_STOP_PROJECT: '1',
     RUNNER_RESOURCE_PROFILE: 'lightweight',
-    // Span the resource cache's 15-second refresh after the first VM probe.
-    FIXTURE_CLAUDE_DELAY_MS: '20000',
+    FIXTURE_CLAUDE_DELAY_MS: '6000',
   }),
   original = (await api('/api/scheduler', null, 'GET')).config;
 let child;
