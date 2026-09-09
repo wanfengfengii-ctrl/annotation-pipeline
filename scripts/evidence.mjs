@@ -10,6 +10,8 @@ import {
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+const hashFile = (file) =>
+  createHash('sha256').update(readFileSync(file)).digest('hex');
 export function verifyScoreEvidence(value, workDir, dir) {
   const roots = [realpathSync(workDir), realpathSync(dir)];
   for (let i = 0; i < 5; i++) {
@@ -87,6 +89,20 @@ export function createEvidenceArchive({
     }
   }
   add(tracePath, 'claude.jsonl');
+  const runtime = automation.runtimeVerification;
+  if (runtime) {
+    if (hashFile(runtime.reportPath) !== runtime.reportSha256)
+      throw Error('独立验收报告摘要不一致');
+    add(runtime.reportPath, 'runtime/report.json');
+    add(runtime.executionPath, 'runtime/execution.json');
+    for (const c of runtime.checks) {
+      if (hashFile(c.logPath) !== c.logSha256)
+        throw Error('独立验收日志摘要不一致');
+      add(c.logPath, 'runtime/' + c.id + '.log');
+    }
+    add(runtime.plan.tracePath, 'runtime/plan.jsonl');
+    add(runtime.diagnosis.tracePath, 'runtime/diagnosis.jsonl');
+  }
   const native = path.join(dir, turnId + '.native.jsonl');
   if (existsSync(native)) add(native, 'claude-native.jsonl');
   for (const [key, value] of Object.entries(automation)) {
@@ -240,6 +256,19 @@ export function reviewEvidence({ dir, turnId, tracePath }) {
     readFileSync(path.join(stageDir, 'manifest.json'), 'utf8'),
   );
   const items = [];
+  if (existsSync(path.join(stageDir, 'runtime/report.json'))) {
+    const full = readFileSync(
+      path.join(stageDir, 'runtime/report.json'),
+      'utf8',
+    );
+    items.push({
+      id: 'runtime',
+      label: '独立运行验收与复现证据',
+      content: full.slice(0, 16000),
+      truncated: full.length > 16000,
+      originalPath: path.join(stageDir, 'runtime/report.json'),
+    });
+  }
   for (const [id, label, name, limit, originalPath] of [
     ['trace', '本轮执行轨迹', 'claude.jsonl', 24000, tracePath],
     [

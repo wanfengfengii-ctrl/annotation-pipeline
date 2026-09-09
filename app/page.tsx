@@ -388,7 +388,7 @@ export default function Home() {
             ['任务准备 · Codex', '准备项目骨架、任务与验收条件'],
             ['环境快照 · Codex + gh', '核验镜像、初始代码与参考提交'],
             ['终端执行', '初始题 + 最多两次修复'],
-            ['自动评分 · Codex', '依据轨迹与产物评分'],
+            ['独立验收与评分 · Codex', '读代码、运行复现并依据证据评分'],
             ['校验与交付 · Codex', '生成带 AI 来源的交付包'],
           ].map(([title, desc], i) => (
             <div className="flow-step" key={title}>
@@ -1286,6 +1286,9 @@ function TurnPanel({
                 policy: 'Codex 禁出、雷同与难度审核',
                 snapshot: 'Codex 容器环境检查与 GitHub 参考快照',
                 claude: 'Claude 执行',
+                'runtime-plan': 'Codex 阅读代码并制定复现计划',
+                'runtime-running': '独立容器运行验收与复现',
+                'runtime-diagnose': 'Codex 核对实际复现结果',
                 score: 'Codex 五维评分',
                 delivery: 'Codex 校验与交付',
               } as Record<string, string>
@@ -1379,6 +1382,56 @@ function TurnPanel({
           {r.automation?.bundlePath && (
             <p className="sub mono">本机交付包：{r.automation.bundlePath}</p>
           )}
+        </section>
+      )}
+      {r.automation?.runtimeVerification && (
+        <section className="section">
+          <h3>
+            独立运行验收 ·{' '}
+            {
+              (
+                {
+                  passed: '已执行检查通过',
+                  bugs: '已复现业务缺陷',
+                  blocked: '验收阻塞',
+                } as Record<string, string>
+              )[r.automation.runtimeVerification.status]
+            }
+          </h3>
+          <p className="sub">{r.automation.runtimeVerification.summary}</p>
+          <p className="sub">
+            在隔离代码副本中运行，原始产物和 Claude
+            轨迹保持原样。通过仅表示已执行的检查通过。
+          </p>
+          {r.automation.runtimeVerification.checks.map((c: any) => (
+            <details key={c.id} className="section">
+              <summary>
+                {c.id} ·{' '}
+                {
+                  (
+                    {
+                      passed: '通过',
+                      reproduced: '已复现',
+                      not_reproduced: '未复现',
+                      blocked: '阻塞',
+                    } as Record<string, string>
+                  )[c.outcome]
+                }{' '}
+                · 退出码 {c.exitCode ?? '未正常退出'}
+              </summary>
+              <p className="sub">原题要求：{c.requirement}</p>
+              <p className="sub">预期：{c.expected}</p>
+              <p className="sub">实际：{c.observed}</p>
+              <p className="sub mono">代码：{c.codeEvidence}</p>
+              <pre className="sub mono">{c.command}</pre>
+              <p className="sub mono">
+                本机日志：{c.logPath}:{c.evidenceLine}
+              </p>
+            </details>
+          ))}
+          <p className="sub mono">
+            本机报告：{r.automation.runtimeVerification.reportPath}
+          </p>
         </section>
       )}
       {r.review?.source === 'codex' && (

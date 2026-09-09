@@ -35,6 +35,11 @@ import {
 import { githubSnapshot, githubStatus } from './github-snapshot.mjs';
 import { resources, fingerprint, supplyDecision } from './scheduler.mjs';
 import { codexStage } from './codex-stages.mjs';
+import { verifyRuntime } from './runtime-verification.mjs';
+import {
+  runtimeVersion,
+  runtimeRepairEvidence,
+} from '../lib/runtime-verification.mjs';
 import { execFileSync } from 'node:child_process';
 import {
   readFileSync,
@@ -178,6 +183,7 @@ async function execute({ task, turn }) {
   persist();
   let automation = {
     workflowVersion: workflow.version,
+    runtimeVersion,
     questionRuleVersion: questionRules.version,
   };
   let preparation = cached.prepare;
@@ -205,6 +211,44 @@ async function execute({ task, turn }) {
       jobToken: turn.jobToken,
       stage: name,
     });
+    if (name === 'runtime-running') return;
+    if (['score', 'project-next', 'next', 'delivery'].includes(name)) {
+      prompt +=
+        '\n独立运行验收（不得将其工具调用归为 Claude 的行为）：' +
+        JSON.stringify(
+          automation.runtimeVerification
+            ? {
+                status: automation.runtimeVerification.status,
+                summary: automation.runtimeVerification.summary,
+                reportPath: automation.runtimeVerification.reportPath,
+                checks: automation.runtimeVerification.checks.map(
+                  ({
+                    id,
+                    kind,
+                    outcome,
+                    requirement,
+                    expected,
+                    observed,
+                    codeEvidence,
+                    logPath,
+                    evidenceLine,
+                  }) => ({
+                    id,
+                    kind,
+                    outcome,
+                    requirement,
+                    expected,
+                    observed,
+                    codeEvidence,
+                    logPath,
+                    evidenceLine,
+                  }),
+                ),
+              }
+            : null,
+        ) +
+        '\nBug 修复题只能覆盖其中 outcome=reproduced 的原题缺陷，结构化 repairCheckIds 填对应检查 id，非 repair 时填空数组，不把技术 id 塞进题目正文；没有已复现缺陷不能生成 repair，有已复现缺陷且修复额度尚有余量时必须优先 repair。静态怀疑、未复现和环境阻塞不能生成 Bug 题。';
+    }
     if (cached[name] && name !== 'policy' && name !== 'snapshot')
       return cached[name];
     const value = await codexStage({
@@ -219,6 +263,11 @@ async function execute({ task, turn }) {
     return value;
   }
   async function planFollowup() {
+    if (
+      !automation.runtimeVerification ||
+      automation.runtimeVerification.status === 'blocked'
+    )
+      throw Error('缺少完成的独立运行验收，不能自动出后续题');
     if (!canAddTurn(task) && sessionTurns(task, turn).length >= 3) {
       delete automation.nextError;
       return;
@@ -253,6 +302,11 @@ async function execute({ task, turn }) {
         result.workDir,
         { allocation: { category: allocatedCategory } },
       );
+      if (
+        next.value.action === 'repair' &&
+        !runtimeRepairEvidence({ automation })
+      )
+        throw Error('没有已复现的业务缺陷，不能生成 Bug 修复题');
       cached.next = next;
       persist();
       automation.next = next;
@@ -270,6 +324,11 @@ async function execute({ task, turn }) {
         next.value.action === 'complete'
       )
         throw Error('截断轮次不能直接判定为完整结束');
+      if (
+        next.value.action === 'repair' &&
+        !runtimeRepairEvidence({ automation })
+      )
+        throw Error('没有已复现的业务缺陷，不能生成 Bug 修复题');
       cached.next = next;
       persist();
       automation.next = next;
@@ -566,6 +625,26 @@ async function execute({ task, turn }) {
       if (permissionIssues(result).length)
         throw Error(permissionIssues(result).join('；'));
       // A completed call with invalid runtime context must not be replayed on retry.
+
+      delete cached.score;
+      delete cached.delivery;
+      delete cached.next;
+      automation.runtimeVerification = await verifyRuntime({
+        workDir: result.workDir,
+        dir,
+        turnId: turn.id + '.attempt-' + cached.attempt,
+        imageId: result.container.imageId,
+        prompt: result.evaluationPrompt || preparation.value.prompt,
+        acceptance: preparation.value.acceptance,
+        step,
+        onChild,
+      });
+      cached.runtimeVerification = automation.runtimeVerification;
+      persist();
+      if (automation.runtimeVerification.status === 'blocked')
+        throw Error(
+          '独立运行验收阻塞：' + automation.runtimeVerification.summary,
+        );
 
       const score = await step(
         'score',
@@ -958,6 +1037,7 @@ try {
         dailyLimit: context.config.dailyLimit,
         repoCount: context.repos.length,
         workflowVersion: workflow.version,
+        runtimeVerificationVersion: runtimeVersion,
         docker,
         residentContainers: containers.residents().length,
         mix: context.mix,

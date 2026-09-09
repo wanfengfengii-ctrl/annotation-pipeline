@@ -155,6 +155,8 @@ export type Turn = {
   evaluationPrompt?: string;
   executionOutcome?: 'complete' | 'truncated' | 'error';
   automation?: {
+    runtimeVersion?: string;
+    runtimeVerification?: any;
     preparation?: any;
     policy?: any;
     snapshot?: any;
@@ -269,6 +271,13 @@ export function issues(t: Task, r: Turn) {
   if (!r.tracePath) e.push('缺少轨迹文件位置');
   if (!r.review?.reviewer.trim()) e.push('未填写评分人');
   if (r.review?.source === 'codex') {
+    if (
+      r.automation?.runtimeVersion &&
+      (!r.automation.runtimeVerification?.executed ||
+        !['passed', 'bugs'].includes(r.automation.runtimeVerification.status) ||
+        !r.automation.runtimeVerification.reportSha256)
+    )
+      e.push('独立运行验收未完成或存在环境阻塞');
     if (r.automation?.workflowVersion && !r.automation.archive)
       e.push('证据归档尚未完成');
     if (!r.automation?.delivery?.value?.passed || !r.automation?.bundlePath)

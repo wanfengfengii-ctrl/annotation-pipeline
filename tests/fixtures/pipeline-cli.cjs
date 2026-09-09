@@ -11,6 +11,15 @@ if (a.includes('--version')) {
   process.exit(0);
 }
 if (name === 'docker') {
+  if (a[0] === 'exec') {
+    const bug = a.at(-1).includes('__runtime_bug__');
+    console.log(
+      bug
+        ? 'synthetic assertion expected=4 actual=3'
+        : 'synthetic runtime check passed',
+    );
+    process.exit(bug ? 1 : 0);
+  }
   console.log(
     JSON.stringify(
       a[0] === 'info'
@@ -80,6 +89,8 @@ process.stdin.on('end', () => {
       'delivery',
       'next',
       'project-next',
+      'runtime-plan',
+      'runtime-diagnose',
     ].find((s) => schema.endsWith('.' + s + '.schema.json'));
   fs.appendFileSync(
     process.env.FIXTURE_LOG,
@@ -109,6 +120,37 @@ process.stdin.on('end', () => {
       ]).flat(),
     ];
   const values = {
+    'runtime-plan': {
+      summary: 'synthetic independent runtime plan',
+      checks: [
+        {
+          id: 'check',
+          kind: 'acceptance',
+          command:
+            !process.env.FIXTURE_STOP_PROJECT && cats[count] === 'Bug 修复'
+              ? '__runtime_bug__'
+              : '__runtime_pass__',
+          expected: '4',
+          requirement: 'synthetic existing requirement',
+          codeEvidence: '.fixture-count:1',
+          timeoutSeconds: 5,
+        },
+      ],
+    },
+    'runtime-diagnose': {
+      summary: 'synthetic independent runtime diagnosis',
+      checks: [
+        {
+          id: 'check',
+          outcome:
+            !process.env.FIXTURE_STOP_PROJECT && cats[count] === 'Bug 修复'
+              ? 'reproduced'
+              : 'passed',
+          observed: 'synthetic runtime result',
+          evidenceLine: 1,
+        },
+      ],
+    },
     scaffold: {
       stack: 'fixture',
       summary: '用于测试的最小项目骨架',
@@ -177,8 +219,17 @@ process.stdin.on('end', () => {
       checks: ['fixture'],
       summary: 'synthetic verified',
     },
-    next: { action: 'complete', prompt: '无', reason: 'fixture complete' },
+    next: {
+      action: 'complete',
+      prompt: '无',
+      reason: 'fixture complete',
+      repairCheckIds: [],
+    },
     'project-next': {
+      repairCheckIds:
+        !process.env.FIXTURE_STOP_PROJECT && cats[count] === 'Bug 修复'
+          ? ['check']
+          : [],
       action:
         process.env.FIXTURE_STOP_PROJECT || !cats[count]
           ? 'complete'

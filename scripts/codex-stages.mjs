@@ -4,6 +4,10 @@ import path from 'node:path';
 import { validateScaffold } from './project-scaffold.mjs';
 import { codexTurnIds } from '../lib/harness.mjs';
 import {
+  validateRuntimePlan,
+  validateRuntimeVerdict,
+} from '../lib/runtime-verification.mjs';
+import {
   writingInstructions,
   checkWriting,
   assertWritingRevision,
@@ -18,6 +22,40 @@ const schema = (properties) => ({
   additionalProperties: false,
 });
 export const schemas = {
+  'runtime-plan': schema({
+    summary: str,
+    checks: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 8,
+      items: schema({
+        id: str,
+        kind: { type: 'string', enum: ['setup', 'acceptance', 'reproduction'] },
+        command: str,
+        expected: str,
+        requirement: str,
+        codeEvidence: str,
+        timeoutSeconds: { type: 'integer', minimum: 1, maximum: 300 },
+      }),
+    },
+  }),
+  'runtime-diagnose': schema({
+    summary: str,
+    checks: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 8,
+      items: schema({
+        id: str,
+        outcome: {
+          type: 'string',
+          enum: ['passed', 'reproduced', 'not_reproduced', 'blocked'],
+        },
+        observed: str,
+        evidenceLine: { type: 'integer', minimum: 1 },
+      }),
+    },
+  }),
   scaffold: schema({
     stack: str,
     summary: str,
@@ -34,6 +72,7 @@ export const schemas = {
     },
   }),
   'project-next': schema({
+    repairCheckIds: strings,
     action: {
       type: 'string',
       enum: ['advance', 'repair', 'continue', 'complete', 'needs_input'],
@@ -57,6 +96,7 @@ export const schemas = {
     projectEvidence: str,
   }),
   next: schema({
+    repairCheckIds: strings,
     action: {
       type: 'string',
       enum: ['complete', 'repair', 'continue', 'needs_input'],
@@ -156,6 +196,8 @@ export const schemas = {
   }),
 };
 export function validateStage(stage, v) {
+  if (stage === 'runtime-plan') return validateRuntimePlan(v);
+  if (stage === 'runtime-diagnose') return validateRuntimeVerdict(v);
   if (!v || typeof v !== 'object' || Array.isArray(v))
     throw new Error('Codex 未返回 JSON 对象');
   if (stage === 'scaffold') return validateScaffold(v);
