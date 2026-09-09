@@ -17,6 +17,8 @@ import {
   prepareTerminal,
   launchTerminal,
   connectTerminal,
+  terminalOutput,
+  exitCompletedTerminal,
 } from './mac-terminal.mjs';
 import { sessionLimits } from '../lib/project-series.mjs';
 import {
@@ -270,6 +272,58 @@ export function readNativeTurn(files, prompt, previousIds = []) {
     };
   }
   return null;
+}
+
+export function assertNativeSessionIdle(state, files) {
+  if (state.pending) throw Error('题目仍有待确认或执行中的输入，保留容器');
+  const completed = [];
+  for (const file of files) {
+    if (file.content && !file.content.endsWith('\n')) {
+      try {
+        JSON.parse(file.content.slice(file.content.lastIndexOf('\n') + 1));
+      } catch {
+        throw Error('原生轨迹末行尚未写完，状态未知，保留容器');
+      }
+    }
+    const events = parseNativeJSONL(file.content);
+    const userIndex = events.findLastIndex(
+      (e) =>
+        !e.isSidechain &&
+        e.type === 'user' &&
+        typeof e.message?.content === 'string',
+    );
+    if (userIndex < 0) {
+      if (events.some((e) => e.type === 'assistant' || e.type === 'user'))
+        throw Error('原生会话有无法归属的活动，保留容器');
+      continue;
+    }
+    const user = events[userIndex];
+    const after = events.slice(userIndex + 1);
+    const duration = after.findLastIndex(
+      (e) =>
+        !e.isSidechain && e.type === 'system' && e.subtype === 'turn_duration',
+    );
+    if (
+      duration < 0 ||
+      after
+        .slice(duration + 1)
+        .some((e) => e.type === 'assistant' || e.type === 'user')
+    )
+      throw Error('最后实际用户轮尚未确认完成，保留容器');
+    const result = Object.values(state.results || {}).find(
+      (r) => r.promptId === user.uuid && r.sessionId === user.sessionId,
+    );
+    if (
+      !result?.success ||
+      !result.traceExport?.verified ||
+      user.sessionId !== state.sessionId
+    )
+      throw Error('最后实际用户轮缺少已归档的成功回执，保留容器');
+    completed.push(user.uuid);
+  }
+  if (!completed.length && Object.keys(state.results || {}).length)
+    throw Error('已有调用记录但原生会话缺失，保留容器');
+  return { completedPromptIds: completed, empty: !completed.length };
 }
 
 const remoteFiles = `const fs=require('fs'),path=require('path'),crypto=require('crypto');const root=${JSON.stringify(containerTraceRoot)};function walk(dir){return fs.readdirSync(dir,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name)).flatMap(e=>{const p=path.join(dir,e.name);if(e.isSymbolicLink())throw Error('轨迹含符号链接');return e.isDirectory()?walk(p):[{name:path.relative(root,p),bytes:fs.statSync(p).size,sha256:crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')}];});}console.log(JSON.stringify(walk(root)));`;
@@ -954,20 +1008,29 @@ export class DockerRuntime {
     if (!s || s.status === 'removed') return;
     try {
       if (this.owned(s).State.Running) {
-        await this.attach(s);
-        const child = this.live.get(taskId).child;
-        await nap(500);
-        await child.stdin.write('\x04');
-        await nap(150);
+        const assertIdle = () => {
+          const current = this.load(taskId);
+          if (
+            current?.containerId !== s.containerId ||
+            current?.questionId !== s.questionId
+          )
+            throw Error('题目容器已变化，保留原容器');
+          return assertNativeSessionIdle(current, this.native(current));
+        };
         try {
-          await child.stdin.write('\x04');
+          assertIdle();
+          await this.attach(s);
+          const child = this.live.get(taskId).child;
+          s.terminalExit = await exitCompletedTerminal({
+            readOutput: (cursor) => terminalOutput(s.terminal, cursor),
+            write: (data) => child.stdin.write(data),
+            isRunning: () => this.owned(s).State.Running,
+            assertIdle,
+          });
         } catch (e) {
           if (this.owned(s).State.Running) throw e;
+          s.terminalExit = { confirmed: true, naturalExitObserved: true };
         }
-        for (let i = 0; i < 20 && this.owned(s).State.Running; i++)
-          await nap(500);
-        if (this.owned(s).State.Running)
-          throw Error('容器仍在运行，已保留；请在其终端结束当前操作后重试归档');
       }
       s.status = 'stopped';
       this.save(s);
