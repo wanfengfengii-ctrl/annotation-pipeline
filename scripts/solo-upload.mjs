@@ -25,6 +25,10 @@ import { verifyTerminalFinalization } from './terminal-finalization.mjs';
 import { applyUploadHolds, assertUploadNotHeld } from './solo-upload-holds.mjs';
 import { createSoloNativeAttachment } from './solo-native-attachment.mjs';
 import { resolveSoloNativeIdentity } from './solo-native-identity.mjs';
+import {
+  applyManualAdmissions,
+  manualAttachment,
+} from './solo-manual-admission.mjs';
 
 const project = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -132,7 +136,7 @@ export async function records(projectId = '') {
           return { ...row, eligible: false, nativeIdIssue: error.message };
         }
       });
-      return { rows: mapped, headers };
+      return { rows: applyManualAdmissions(mapped), headers };
     }
   }
   throw Error('本地数据量超过单次分页范围');
@@ -219,6 +223,8 @@ export function requireUploadFinalization(
 }
 
 export async function attachment(row, schema = {}) {
+  assertUploadNotHeld(row);
+  if (row.manualAdmission) return manualAttachment(row, submissionSecrets());
   assertUploadNotHeld(row);
   const knownSecrets = submissionSecrets();
   const tasks = await readLocal('/api/tasks');

@@ -125,6 +125,8 @@ export const schemas = {
     allowed: { type: 'boolean' },
     questionCompliant: { type: 'boolean' },
     questionChecks: strings,
+    wordingRequirements: strings,
+    wordingDuplicatePairs: strings,
     workflowFeatures: strings,
     businessDetails: strings,
     simpleFeatures: strings,

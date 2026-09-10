@@ -820,3 +820,27 @@ fieldset.record-filters {
     flex-basis: 100%;
   }
 }
+
+.record-table .record-solo {
+  min-width: 210px;
+  width: 210px;
+  white-space: normal;
+}
+.record-solo p {
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+}
+.record-solo [data-solo-status='passed'] {
+  background: #e0f3e8;
+  color: #16633c;
+}
+.record-solo [data-solo-status='held'],
+.record-solo [data-solo-status='needs_fix'] {
+  background: #fde9e6;
+  color: #973c31;
+}
+.record-solo [data-solo-status='blocked'],
+.record-solo [data-solo-status='uncertain'] {
+  background: #fff1cd;
+  color: #795214;
+}

@@ -1,13 +1,15 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
+import { RecordLongText } from './record-long-text';
 import {
   recordKey,
   type RecordIdentity,
   type ExportScope,
 } from '@/lib/record-selection';
 import { categories } from '@/lib/pipeline';
+import { soloStatusLabels } from '@/lib/solo-upload-status.mjs';
 import {
   recordHeaders,
   recordCategory,
@@ -32,6 +34,7 @@ export function RecordsTable({
     category: '',
     day: '',
     exports: 'all',
+    soloStatus: 'all',
     count: 0,
     page: 1,
     pageSize: 20,
@@ -231,6 +234,20 @@ export function RecordsTable({
             <option value="exact">指定次数</option>
           </select>
         </label>
+        <label className="field">
+          质检平台上传状态
+          <select
+            value={filter.soloStatus || 'all'}
+            onChange={(e) => update({ soloStatus: e.target.value })}
+          >
+            <option value="all">全部状态</option>
+            {Object.entries(soloStatusLabels).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
         {filter.exports === 'exact' && (
           <label className="field">
             次数
@@ -327,9 +344,10 @@ export function RecordsTable({
               </th>
               <th className="record-serial">序号</th>
               {recordHeaders.map((h, i) => (
-                <th key={h} className={i === 0 ? 'record-prompt' : undefined}>
-                  {h}
-                </th>
+                <Fragment key={h}>
+                  <th className={i === 0 ? 'record-prompt' : undefined}>{h}</th>
+                  {i === 0 && <th className="record-solo">质检平台上传状态</th>}
+                </Fragment>
               ))}
               <th>导出次数</th>
               <th>操作</th>
@@ -354,31 +372,28 @@ export function RecordsTable({
                     {(data.page - 1) * data.pageSize + index + 1}
                   </td>
                   {row.values.map((v, i) => (
-                    <td
-                      key={i}
-                      className={i === 0 ? 'record-prompt' : undefined}
-                    >
-                      {recordHeaders[i] === '初始环境快照' &&
-                      snapshotLink(String(v)) ? (
-                        <a
-                          href={String(v)}
-                          target="_blank"
-                          rel="noreferrer"
-                          title={String(v)}
-                        >
-                          {String(v)} ↗
-                        </a>
-                      ) : String(v).length > 100 ? (
-                        <details>
-                          <summary>{String(v).slice(0, 100)}…</summary>
-                          <pre>{v}</pre>
-                        </details>
-                      ) : v === 0 || v ? (
-                        v
-                      ) : (
-                        '—'
-                      )}
-                    </td>
+                    <Fragment key={i}>
+                      <td className={i === 0 ? 'record-prompt' : undefined}>
+                        {recordHeaders[i] === '初始环境快照' &&
+                        snapshotLink(String(v)) ? (
+                          <a
+                            href={String(v)}
+                            target="_blank"
+                            rel="noreferrer"
+                            title={String(v)}
+                          >
+                            {String(v)} ↗
+                          </a>
+                        ) : String(v).length > 100 ? (
+                          <RecordLongText text={String(v)} />
+                        ) : v === 0 || v ? (
+                          v
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      {i === 0 && <SoloUploadCell row={row} />}
+                    </Fragment>
                   ))}
                   <td>
                     <span className="tag">{row.exportCount} 次</span>
@@ -450,5 +465,45 @@ export function RecordsTable({
         人工来源及原始字段。轨迹列显示实际文件名，完整路径与快照明细保留在来源表中，文件名不代表已上传附件。
       </p>
     </section>
+  );
+}
+
+function SoloUploadCell({ row }: { row: RecordRow }) {
+  const upload = row.soloUpload;
+  const status = upload?.status || 'not_uploaded';
+  const label =
+    soloStatusLabels[status as keyof typeof soloStatusLabels] || '待核对';
+  return (
+    <td className="record-solo">
+      <span className="tag" data-solo-status={status}>
+        {label}
+      </span>
+      {upload?.remoteId && (
+        <p>
+          <a
+            href={`https://solo2.jzxhnh.com/app/submissions/${upload.remoteId}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            平台记录 #{upload.remoteId} ↗
+          </a>
+        </p>
+      )}
+      {upload?.reason && (
+        <details>
+          <summary>查看原因</summary>
+          <p>{upload.reason}</p>
+        </details>
+      )}
+      {upload?.updatedAt && (
+        <p className="sub">
+          更新于{' '}
+          {new Date(upload.updatedAt).toLocaleString('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            hour12: false,
+          })}
+        </p>
+      )}
+    </td>
   );
 }

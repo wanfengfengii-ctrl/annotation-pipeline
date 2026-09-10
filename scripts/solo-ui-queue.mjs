@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { publishSoloStatus } from './solo-status-publish.mjs';
 import { records, attachment } from './solo-upload.mjs';
 import { digest, recordKey, parseRound } from './solo-records.mjs';
 import { savePrivateJSON, SOLO_ORIGIN } from './solo-client.mjs';
@@ -33,7 +34,14 @@ const state = () => {
   return ledger;
 };
 const locked = (run) => withSoloLock(path.join(root, 'journal.lock'), run);
-const write = (value) => savePrivateJSON(statePath, value);
+const write = async (value) => {
+  savePrivateJSON(statePath, value);
+  try {
+    await publishSoloStatus(value);
+  } catch (e) {
+    console.error(e.message);
+  }
+};
 
 function packetPath(key) {
   if (!/^[\w-]+:[\w-]+$/.test(key)) throw Error('本地记录标识无效');
@@ -146,7 +154,13 @@ async function prepareUnlocked() {
       blocked.push({ key: recordKey(row), reason: row.nativeIdIssue });
       continue;
     }
-    if (!row.eligible) continue;
+    if (!row.eligible) {
+      blocked.push({
+        key: recordKey(row),
+        reason: '尚未通过原终端归档和交付校验，或记录存在审核异议',
+      });
+      continue;
+    }
     const key = recordKey(row),
       old = ledger.entries[key],
       sourceDigest = digest(row.values);
@@ -240,7 +254,7 @@ async function prepareUnlocked() {
     blocked,
     excluded: source.rows.filter((r) => !r.eligible).length,
   };
-  write(ledger);
+  await write(ledger);
   return {
     expectedAccount,
     origin: SOLO_ORIGIN,
@@ -272,16 +286,33 @@ async function markSendingUnlocked(key) {
     throw Error('记录在提交前变化或已不符合交付条件');
   const sequence = sequenceIssues(current.rows, current.headers);
   if (sequence.has(key)) throw Error(sequence.get(key));
+  const round = parseRound(p.fields['当前对话轮次排序']);
+  const sessionColumn = current.headers.indexOf('SessionID');
+  const roundColumn = current.headers.indexOf('当前对话轮次排序');
+  for (let previous = 1; previous < round; previous++) {
+    const predecessor = current.rows.find(
+      (r) =>
+        r.values[sessionColumn] === p.fields.SessionID &&
+        parseRound(r.values[roundColumn]) === previous,
+    );
+    const receipt = predecessor && ledger.entries[recordKey(predecessor)];
+    if (
+      !receipt?.remoteId ||
+      !receipt.receiptVerified ||
+      receipt.remoteStatus === 'DISCARDED'
+    )
+      throw Error('前序轮次尚未确认上传，先完成前序记录');
+  }
   const archive = await attachment(row, { attachment_max_mb: 20 });
   if (archive.sha256 !== p.attachment.sha256)
     throw Error('附件在填写后发生变化');
   entry.state = 'submitting';
   entry.submittingAt = new Date().toISOString();
-  write(ledger);
+  await write(ledger);
   return { key, state: entry.state, packetDigest: p.digest };
 }
 
-function recordReceiptUnlocked(key, receipt) {
+async function recordReceiptUnlocked(key, receipt) {
   const ledger = state(),
     p = JSON.parse(fs.readFileSync(packetPath(key), 'utf8')),
     entry = ledger.entries[key];
@@ -301,7 +332,7 @@ function recordReceiptUnlocked(key, receipt) {
     remoteUrl: SOLO_ORIGIN + '/app/submissions/' + receipt.remoteId,
     updatedAt: new Date().toISOString(),
   });
-  write(ledger);
+  await write(ledger);
   return {
     key,
     remoteId: entry.remoteId,
@@ -317,6 +348,7 @@ if (
   const [action, key, receiptPath] = process.argv.slice(2);
   Promise.resolve()
     .then(() => {
+      if (action === '--sync-status') return publishSoloStatus(state());
       if (action === '--prepare') return prepareUI();
       if (action === '--mark-sending') return markSending(key);
       if (action === '--receipt')
@@ -331,7 +363,16 @@ if (
         '用法：--prepare | --mark-sending taskId:turnId | --receipt taskId:turnId receipt.json | --block taskId:turnId 原因 | --status',
       );
     })
-    .then((r) => console.log(JSON.stringify(r, null, 2)))
+    .then(async (r) => {
+      if (action === '--block') {
+        try {
+          await publishSoloStatus(state());
+        } catch (e) {
+          console.error(e.message);
+        }
+      }
+      console.log(JSON.stringify(r, null, 2));
+    })
     .catch((e) => {
       console.error(e.message);
       process.exitCode = 1;

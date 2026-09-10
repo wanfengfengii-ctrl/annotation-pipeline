@@ -512,3 +512,19 @@ process.stdin.on('data', c=>input+=c); process.stdin.on('end',()=>{
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('题目内部去重是独立审核项，发现复述即使总判定通过也不能放行', () => {
+  assert.ok(questionRules.criteria.redundancy);
+  assert.throws(
+    () =>
+      assertQuestionAudit({
+        ...fixture.questionAudit,
+        wordingDuplicatePairs: ['按当前页位显示；与当前页位一致：同一预期重复'],
+      }),
+    /话语重复/,
+  );
+  const missing = { ...fixture.questionAudit };
+  delete missing.wordingRequirements;
+  assert.throws(() => assertQuestionAudit(missing), /逐句去重/);
+  assert.doesNotThrow(() => assertQuestionAudit(fixture.questionAudit));
+});

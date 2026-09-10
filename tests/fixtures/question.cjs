@@ -21,7 +21,13 @@ const questionAudit = {
     'implementation：没有限定架构或数据库',
     'boundary：独立联调功能，未要求改造无关项目',
     'language：无编号的项目名称和两段直接需求描述',
+    'redundancy：动作、条件、结果分别增加要求，没有同义复述',
   ],
+  wordingRequirements: [
+    '配置接收地址与请求头：新增输入操作',
+    '相同事件返回原记录：新增幂等条件',
+  ],
+  wordingDuplicatePairs: [],
   workflowFeatures: [
     '配置接收地址与请求头',
     '编辑并保存事件样例',

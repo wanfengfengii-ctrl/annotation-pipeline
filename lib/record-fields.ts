@@ -4,6 +4,7 @@ import { roundNumber } from './record-metadata.ts';
 import { formatStack } from './stack-field.mjs';
 import { formatQuestionText } from './question-text.mjs';
 import { submissionIssues } from './submission-policy.mjs';
+import { soloStatusCodes } from './solo-upload-status.mjs';
 export const recordHeaders = [
   'User Prompt',
   'SessionID',
@@ -48,6 +49,13 @@ export type RecordRow = {
   eligible: boolean;
   provenance: string;
   formatVersion?: 2;
+  soloUpload?: {
+    status: string;
+    remoteId: number | null;
+    remoteStatus: string;
+    reason: string;
+    updatedAt: string | null;
+  };
   originalFields?: {
     snapshot: string;
     tracePath: string;
@@ -212,6 +220,7 @@ export type RecordFilter = {
   category: string;
   day: string;
   exports: 'all' | 'never' | 'exported' | 'exact';
+  soloStatus?: string;
   count: number;
   page: number;
   pageSize: number;
@@ -230,6 +239,12 @@ export function recordFilter(v: Record<string, unknown>): RecordFilter {
     category: String(v.category || ''),
     day: String(v.day || ''),
     exports: (v.exports || 'all') as RecordFilter['exports'],
+    soloStatus:
+      v.soloStatus === undefined || v.soloStatus === ''
+        ? 'all'
+        : typeof v.soloStatus === 'string'
+          ? v.soloStatus
+          : 'invalid',
     count: number(v.count, 0, 1000000),
     page: number(v.page, 1, 1000000),
     pageSize: number(v.pageSize, 20, 100),
@@ -237,6 +252,7 @@ export function recordFilter(v: Record<string, unknown>): RecordFilter {
   if (
     !['ai', 'human', undefined, ''].includes(v.source as string) ||
     !['all', 'never', 'exported', 'exact'].includes(out.exports) ||
+    !['all', ...soloStatusCodes].includes(out.soloStatus!) ||
     out.query.length > 300 ||
     (out.projectId && !/^[a-zA-Z0-9_-]{1,100}$/.test(out.projectId)) ||
     out.category.length > 100 ||
