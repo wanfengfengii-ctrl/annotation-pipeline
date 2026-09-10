@@ -1597,15 +1597,18 @@ function TurnPanel({
             )}
         </div>
       )}
-      {r.status === 'failed' && !r.excluded && !canPlanDisputedTurn(t, r) && (
-        <Button
-          variant="outline"
-          disabled={busy}
-          onClick={() => run({ action: 'retry', turnId: r.id })}
-        >
-          重试失败阶段
-        </Button>
-      )}
+      {r.status === 'failed' &&
+        !r.excluded &&
+        t.turns.at(-1)?.id === r.id &&
+        !canPlanDisputedTurn(t, r) && (
+          <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() => run({ action: 'retry', turnId: r.id })}
+          >
+            重试失败阶段
+          </Button>
+        )}
       {r.excluded ? (
         <p className="sub">排除原因：{r.excludeReason}</p>
       ) : (

@@ -21,6 +21,7 @@ import {
   exitCompletedTerminal,
 } from './mac-terminal.mjs';
 import { sessionLimits } from '../lib/project-series.mjs';
+import { disputeContinuationReady } from '../lib/disputed-continuation.mjs';
 import {
   auditPermissionTraces,
   verifyPermissionPreflight,
@@ -641,11 +642,19 @@ export class DockerRuntime {
         ))
     )
       throw Error('上一题缺少合格的权限核验，不能导入其代码');
-    const retained = previous.automation?.projectContinuation?.sourceSnapshot;
-    const evidence = retained?.verified
-      ? path.dirname(retained.manifestPath)
+    const retained = disputeContinuationReady(previous)
+      ? previous.automation.projectContinuation.sourceSnapshot
+      : null;
+    const evidence = retained
+      ? path.join(path.dirname(this.file(task.id)), previous.id + '.retained')
       : path.join(path.dirname(this.file(task.id)), previous.id + '.evidence');
     const manifestPath = path.join(evidence, 'manifest.json');
+    if (
+      retained &&
+      (retained.manifestPath !== manifestPath ||
+        realpathSync(evidence) !== evidence)
+    )
+      throw Error('异常题保留代码快照不属于本任务轮次');
     const manifestBytes = readFileSync(manifestPath);
     if (retained?.verified && hash(manifestBytes) !== retained.manifestSha256)
       throw Error('异常题保留代码快照摘要不匹配');
