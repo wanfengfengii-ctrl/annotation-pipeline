@@ -7,6 +7,11 @@ import { records, attachment } from './solo-upload.mjs';
 import { digest, recordKey, parseRound } from './solo-records.mjs';
 import { savePrivateJSON, SOLO_ORIGIN } from './solo-client.mjs';
 import { withSoloLock } from './solo-lock.mjs';
+import {
+  blockUpload,
+  uploadHolds,
+  assertUploadNotHeld,
+} from './solo-upload-holds.mjs';
 
 const project = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -130,6 +135,17 @@ async function prepareUnlocked() {
   );
   const sequence = sequenceIssues(source.rows, source.headers);
   for (const row of source.rows) {
+    if (row.uploadHold) {
+      blocked.push({
+        key: recordKey(row),
+        reason: '用户已标记禁止上传 SOLO：' + row.uploadHold.reason,
+      });
+      continue;
+    }
+    if (row.nativeIdIssue) {
+      blocked.push({ key: recordKey(row), reason: row.nativeIdIssue });
+      continue;
+    }
     if (!row.eligible) continue;
     const key = recordKey(row),
       old = ledger.entries[key],
@@ -179,6 +195,7 @@ async function prepareUnlocked() {
         turnId: row.turnId,
         source: 'ai',
         provenance: row.provenance,
+        nativeIdentity: row.nativeIdentity,
         expectedAccount,
         sourceDigest,
         fields,
@@ -237,6 +254,7 @@ async function markSendingUnlocked(key) {
   const ledger = state(),
     p = JSON.parse(fs.readFileSync(packetPath(key), 'utf8')),
     entry = ledger.entries[key];
+  assertUploadNotHeld(p);
   if (entry?.remoteId || entry?.state !== 'prepared')
     throw Error('本记录已有提交结果或存在不明确提交，不能重复发送');
   if (
@@ -306,9 +324,11 @@ if (
           key,
           JSON.parse(fs.readFileSync(receiptPath, 'utf8')),
         );
-      if (action === '--status') return state();
+      if (action === '--block') return blockUpload(key, receiptPath);
+      if (action === '--status')
+        return { ...state(), uploadHolds: uploadHolds().entries };
       throw Error(
-        '用法：--prepare | --mark-sending taskId:turnId | --receipt taskId:turnId receipt.json | --status',
+        '用法：--prepare | --mark-sending taskId:turnId | --receipt taskId:turnId receipt.json | --block taskId:turnId 原因 | --status',
       );
     })
     .then((r) => console.log(JSON.stringify(r, null, 2)))

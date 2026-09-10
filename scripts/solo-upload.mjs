@@ -6,7 +6,6 @@ import {
   closeSync,
   writeFileSync,
   unlinkSync,
-  realpathSync,
 } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -20,9 +19,12 @@ import {
   readAuthentication,
 } from './solo-client.mjs';
 import { syncRecords } from './solo-sync.mjs';
-import { digest, recordKey, parseRound } from './solo-records.mjs';
+import { recordKey, parseRound } from './solo-records.mjs';
 import { sanitizeExportRows } from '../lib/export-safety.mjs';
 import { verifyTerminalFinalization } from './terminal-finalization.mjs';
+import { applyUploadHolds, assertUploadNotHeld } from './solo-upload-holds.mjs';
+import { createSoloNativeAttachment } from './solo-native-attachment.mjs';
+import { resolveSoloNativeIdentity } from './solo-native-identity.mjs';
 
 const project = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -103,7 +105,34 @@ export async function records(projectId = '') {
         ).safety.findings
       )
         throw Error('提交字段复查仍包含敏感内容');
-      return { rows: safe, headers };
+      const currentTasks = (await readLocal('/api/tasks')).tasks;
+      const promptIndex = headers.indexOf('TurnID/PromptID');
+      const mapped = applyUploadHolds(safe).map((row) => {
+        if (row.uploadHold) return row;
+        const task = currentTasks.find((t) => t.id === row.taskId);
+        const turn = task?.turns.find((t) => t.id === row.turnId);
+        if (
+          !turn?.container ||
+          (turn.harness || task.harness || 'Claude Code') !== 'Claude Code'
+        )
+          return row;
+        try {
+          if (promptIndex < 0) throw Error('缺少原生 PromptID 导出字段');
+          const nativeIdentity = resolveSoloNativeIdentity({
+            dir: path.join(root, row.taskId),
+            traceExport: turn.traceExport,
+            containerId: turn.container.containerId,
+            sessionId: turn.sessionId,
+            messageUuid: turn.promptId,
+          });
+          const values = [...row.values];
+          values[promptIndex] = nativeIdentity.promptId;
+          return { ...row, values, nativeIdentity };
+        } catch (error) {
+          return { ...row, eligible: false, nativeIdIssue: error.message };
+        }
+      });
+      return { rows: mapped, headers };
     }
   }
   throw Error('本地数据量超过单次分页范围');
@@ -190,6 +219,7 @@ export function requireUploadFinalization(
 }
 
 export async function attachment(row, schema = {}) {
+  assertUploadNotHeld(row);
   const knownSecrets = submissionSecrets();
   const tasks = await readLocal('/api/tasks');
   const t = tasks.tasks.find((t) => t.id === row.taskId),
@@ -265,26 +295,21 @@ export async function attachment(row, schema = {}) {
     dir,
     sourceArchive,
     traceExport,
-    maxBytes: (schema.attachment_max_mb || 20) * 1024 * 1024,
     knownSecrets,
   });
   if (!verified || verified.status !== 'passed')
     throw Error('完整轨迹提交包校验失败');
-  const file = submission.zipArchivePath || submission.archivePath;
-  const sha256 = submission.zipSha256 || submission.sha256;
-  if (
-    !file?.endsWith('.zip') ||
-    !realpathSync(file).startsWith(realpathSync(dir) + path.sep)
-  )
-    throw Error('轨迹附件必须为本题已校验的 ZIP 提交包');
-  const bytes = readFileSync(file);
-  if (digest(bytes) !== sha256) throw Error('提交 ZIP 摘要发生变化');
   return {
-    name: path.basename(file),
-    path: file,
-    bytes,
-    sha256,
-    status: 'passed',
+    ...createSoloNativeAttachment({
+      dir,
+      turnId: row.turnId,
+      traceExport,
+      containerId: turn.container.containerId,
+      sessionId: turn.sessionId,
+      promptId: row.nativeIdentity?.promptId,
+      knownSecrets,
+      maxBytes: (schema.attachment_max_mb || 20) * 1024 * 1024,
+    }),
     submission,
   };
 }
