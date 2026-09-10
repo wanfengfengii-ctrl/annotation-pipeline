@@ -39,6 +39,7 @@ import {
   containerTraceRoot,
   dockerSnapshot,
   resourceProfile,
+  resolveContainerImage,
 } from '../lib/container-policy.mjs';
 
 const nap = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -64,14 +65,10 @@ export function dockerStatus({ command = docker, timeout = 30000 } = {}) {
     const image = JSON.parse(
       command(['image', 'inspect', containerImage], { timeout }),
     )[0];
-    const digest = image.RepoDigests?.find((s) =>
-      s.startsWith('adminfather/benzhi-claude-code@'),
-    )?.split('@')[1];
-    if (!/^sha256:[a-f0-9]{64}$/.test(digest || ''))
-      throw Error('缺少已发布镜像摘要');
+    const resolved = resolveContainerImage(image);
     return {
+      ...resolved,
       ready: true,
-      digest,
       cpus: info.NCPU,
       memoryBytes: info.MemTotal,
       image: containerImage,
@@ -83,7 +80,8 @@ export function dockerStatus({ command = docker, timeout = 30000 } = {}) {
     return {
       ready: false,
       image: containerImage,
-      reason: 'Docker 未启动或缺少指定镜像，请启动 Docker 并拉取作业镜像',
+      reason:
+        'Docker 未启动或作业镜像不符，请启动 Docker 并按项目 Dockerfile 构建当前作业镜像',
     };
   }
 }
