@@ -3,22 +3,30 @@ import { createHash } from 'node:crypto';
 import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-export const environmentReadinessVersion = '2026-09-10.environment-ready1';
+export const environmentReadinessVersion = '2026-09-10.environment-ready2';
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 export const readinessProgram = String.raw`# ANNOTATION_ENV_READY
 import os,sys,json,tempfile,subprocess,time,venv,urllib.request,signal,hashlib
 from pathlib import Path
 cfg=json.load(sys.stdin)
+if os.getuid()!=1000: raise RuntimeError('Readiness must run as node')
 env=dict(os.environ)
 for key in list(env):
  if key.lower()=='apikey' or any(x in key.upper() for x in ['TOKEN','SECRET','API_KEY']): env.pop(key,None)
 env['PYTHONDONTWRITEBYTECODE']='1'
+cache=Path('/tmp/annotation-npm-cache')
+if cache.is_symlink(): raise RuntimeError('Npm cache must not be a symlink')
+cache.mkdir(mode=0o700,exist_ok=True)
+if cache.stat().st_uid!=os.getuid(): raise RuntimeError('Npm cache owner mismatch')
+env['npm_config_cache']=str(cache)
 def run(args,cwd=None,timeout=180):
  p=subprocess.run(args,cwd=cwd,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=timeout)
  print(p.stdout,flush=True)
  if p.returncode: raise RuntimeError('Readiness command failed: '+str(args[0])+' exit '+str(p.returncode))
  return p.stdout
 import flask,fastapi,pytest,httpx,playwright
+run(['npm','config','set','cache',str(cache),'--location=user'])
+run(['npm','cache','verify'])
 with tempfile.TemporaryDirectory() as d:
  venv.create(d,with_pip=True)
  run([d+'/bin/python','-m','pip','--version'])
@@ -61,7 +69,7 @@ if ready:
    except subprocess.TimeoutExpired: os.killpg(server.pid,signal.SIGKILL);server.wait(timeout=3)
 for name,sha in before.items():
  if hashlib.sha256((project/name).read_bytes()).hexdigest()!=sha: raise RuntimeError('Dependency setup changed source: '+name)
-print('ANNOTATION_READINESS='+json.dumps({'passed':True,'browser':True,'venv':True,'scaffold':bool(ready),'dependencies':run(['python3','-m','pip','freeze','--all']).splitlines()}))
+print('ANNOTATION_READINESS='+json.dumps({'passed':True,'uid':os.getuid(),'browser':True,'venv':True,'scaffold':bool(ready),'dependencies':run(['python3','-m','pip','freeze','--all']).splitlines()}))
 `;
 
 export function validateReadiness(value) {
