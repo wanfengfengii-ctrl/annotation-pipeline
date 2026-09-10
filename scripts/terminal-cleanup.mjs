@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { verifyTerminalFinalization } from './terminal-finalization.mjs';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRoot = path.resolve(path.dirname(scriptPath), '../.runner');
@@ -33,8 +34,8 @@ function directories(root) {
     .map((entry) => path.join(root, entry.name));
 }
 
-// Only the bridge's exited receipt is authoritative. A completed Claude turn
-// still leaves a live process for Bug follow-ups and must keep its Terminal.
+// A completed Claude turn is not a completed question. Even an exited bridge
+// keeps its window until the final trace export verifies and removal completed.
 export function exitedTerminals(root, isAlive = alive) {
   const records = [];
   for (const task of directories(root)) {
@@ -60,10 +61,18 @@ export function exitedTerminals(root, isAlive = alive) {
           isAlive(state.childPid)
         )
           continue;
+        const finalization = verifyTerminalFinalization({
+          taskDir: task,
+          questionId: path.basename(question),
+          terminal: spec,
+        });
+        if (!finalization) continue;
         records.push({
           runId: state.runId,
           tty: state.tty,
           launchPath: spec.launchPath,
+          finalizationPath: finalization.receiptPath,
+          finalizationSha256: finalization.receiptSha256,
         });
       } catch {
         // Missing or partially written receipts do not permit a close.
@@ -125,7 +134,7 @@ if (app.running()) {
       if (fresh.length !== observed.length || fresh.some((record, i) =>
         !record || record.runId !== observed[i].runId)) continue;
       app.close(window, { saving: 'no' });
-      result.closed.push(...identities);
+      result.closed.push(...identities.map(identity => ({ ...identity, closedAt: new Date().toISOString() })));
     } catch (error) {
       result.errors.push({ code: Number(error.errorNumber) || 0 });
     }

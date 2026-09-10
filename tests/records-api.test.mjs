@@ -1,7 +1,9 @@
 // Synthetic API fixtures only, on an isolated port 3001 database without a runner.
 import assert from 'node:assert/strict';
+import { unzipSync, strFromU8 } from 'fflate';
 import { permissionAuditVersion } from '../lib/permission-audit.mjs';
 import { initialCodeVersion } from '../lib/initial-code-snapshot.mjs';
+import { submissionPolicyVersion } from '../lib/submission-policy.mjs';
 import {
   containerImage,
   containerPolicyVersion,
@@ -88,6 +90,7 @@ try {
     const sessionId = 'records-session-' + i;
     const container = {
       questionId: job.turn.id,
+      containerId: 'a'.repeat(62) + i.toString(16).padStart(2, '0'),
       scaffoldSnapshot: {
         manifestPath: '/fixture/scaffold.json',
         sha256: 'c'.repeat(64),
@@ -236,6 +239,12 @@ try {
         }),
       /权限/,
     );
+    const archive = {
+      archivePath:
+        '/fixture/' + task.id + '/' + job.turn.id + '.evidence.tar.gz',
+      sha256: 'b'.repeat(64),
+      files: 1,
+    };
     await finish({
       success: true,
       sessionId,
@@ -255,13 +264,83 @@ try {
           '推理观察',
           '执行观察',
         ],
-        other: '无',
+        other: '联系人 private.person@fixture-email.local',
       },
       automation: {
         bundlePath: '/fixture/bundle',
+        archive,
         delivery: { value: { passed: true } },
       },
     });
+    const pendingFinalization = await records({ projectId: task.id });
+    assert.equal(pendingFinalization.rows.length, 1);
+    assert.equal(
+      pendingFinalization.rows[0].eligible,
+      false,
+      'scoring and intermediate export cannot bypass final submission verification',
+    );
+    const checkedAt = new Date().toISOString();
+    const finalRoot =
+      '/fixture/' + task.id + '/' + job.turn.id + '.final.traces-synthetic';
+    const submissionRoot =
+      '/fixture/' + task.id + '/' + job.turn.id + '.submission-synthetic';
+    await run({
+      action: 'submission-package',
+      taskId: task.id,
+      turnId: job.turn.id,
+      sourceArchiveSha256: archive.sha256,
+      submission: {
+        version: submissionPolicyVersion,
+        status: 'passed',
+        archivePath: submissionRoot + '.tar.gz',
+        sha256: 'c'.repeat(64),
+        zipArchivePath: submissionRoot + '.zip',
+        zipSha256: 'd'.repeat(64),
+        zipBytes: 256,
+        manifestPath: submissionRoot + '/manifest.json',
+        manifestSha256: 'e'.repeat(64),
+        files: 1,
+        redactions: [],
+        reviewRequiredFiles: [],
+        sourceArchiveSha256: archive.sha256,
+        traceExportSha256: 'f'.repeat(64),
+        verifiedAt: checkedAt,
+        finalization: {
+          version: '2026-09-10.terminal-finalization1',
+          taskId: task.id,
+          questionId: job.turn.id,
+          runId: container.terminalIdentity.runId,
+          sessionId,
+          containerId: container.containerId,
+          status: 'removed',
+          commandTransport: 'original-mac-terminal',
+          traceExport: {
+            verified: true,
+            path: finalRoot + '/projects',
+            manifestPath: finalRoot + '/manifest.json',
+            files: 1,
+            sha256: 'f'.repeat(64),
+            exportedAt: checkedAt,
+            exportKind: 'final',
+            commandTransport: 'original-mac-terminal',
+          },
+          manifestSha256: '1'.repeat(64),
+          removedAt: checkedAt,
+          emptyWithoutCalls: false,
+          receiptPath:
+            '/fixture/' +
+            task.id +
+            '/questions/' +
+            job.turn.id +
+            '/terminal/finalization.json',
+          receiptSha256: '2'.repeat(64),
+        },
+      },
+    });
+    assert.equal(
+      (await records({ projectId: task.id })).rows[0].eligible,
+      true,
+    );
     if (i === 0) {
       const t = await latest(task.id);
       assert.equal(t.turns[0].claudeAttempts.length, 10);
@@ -339,7 +418,19 @@ try {
     first = await exportFile(filter, 'page', id);
   assert.equal(first.status, 200, await first.clone().text());
   assert.equal(first.headers.get('X-Export-Count'), '10');
+  assert.equal(first.headers.get('X-Export-Originals-Preserved'), 'true');
+  assert(Number(first.headers.get('X-Export-Redactions')) >= 10);
   const bytes = new Uint8Array(await first.arrayBuffer());
+  const xml = Object.values(unzipSync(bytes))
+    .map((value) => strFromU8(value))
+    .join('\n');
+  assert(xml.includes('[REDACTED_EMAIL]'));
+  assert(!xml.includes('private.person@fixture-email.local'));
+  assert(
+    (await latest(ids[0])).turns[0].review.other.includes(
+      'private.person@fixture-email.local',
+    ),
+  );
   writeFileSync('.runner/records-fixture.xlsx', bytes);
   const again = await exportFile(filter, 'page', id);
   assert.equal(again.status, 200);
@@ -361,7 +452,10 @@ try {
   const all = await exportFile(filter, 'filtered', crypto.randomUUID(), 'csv');
   assert.equal(all.status, 200);
   assert.equal(all.headers.get('X-Export-Count'), '12');
-  assert.ok((await all.text()).startsWith('"序号","User Prompt","SessionID"'));
+  const csvText = await all.text();
+  assert.ok(csvText.startsWith('"序号","User Prompt","SessionID"'));
+  assert(csvText.includes('[REDACTED_EMAIL]'));
+  assert(!csvText.includes('private.person@fixture-email.local'));
   assert.equal((await records({ exports: 'exact', count: 2 })).total, 12);
   const selected = [data.rows[0], page2.rows[0]].map(({ taskId, turnId }) => ({
     taskId,

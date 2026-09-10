@@ -46,6 +46,11 @@ import {
   createEvidenceArchive,
   reviewEvidence,
 } from './evidence.mjs';
+import { submissionPackageVersion } from './submission-package.mjs';
+import {
+  queueFinalSubmission,
+  flushFinalSubmissions,
+} from './final-submissions.mjs';
 import { acquireLock, journalChild, livingChildren } from './recovery.mjs';
 import {
   rules,
@@ -97,6 +102,7 @@ import {
   statSync,
 } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -106,6 +112,22 @@ const token =
     /^RUNNER_TOKEN=(.+)$/m,
   )?.[1];
 const base = process.env.PIPELINE_API_URL || 'http://localhost:3000';
+function submissionSecrets(jobToken) {
+  let configured = {};
+  try {
+    configured =
+      JSON.parse(
+        readFileSync(path.join(os.homedir(), '.claude/settings.json'), 'utf8'),
+      ).env || {};
+  } catch {}
+  return [
+    token,
+    jobToken,
+    process.env.apikey,
+    configured.ANTHROPIC_AUTH_TOKEN,
+    configured.ANTHROPIC_API_KEY,
+  ].filter((value) => typeof value === 'string' && value.length >= 12);
+}
 const workRoot = path.resolve(
   process.env.RUNNER_WORK_ROOT || path.join(root, '.runner'),
 );
@@ -178,6 +200,9 @@ const containers = new DockerRuntime(
   (container) =>
     api({ action: 'container', taskId: container.taskId, container }),
   () => stopping,
+  undefined,
+  undefined,
+  (state) => queueFinalSubmission(workRoot, state),
 );
 async function executeClaude({ task, turn }) {
   try {
@@ -1109,12 +1134,23 @@ async function execute({ task, turn }) {
         tracePath: result.tracePath,
         automation,
         workDir: result.workDir,
+        traceExport: result.traceExport,
       });
+      // The question may still receive Bug followups. Build its final submission
+      // once the original Terminal exports and closes, without delaying scoring.
+      automation.submission = {
+        version: submissionPackageVersion,
+        status: 'awaiting_finalization',
+        sourceArchiveSha256: automation.archive.sha256,
+        verifiedAt: new Date().toISOString(),
+        reason: '本轮评分已完成，等待本题结束后生成最终提交副本',
+      };
       try {
         result.evidence = reviewEvidence({
           dir,
           turnId: turn.id,
           tracePath: result.tracePath,
+          archive: automation.archive,
         });
       } catch (e) {
         result.evidence = [
@@ -1392,6 +1428,12 @@ try {
         context.containerTasks || [],
         new Set(active.keys()),
       );
+      await flushFinalSubmissions({
+        workRoot,
+        api,
+        knownSecrets: submissionSecrets,
+        onError: (error) => console.error(error.reason),
+      });
       const profile = resourceProfile();
       const occupied = active.size + orphans.length + Number(!!generating);
       const resource = resources(context.config.concurrency, {

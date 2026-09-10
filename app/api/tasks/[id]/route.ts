@@ -2,6 +2,7 @@ import { repairDecision, canRepair } from '@/lib/project-series.mjs';
 import { isContinuation } from '@/lib/round-context.mjs';
 import { updateRecordMetadata } from '@/lib/record-metadata';
 import { canAddTurn } from '@/lib/project-series.mjs';
+import { submissionIssues } from '@/lib/submission-policy.mjs';
 import {
   canPlanDisputedTurn,
   blocksProject,
@@ -155,6 +156,8 @@ export async function PATCH(
     } else if (b.action === 'submit') {
       const r = t.turns.find((r) => r.id === b.turnId);
       if (!r || issues(t, r).length) throw new Error('请先通过本轮形式校验');
+      const submissionErrors = submissionIssues(t, r);
+      if (submissionErrors.length) throw Error(submissionErrors.join('；'));
       if (r.receipt) throw Error('交付回执已登记，不可覆盖历史记录');
       r.status = 'submitted';
       r.submittedAt = new Date().toISOString();

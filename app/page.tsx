@@ -1404,6 +1404,37 @@ function TurnPanel({
               {r.automation.archive.files} 个文件
             </p>
           )}
+          {r.automation?.submission && (
+            <div className="sub">
+              <strong>
+                提交副本：
+                {r.automation.submission.status === 'passed'
+                  ? '完整目录与内容检查通过'
+                  : r.automation.submission.status === 'awaiting_finalization'
+                    ? '等待本题最终导出'
+                    : r.automation.submission.status === 'needs_review'
+                      ? '有附件需要人工检查'
+                      : '待重新检查'}
+              </strong>
+              <p>
+                原始证据已保留，提交副本单独生成。内容检查覆盖已配置的敏感信息规则。
+              </p>
+              {r.automation.submission.status === 'passed' && (
+                <p className="mono">
+                  ZIP：
+                  {r.automation.submission.zipArchivePath ||
+                    r.automation.submission.archivePath}
+                  <br />
+                  SHA-256：
+                  {r.automation.submission.zipSha256 ||
+                    r.automation.submission.sha256}
+                </p>
+              )}
+              {r.automation.submission.reason && (
+                <p>{r.automation.submission.reason}</p>
+              )}
+            </div>
+          )}
           {r.automation?.next && (
             <p className="sub">
               下一步：{r.automation.next.value.action} ·{' '}

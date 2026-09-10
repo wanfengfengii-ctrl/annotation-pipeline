@@ -4,8 +4,25 @@ import { xlsx, recordsCsv } from '@/lib/xlsx';
 import { exportScope, recordSelection } from '@/lib/record-selection';
 import { terminalIssues } from '@/lib/terminal-policy.mjs';
 import { permissionIssues } from '@/lib/permission-audit.mjs';
+import { submissionIssues } from '@/lib/submission-policy.mjs';
 import { all, failure, db, protect, text } from '@/db/store';
 import { csv, type Task } from '@/lib/pipeline';
+import {
+  sanitizeExportRows,
+  sanitizeExportCsv,
+  exportSafetyHeaders,
+} from '@/lib/export-safety.mjs';
+import { env } from 'cloudflare:workers';
+const downloadOptions = () => ({
+  knownSecrets: Object.entries(env)
+    .filter(
+      ([key, value]) =>
+        /(?:TOKEN|KEY|SECRET|PASSWORD)/i.test(key) &&
+        typeof value === 'string' &&
+        value.length > 0,
+    )
+    .map(([, value]) => value as string),
+});
 export async function GET(req: Request) {
   try {
     const day = new URL(req.url).searchParams.get('day');
@@ -14,17 +31,19 @@ export async function GET(req: Request) {
     const tasks = await all();
     const source = new URL(req.url).searchParams.get('source');
     if (source && source !== 'human') throw Error('导出来源无效');
-    return new Response(
+    const safe = sanitizeExportCsv(
       csv(tasks, source === 'human' ? 'human' : 'primary', day || undefined),
-      {
-        headers: {
-          'Content-Type': 'text/csv; charset=utf-8',
-          'Content-Disposition':
-            'attachment; filename="annotation-delivery.csv"',
-          'Cache-Control': 'no-store',
-        },
-      },
+      downloadOptions(),
     );
+    return new Response(safe.text, {
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition':
+          'attachment; filename="annotation-delivery.safe.csv"',
+        'Cache-Control': 'no-store',
+        ...exportSafetyHeaders(safe.safety),
+      },
+    });
   } catch (e) {
     return failure(e, 500);
   }
@@ -62,7 +81,8 @@ export async function POST(req: Request) {
         );
       if (!rows.length) throw Error('当前范围没有通过校验的可导出轮次');
       // Build before recording: an invalid Excel field never increments the count.
-      if (format === 'xlsx') xlsx(rows, id);
+      const safe = sanitizeExportRows(rows, downloadOptions());
+      if (format === 'xlsx') xlsx(safe.rows, id, safe.safety);
       else if (JSON.stringify(rows).length > 16000000)
         throw Error('导出内容超过 16MB，请分批导出');
       const now = new Date().toISOString(),
@@ -117,6 +137,9 @@ export async function POST(req: Request) {
     for (const row of rows) {
       const task = tasks.get(row.taskId),
         turn = task?.turns.find((r) => r.id === row.turnId);
+      if (!task || !turn) throw Error('该批次的原始轮次已缺失，不能重新导出');
+      const submissionErrors = submissionIssues(task, turn);
+      if (submissionErrors.length) throw Error(submissionErrors.join('；'));
       if (
         turn?.container &&
         (terminalIssues(turn).length ||
@@ -130,20 +153,22 @@ export async function POST(req: Request) {
       )
         throw Error('该批次包含权限核验未通过的会话，原记录已保留，请重新采集');
     }
+    const safe = sanitizeExportRows(rows, downloadOptions());
     return new Response(
       format === 'xlsx'
-        ? (xlsx(rows, id) as unknown as BodyInit)
-        : recordsCsv(rows),
+        ? (xlsx(safe.rows, id, safe.safety) as unknown as BodyInit)
+        : recordsCsv(safe.rows),
       {
         headers: {
           'Content-Type':
             format === 'xlsx'
               ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
               : 'text/csv; charset=utf-8',
-          'Content-Disposition': `attachment; filename="annotation-${id}.${format}"`,
+          'Content-Disposition': `attachment; filename="annotation-${id}.safe.${format}"`,
           'Cache-Control': 'no-store',
           'X-Export-Count': String(rows.length),
           'X-Export-Batch': id,
+          ...exportSafetyHeaders(safe.safety),
         },
       },
     );

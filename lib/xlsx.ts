@@ -55,7 +55,11 @@ function cellXml(
     ? `<c r="${ref}" s="2"><v>${v}</v></c>`
     : `<c r="${ref}" s="${row === 0 ? 1 : 2}" t="inlineStr"><is><t xml:space="preserve">${xml(v)}</t></is></c>`;
 }
-export function xlsx(rows: RecordRow[], batchId: string) {
+export function xlsx(
+  rows: RecordRow[],
+  batchId: string,
+  safety?: { version: string; findings: number },
+) {
   if (rows.some((row) => row.values.some((v) => String(v).length > 32767)))
     throw Error(
       '有字段超过 Excel 单元格 32767 字限制，请改用 CSV 导出完整内容',
@@ -97,7 +101,10 @@ export function xlsx(rows: RecordRow[], batchId: string) {
       r.turnId,
       r.provenance,
       r.exportCount,
-      '导出次数表示成功生成表格的次数，不代表对外提交；轨迹文件名不代表已上传附件。',
+      '导出次数表示成功生成表格的次数，不代表对外提交；轨迹文件名不代表已上传附件。' +
+        (safety
+          ? ` 当前下载为敏感信息处理副本，规则 ${safety.version}，处理 ${safety.findings} 处；内部原始记录及批次快照保留。`
+          : ''),
       r.originalFields?.snapshot || '',
       r.originalFields?.tracePath || '',
       r.originalFields?.os || '',

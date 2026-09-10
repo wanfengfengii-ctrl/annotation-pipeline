@@ -1,7 +1,9 @@
 // Injectable test boundary: never launches Docker or a real model.
 import { questionRoot } from '../../lib/question-session.mjs';
-import { permissionAuditVersion } from '../../lib/permission-audit.mjs';
+import { auditPermissionTraces } from '../../lib/permission-audit.mjs';
 import { DockerRuntime } from '../../scripts/docker-runtime.mjs';
+import { evidenceInventory } from '../../scripts/evidence.mjs';
+import { writeTerminalFinalization } from '../../scripts/terminal-finalization.mjs';
 import {
   runtimeBrowserCache,
   browserCacheMount,
@@ -16,7 +18,13 @@ import {
   containerPolicyVersion,
   dockerSnapshot,
 } from '../../lib/container-policy.mjs';
-import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  writeFileSync,
+  appendFileSync,
+  readFileSync,
+  cpSync,
+} from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
@@ -103,10 +111,27 @@ DockerRuntime.prototype.ensure = async function (task, turn) {
       'workspace',
     );
     mkdirSync(workDir, { recursive: true });
+    const terminalDirectory = path.join(path.dirname(workDir), 'terminal');
+    mkdirSync(terminalDirectory, { recursive: true });
+    const terminal = {
+      runId: 'fixture-terminal-' + questionId,
+      statePath: path.join(terminalDirectory, 'state.json'),
+      launchPath: path.join(terminalDirectory, 'question.command'),
+    };
+    writeFileSync(
+      path.join(terminalDirectory, 'launch.json'),
+      JSON.stringify(terminal),
+    );
+    writeFileSync(terminal.launchPath, '# synthetic terminal launch\n');
+    writeFileSync(
+      terminal.statePath,
+      JSON.stringify({ runId: terminal.runId, status: 'running' }),
+    );
     s = {
+      terminal,
       terminalIdentity: {
         transport: 'mac-terminal',
-        runId: questionId,
+        runId: terminal.runId,
         realTerminal: true,
         tty: '/dev/fixture',
       },
@@ -159,29 +184,76 @@ DockerRuntime.prototype.execute = async function (task, turn, reserve) {
     '// synthetic project round ' + count + '\n',
   );
   const tracePath = path.join(this.root, task.id, turn.id + '.jsonl');
-  writeFileSync(
-    tracePath,
+  const traceContent =
     JSON.stringify({
       type: 'user',
       uuid: 'fixture-prompt-' + turn.id,
       sessionId: s.sessionId,
       message: { content: turn.prompt },
     }) +
-      '\n' +
-      JSON.stringify({ type: 'system', subtype: 'turn_duration' }) +
-      '\n',
+    '\n' +
+    JSON.stringify({ type: 'system', subtype: 'turn_duration' }) +
+    '\n';
+  writeFileSync(tracePath, traceContent);
+  const exportRoot = path.join(this.root, task.id, turn.id + '.export');
+  const projectsRoot = path.join(exportRoot, 'projects');
+  const mainName = '-workspace/' + s.sessionId + '.jsonl';
+  const previous = Object.values(s.results).at(-1);
+  const mainContent =
+    (previous
+      ? readFileSync(path.join(previous.traceExport.path, mainName), 'utf8')
+      : JSON.stringify({
+          type: 'permission-mode',
+          permissionMode: 'bypassPermissions',
+          sessionId: s.sessionId,
+        }) + '\n') + traceContent;
+  const nativeFiles = [
+    { name: mainName, content: mainContent },
+    {
+      name: '-workspace/' + s.sessionId + '/subagents/fixture-helper.jsonl',
+      content:
+        JSON.stringify({
+          type: 'system',
+          subtype: 'fixture-helper',
+          sessionId: 'fixture-helper-' + s.questionId,
+          parentSessionId: s.sessionId,
+          round: count,
+        }) + '\n',
+    },
+  ].sort((a, b) => a.name.localeCompare(b.name));
+  const files = nativeFiles.map(({ name, content }) => {
+    const file = path.join(projectsRoot, name);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, content, { flag: 'wx' });
+    return {
+      name,
+      bytes: Buffer.byteLength(content),
+      sha256: createHash('sha256').update(content).digest('hex'),
+    };
+  });
+  mkdirSync(path.join(projectsRoot, '-workspace/empty'), { recursive: true });
+  const manifestPath = path.join(exportRoot, 'manifest.json');
+  writeFileSync(
+    manifestPath,
+    JSON.stringify({ containerId: s.containerId, files }, null, 2),
+    { flag: 'wx' },
   );
+  writeFileSync(
+    path.join(this.root, task.id, turn.id + '.native.jsonl'),
+    mainContent,
+  );
+  const traceExport = {
+    verified: true,
+    path: projectsRoot,
+    manifestPath,
+    files: files.length,
+    sha256: createHash('sha256').update(JSON.stringify(files)).digest('hex'),
+    exportedAt: new Date().toISOString(),
+  };
   const result = {
     permissionAudit: {
-      version: permissionAuditVersion,
-      passed: true,
-      modeVerified: true,
-      mode: 'bypassPermissions',
-      denialCount: 0,
-      findings: [],
-      tools: [],
-      toolCalls: 0,
-      traceSha256: 'a'.repeat(64),
+      ...auditPermissionTraces(nativeFiles),
+      traceSha256: traceExport.sha256,
     },
     success: true,
     finishedAt: new Date().toISOString(),
@@ -190,12 +262,7 @@ DockerRuntime.prototype.execute = async function (task, turn, reserve) {
     promptId: 'fixture-prompt-' + turn.id,
     snapshot: s.snapshot,
     tracePath,
-    traceExport: {
-      verified: true,
-      path: path.dirname(tracePath),
-      files: 1,
-      sha256: 'a'.repeat(64),
-    },
+    traceExport,
     harness: 'Claude Code',
     harnessVersion: 'docker fixture',
     os: 'Linux fixture',
@@ -239,10 +306,59 @@ DockerRuntime.prototype.environmentEvidence = function (task, turn) {
 };
 DockerRuntime.prototype.close = async function (id) {
   const s = this.load(id);
-  if (s) {
+  if (s && s.status !== 'removed') {
+    const taskDir = path.join(this.root, id);
+    const root = path.join(
+      taskDir,
+      s.questionId + '.final.traces-fixture',
+      'projects',
+    );
+    const latest = Object.values(s.results).at(-1);
+    if (latest) {
+      cpSync(latest.traceExport.path, root, { recursive: true });
+      writeFileSync(
+        path.join(root, '-workspace/final-cleanup.jsonl'),
+        JSON.stringify({
+          type: 'system',
+          subtype: 'fixture-final-cleanup',
+          sessionId: s.sessionId,
+        }) + '\n',
+      );
+    } else mkdirSync(root, { recursive: true });
+    const { files } = evidenceInventory(root);
+    const manifestPath = path.join(path.dirname(root), 'manifest.json');
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({ containerId: s.containerId, files }),
+      { flag: 'wx' },
+    );
+    s.traceExport = {
+      verified: true,
+      path: root,
+      manifestPath,
+      files: files.length,
+      sha256: createHash('sha256').update(JSON.stringify(files)).digest('hex'),
+      exportKind: 'final',
+      commandTransport: 'original-mac-terminal',
+    };
+    s.finalCommandTransport = 'original-mac-terminal';
     s.status = 'removed';
+    s.finishedAt = new Date().toISOString();
+    writeTerminalFinalization(s, taskDir);
+    writeFileSync(
+      s.terminal.statePath,
+      JSON.stringify({
+        runId: s.terminal.runId,
+        containerId: s.containerId,
+        status: 'exited',
+        postprocessingComplete: true,
+        verifiedExport: true,
+        containerRemoved: true,
+      }),
+    );
     await this.publish(s);
   }
+  if (s) await this.onFinalized(s);
 };
 DockerRuntime.prototype.reconcile = async function (tasks, active) {
   for (const t of tasks)

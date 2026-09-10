@@ -3,6 +3,7 @@ import { humanAsReview } from './human-review.ts';
 import { roundNumber } from './record-metadata.ts';
 import { formatStack } from './stack-field.mjs';
 import { formatQuestionText } from './question-text.mjs';
+import { submissionIssues } from './submission-policy.mjs';
 export const recordHeaders = [
   'User Prompt',
   'SessionID',
@@ -194,6 +195,7 @@ export function recordRow(
     eligible:
       snapshotLink(initialURL) &&
       !r.excluded &&
+      !submissionIssues(t, r).length &&
       (human
         ? h?.state === 'approved' &&
           !issues(t, { ...r, review: humanAsReview(h) }).length

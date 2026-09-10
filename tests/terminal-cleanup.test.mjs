@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  realpathSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runInNewContext } from 'node:vm';
@@ -9,6 +15,7 @@ import {
   exitedTerminals,
   cleanupScript,
 } from '../scripts/terminal-cleanup.mjs';
+import { finalizationFixture } from './fixtures/finalization.mjs';
 
 const record = {
   runId: 'run',
@@ -72,7 +79,9 @@ test('TTY reuse cannot match another question or a live tab in the same window',
 });
 
 test('exited bridge and child, matching launch identity, and valid receipts are required', (t) => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'terminal-cleanup-'));
+  const root = realpathSync(
+    mkdtempSync(path.join(os.tmpdir(), 'terminal-cleanup-')),
+  );
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const directory = path.join(root, 'task/questions/question/terminal');
   mkdirSync(directory, { recursive: true });
@@ -98,6 +107,12 @@ test('exited bridge and child, matching launch identity, and valid receipts are 
     writeFileSync(specPath, JSON.stringify(d));
   };
   write();
+  assert.equal(
+    exitedTerminals(root, () => false).length,
+    0,
+    'an exited screen alone must remain open',
+  );
+  const final = finalizationFixture(path.join(root, 'task'), spec);
   assert.equal(exitedTerminals(root, () => false).length, 1);
   for (const pid of [11, 12])
     assert.equal(exitedTerminals(root, (p) => p === pid).length, 0);
@@ -122,6 +137,12 @@ test('exited bridge and child, matching launch identity, and valid receipts are 
   }
   write({ ...state, exitCode: 1 });
   assert.equal(exitedTerminals(root, () => false).length, 1);
+  writeFileSync(final.nativeFile, 'changed after final export');
+  assert.equal(
+    exitedTerminals(root, () => false).length,
+    0,
+    'tampered export retains the window',
+  );
   writeFileSync(statePath, '{"status":');
   assert.deepEqual(
     exitedTerminals(root, () => false),
@@ -165,6 +186,7 @@ test('cleanup preserves mixed windows and rechecks every tab before closing a co
     );
   const result = evaluate(false);
   assert.deepEqual(calls, [completedWindow]);
+  assert(Number.isFinite(Date.parse(result.closed[0].closedAt)));
   assert.deepEqual(result.errors, []);
   assert.deepEqual(result.deferred, [
     { windowId: 1, reason: 'window_has_other_tabs' },

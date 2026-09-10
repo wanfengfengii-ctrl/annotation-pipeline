@@ -8,10 +8,124 @@ import {
   readdirSync,
 } from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 const hashFile = (file) =>
   createHash('sha256').update(readFileSync(file)).digest('hex');
+export function evidenceRelativeName(name) {
+  if (
+    typeof name !== 'string' ||
+    !name ||
+    path.isAbsolute(name) ||
+    name.includes('\\') ||
+    name
+      .split('')
+      .some((c) => c.charCodeAt(0) <= 31 || c.charCodeAt(0) === 127) ||
+    name.split('/').some((part) => !part || part === '.' || part === '..')
+  )
+    throw Error('证据清单路径无效');
+  return name;
+}
+export function evidencePath(file, root, directory = false) {
+  const base = path.resolve(root),
+    absolute = path.resolve(file);
+  if (!absolute.startsWith(base + path.sep)) throw Error('证据超出任务目录');
+  let current = base;
+  if (lstatSync(current).isSymbolicLink())
+    throw Error('证据目录不能是符号链接');
+  for (const part of path.relative(base, absolute).split(path.sep)) {
+    current = path.join(current, part);
+    if (lstatSync(current).isSymbolicLink())
+      throw Error('证据路径不能是符号链接');
+  }
+  const stat = lstatSync(absolute);
+  if (directory ? !stat.isDirectory() : !stat.isFile())
+    throw Error('证据文件类型无效');
+  return absolute;
+}
+export function evidenceInventory(root) {
+  const files = [],
+    directories = [];
+  if (lstatSync(root).isSymbolicLink() || !lstatSync(root).isDirectory())
+    throw Error('证据目录类型无效');
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      const file = path.join(dir, entry),
+        name = evidenceRelativeName(path.relative(root, file));
+      const stat = lstatSync(file);
+      if (stat.isSymbolicLink()) throw Error('证据目录不能含符号链接');
+      if (stat.isDirectory()) {
+        directories.push(name);
+        walk(file);
+      } else if (stat.isFile())
+        files.push({ name, bytes: stat.size, sha256: hashFile(file) });
+      else throw Error('证据目录含非普通文件');
+    }
+  }
+  walk(root);
+  return {
+    files: files.sort((a, b) => a.name.localeCompare(b.name)),
+    directories: directories.sort((a, b) => a.localeCompare(b)),
+  };
+}
+export function readVerifiedTraceExport(
+  traceExport,
+  dir,
+  { allowEmpty = false } = {},
+) {
+  if (
+    !traceExport?.verified ||
+    !/^[a-f0-9]{64}$/.test(traceExport.sha256 || '')
+  )
+    throw Error('完整原生轨迹缺少已验真回执');
+  const root = evidencePath(traceExport.path, dir, true);
+  const manifestPath = evidencePath(traceExport.manifestPath, dir);
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const files = manifest.files;
+  if (
+    !Array.isArray(files) ||
+    (!allowEmpty && !files.length) ||
+    traceExport.files !== files.length ||
+    createHash('sha256').update(JSON.stringify(files)).digest('hex') !==
+      traceExport.sha256
+  )
+    throw Error('完整原生轨迹清单摘要不符');
+  const seen = new Set();
+  for (const file of files) {
+    evidenceRelativeName(file.name);
+    if (
+      seen.has(file.name) ||
+      !Number.isSafeInteger(file.bytes) ||
+      file.bytes < 0 ||
+      !/^[a-f0-9]{64}$/.test(file.sha256 || '')
+    )
+      throw Error('完整原生轨迹清单字段无效或重复');
+    seen.add(file.name);
+  }
+  const observed = evidenceInventory(root);
+  const expected = files
+    .map(({ name, bytes, sha256 }) => ({ name, bytes, sha256 }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  if (JSON.stringify(observed.files) !== JSON.stringify(expected))
+    throw Error('完整原生轨迹文件集合、大小或摘要不符');
+  return {
+    root,
+    manifestPath,
+    manifestSha256: hashFile(manifestPath),
+    sha256: traceExport.sha256,
+    containerId: manifest.containerId,
+    ...observed,
+  };
+}
+export function verifyNativeExport(
+  traceExport,
+  { dir, containerId, allowEmpty = false } = {},
+) {
+  const verified = readVerifiedTraceExport(traceExport, dir, { allowEmpty });
+  if (containerId !== undefined && verified.containerId !== containerId)
+    throw Error('完整原生轨迹与容器身份不符');
+  return verified;
+}
 function scoreCitations(refs, workDir, dir) {
   if (!Array.isArray(refs) || refs.length !== 5)
     throw Error('评分证据须按五维提供 5 组引用');
@@ -60,18 +174,27 @@ export function createEvidenceArchive({
   tracePath,
   automation,
   workDir,
+  traceExport,
 }) {
-  const stageDir = path.join(dir, turnId + '.evidence');
-  mkdirSync(stageDir, { recursive: true });
+  const baseDir = path.join(dir, turnId + '.evidence');
+  const stageDir =
+    existsSync(baseDir) || existsSync(baseDir + '.tar.gz')
+      ? baseDir + '-' + randomUUID()
+      : baseDir;
+  mkdirSync(stageDir, { mode: 0o700 });
   const manifest = [];
+  const names = new Set();
   function add(src, name, expectedSha256) {
+    evidenceRelativeName(name);
+    if (names.has(name)) throw Error('交付证据目标路径重复');
+    names.add(name);
     if (!existsSync(src)) throw Error('交付证据缺失：' + src);
     const data = readFileSync(src);
     const sha256 = createHash('sha256').update(data).digest('hex');
     if (expectedSha256 !== undefined && sha256 !== expectedSha256)
       throw Error('交付证据摘要不一致：' + name);
     mkdirSync(path.dirname(path.join(stageDir, name)), { recursive: true });
-    writeFileSync(path.join(stageDir, name), data, { mode: 0o600 });
+    writeFileSync(path.join(stageDir, name), data, { mode: 0o600, flag: 'wx' });
     manifest.push({
       name,
       mode: lstatSync(src).mode & 0o777,
@@ -96,7 +219,34 @@ export function createEvidenceArchive({
     add(src, name, sha256);
   }
   add(bundlePath, 'evaluation.json');
-  const container = JSON.parse(readFileSync(bundlePath, 'utf8')).container;
+  const bundle = JSON.parse(readFileSync(bundlePath, 'utf8'));
+  const container = bundle.container;
+  const nativeExport = traceExport || bundle.traceExport;
+  let nativeEvidence = null;
+  if (nativeExport) {
+    if (bundle.traceExport && bundle.traceExport.sha256 !== nativeExport.sha256)
+      throw Error('完整原生轨迹与本轮评测回执不符');
+    nativeEvidence = verifyNativeExport(nativeExport, {
+      dir,
+      containerId: container?.containerId,
+    });
+    add(
+      nativeEvidence.manifestPath,
+      'native/manifest.json',
+      nativeEvidence.manifestSha256,
+    );
+    mkdirSync(path.join(stageDir, 'native/projects'), { recursive: true });
+    for (const name of nativeEvidence.directories)
+      mkdirSync(path.join(stageDir, 'native/projects', name), {
+        recursive: true,
+      });
+    for (const file of nativeEvidence.files)
+      add(
+        path.join(nativeEvidence.root, file.name),
+        'native/projects/' + file.name,
+        file.sha256,
+      );
+  }
   if (container?.scaffoldSnapshot) {
     const initial = container.scaffoldSnapshot;
     const data = readFileSync(initial.manifestPath);
@@ -358,11 +508,22 @@ export function createEvidenceArchive({
     path.join(stageDir, 'manifest.json'),
     JSON.stringify(
       {
-        format: 3,
+        format: 4,
         provenance: 'AI evaluation',
         files: manifest,
         citations,
         omitted,
+        ...(nativeEvidence
+          ? {
+              nativeTrace: {
+                sha256: nativeEvidence.sha256,
+                manifestSha256: nativeEvidence.manifestSha256,
+                files: nativeEvidence.files.length,
+                prefix: 'native/projects/',
+                directories: nativeEvidence.directories,
+              },
+            }
+          : {}),
         note: '本地证据包包含轨迹、评估、可用的 Git diff 和符合大小限制的完整工作区普通文件。排除项列入 omitted；使用前核对，未向外部上传。',
       },
       null,
@@ -370,7 +531,13 @@ export function createEvidenceArchive({
     ),
     { mode: 0o600 },
   );
-  const archivePath = path.join(dir, turnId + '.evidence.tar.gz');
+  if (
+    nativeEvidence &&
+    JSON.stringify(readVerifiedTraceExport(nativeExport, dir)) !==
+      JSON.stringify(nativeEvidence)
+  )
+    throw Error('完整原生轨迹在归档期间发生变化');
+  const archivePath = stageDir + '.tar.gz';
   execFileSync(
     'tar',
     [
@@ -378,7 +545,11 @@ export function createEvidenceArchive({
       archivePath,
       '-C',
       stageDir,
-      ...manifest.map((f) => f.name),
+      '--',
+      ...manifest
+        .map((f) => f.name)
+        .filter((name) => !name.startsWith('native/projects/')),
+      ...(nativeEvidence ? ['native/projects'] : []),
       'manifest.json',
     ],
     { timeout: 60000 },
@@ -389,12 +560,17 @@ export function createEvidenceArchive({
       .update(readFileSync(archivePath))
       .digest('hex'),
     files: manifest.length + 1,
+    stageDir,
+    manifestPath: path.join(stageDir, 'manifest.json'),
+    manifestSha256: hashFile(path.join(stageDir, 'manifest.json')),
   };
 }
 
 // Stable excerpts from the finished round's archive staging, never the later working tree.
-export function reviewEvidence({ dir, turnId, tracePath }) {
-  const stageDir = path.join(dir, turnId + '.evidence');
+export function reviewEvidence({ dir, turnId, tracePath, archive }) {
+  const stageDir = archive?.manifestPath
+    ? path.dirname(evidencePath(archive.manifestPath, dir))
+    : path.join(dir, turnId + '.evidence');
   const manifest = JSON.parse(
     readFileSync(path.join(stageDir, 'manifest.json'), 'utf8'),
   );

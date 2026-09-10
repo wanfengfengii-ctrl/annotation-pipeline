@@ -10,7 +10,7 @@ import {
   renameSync,
   chmodSync,
 } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import {
@@ -19,7 +19,11 @@ import {
   connectTerminal,
   terminalOutput,
   exitCompletedTerminal,
+  terminalProtocolVersion,
+  terminalCommand,
+  completeTerminal,
 } from './mac-terminal.mjs';
+import { writeTerminalFinalization } from './terminal-finalization.mjs';
 import { sessionLimits } from '../lib/project-series.mjs';
 import { disputeContinuationReady } from '../lib/disputed-continuation.mjs';
 import {
@@ -361,9 +365,16 @@ export class DockerRuntime {
     report = async () => {},
     shouldStop = () => false,
     command = docker,
+    terminalOperations = {
+      command: terminalCommand,
+      complete: completeTerminal,
+    },
+    onFinalized = async () => {},
   ) {
     this.root = root;
     this.command = command;
+    this.terminalOperations = terminalOperations;
+    this.onFinalized = onFinalized;
     this.report = report;
     this.shouldStop = shouldStop;
     this.owner = hash(realpathSync(root)).slice(0, 24);
@@ -645,10 +656,26 @@ export class DockerRuntime {
     const retained = disputeContinuationReady(previous)
       ? previous.automation.projectContinuation.sourceSnapshot
       : null;
+    const savedArchive = previous.automation?.archive;
+    const taskRoot = path.dirname(this.file(task.id));
     const evidence = retained
       ? path.join(path.dirname(this.file(task.id)), previous.id + '.retained')
-      : path.join(path.dirname(this.file(task.id)), previous.id + '.evidence');
+      : savedArchive?.manifestPath
+        ? path.dirname(savedArchive.manifestPath)
+        : path.join(taskRoot, previous.id + '.evidence');
     const manifestPath = path.join(evidence, 'manifest.json');
+    if (
+      path.dirname(evidence) !== taskRoot ||
+      realpathSync(evidence) !==
+        path.join(realpathSync(taskRoot), path.basename(evidence)) ||
+      (!retained &&
+        path.basename(evidence) !== previous.id + '.evidence' &&
+        !path.basename(evidence).startsWith(previous.id + '.evidence-')) ||
+      (!retained &&
+        savedArchive?.manifestPath &&
+        savedArchive.manifestPath !== manifestPath)
+    )
+      throw Error('上一题归档不属于本任务目录');
     if (
       retained &&
       (retained.manifestPath !== manifestPath ||
@@ -656,6 +683,12 @@ export class DockerRuntime {
     )
       throw Error('异常题保留代码快照不属于本任务轮次');
     const manifestBytes = readFileSync(manifestPath);
+    if (
+      !retained &&
+      savedArchive?.manifestSha256 &&
+      hash(manifestBytes) !== savedArchive.manifestSha256
+    )
+      throw Error('上一题归档清单摘要不匹配');
     if (retained?.verified && hash(manifestBytes) !== retained.manifestSha256)
       throw Error('异常题保留代码快照摘要不匹配');
     const manifest = JSON.parse(manifestBytes);
@@ -769,10 +802,43 @@ export class DockerRuntime {
   }
   async export(s, label, requireTrace = true) {
     const c = this.owned(s);
-    const dest = path.join(
-      path.dirname(this.file(s.taskId)),
-      label + '.traces-' + Date.now(),
-    );
+    const taskDir = path.dirname(this.file(s.taskId));
+    if (
+      label === 'final' &&
+      s.finalExportDir &&
+      ['projects', 'verification'].some(
+        (name) =>
+          s.terminalOperations?.['cp:' + path.join(s.finalExportDir, name)]
+            ?.status === 'failed',
+      )
+    ) {
+      // A known failed copy may have written only part of its tree. Keep that
+      // tree and its receipts intact; retry into a new empty destination.
+      s.abandonedFinalExports ||= [];
+      s.abandonedFinalExports.push({
+        path: s.finalExportDir,
+        reason: 'copy-failed',
+        abandonedAt: new Date().toISOString(),
+      });
+      delete s.finalExportDir;
+    }
+    if (label === 'final' && !s.finalExportDir) {
+      s.finalExportDir = path.join(
+        taskDir,
+        s.questionId + '.final.traces-' + randomUUID(),
+      );
+      this.save(s);
+    }
+    const dest =
+      label === 'final'
+        ? s.finalExportDir
+        : path.join(taskDir, label + '.traces-' + Date.now());
+    if (
+      path.dirname(dest) !== taskDir ||
+      (label === 'final' &&
+        !path.basename(dest).startsWith(s.questionId + '.final.traces-'))
+    )
+      throw Error('最终导出目录不属于本题，保留原终端');
     mkdirSync(path.join(dest, 'projects'), { recursive: true });
     // Stopped containers cannot exec; use their immutable copy as the source manifest.
     const before = c.State.Running
@@ -786,14 +852,18 @@ export class DockerRuntime {
           ]),
         )
       : null;
-    this.command(
-      [
-        'cp',
-        (s.containerId || s.name) + ':' + containerTraceRoot + '/.',
-        path.join(dest, 'projects'),
-      ],
-      { timeout: 60000 },
-    );
+    const copy = async (destination) =>
+      label === 'final'
+        ? this.finalCommand(s, 'cp', destination)
+        : this.command(
+            [
+              'cp',
+              (s.containerId || s.name) + ':' + containerTraceRoot + '/.',
+              destination,
+            ],
+            { timeout: 60000 },
+          );
+    await copy(path.join(dest, 'projects'));
     const manifest = localManifest(path.join(dest, 'projects'));
     if (
       requireTrace &&
@@ -814,15 +884,8 @@ export class DockerRuntime {
         throw Error('轨迹导出期间发生变化，容器已保留，请重试导出');
     } else {
       const verify = path.join(dest, 'verification');
-      mkdirSync(verify);
-      this.command(
-        [
-          'cp',
-          (s.containerId || s.name) + ':' + containerTraceRoot + '/.',
-          verify,
-        ],
-        { timeout: 60000 },
-      );
+      mkdirSync(verify, { recursive: true });
+      await copy(verify);
       if (!sameManifest(manifest, localManifest(verify)))
         throw Error('停止后两次完整轨迹导出校验不一致，容器已保留');
     }
@@ -838,6 +901,11 @@ export class DockerRuntime {
       files: manifest.length,
       sha256: hash(JSON.stringify(manifest)),
       exportedAt: new Date().toISOString(),
+      exportKind: label === 'final' ? 'final' : 'intermediate',
+      commandTransport:
+        label === 'final'
+          ? s.finalCommandTransport
+          : 'runner-read-only-snapshot',
     };
   }
   async execute(task, turn, reserve) {
@@ -1018,9 +1086,86 @@ export class DockerRuntime {
     }
     await this.publish(s);
   }
+  async finalCommand(s, action, destination) {
+    if (s.terminal?.terminalProtocolVersion !== terminalProtocolVersion) {
+      // Already-running legacy bridges cannot change their program in place.
+      // Preserve that original session, and identify its one-time migration path.
+      s.finalCommandTransport = 'legacy-runner-migration';
+      this.save(s);
+      return this.command(
+        action === 'cp'
+          ? ['cp', s.containerId + ':' + containerTraceRoot + '/.', destination]
+          : ['rm', s.containerId],
+        { timeout: 60000 },
+      );
+    }
+    s.finalCommandTransport = 'original-mac-terminal';
+    s.terminalOperations ||= {};
+    const key = action + ':' + (destination || s.containerId);
+    const previous = s.terminalOperations[key];
+    const operationId =
+      previous && previous.status !== 'failed'
+        ? previous.operationId
+        : randomUUID();
+    s.terminalOperations[key] = { operationId, status: 'pending' };
+    this.save(s);
+    const receipt = await this.terminalOperations.command(s.terminal, {
+      operationId,
+      action,
+      containerId: s.containerId,
+      ...(destination ? { destination } : {}),
+    });
+    s.terminalOperations[key] = {
+      operationId,
+      status: receipt.ok
+        ? 'completed'
+        : receipt.status === 'uncertain'
+          ? 'uncertain'
+          : 'failed',
+      receiptPath: receipt.receiptPath,
+    };
+    this.save(s);
+    if (!receipt.ok)
+      throw Error(
+        '原终端' +
+          (action === 'cp' ? '导出' : '清理') +
+          '未完成，保留窗口及证据',
+      );
+    return receipt;
+  }
+  async finalizeTerminal(s) {
+    if (!s.terminal?.statePath) return;
+    if (
+      s.terminalFinalization?.runId === s.terminal.runId &&
+      existsSync(
+        path.join(path.dirname(s.terminal.statePath), 'finalization.json'),
+      )
+    ) {
+      await this.onFinalized(s);
+      return;
+    }
+    writeTerminalFinalization(s, path.dirname(this.file(s.taskId)));
+    if (s.terminal.terminalProtocolVersion === terminalProtocolVersion) {
+      const completed = await this.terminalOperations.complete(s.terminal, {
+        operationId: 'complete-' + s.containerId,
+        containerId: s.containerId,
+      });
+      if (!completed.ok) throw Error('原终端尚未确认最终完成，保留窗口');
+    }
+    s.terminalFinalization = {
+      runId: s.terminal.runId,
+      completedAt: new Date().toISOString(),
+    };
+    this.save(s);
+    await this.onFinalized(s);
+  }
   async close(taskId) {
     const s = this.load(taskId);
-    if (!s || s.status === 'removed') return;
+    if (!s) return;
+    if (s.status === 'removed') {
+      await this.finalizeTerminal(s);
+      return;
+    }
     try {
       if (this.owned(s).State.Running) {
         const assertIdle = () => {
@@ -1059,11 +1204,12 @@ export class DockerRuntime {
       s.status = 'exported';
       await this.publish(s);
       this.owned(s);
-      this.command(['rm', s.containerId || s.name]);
+      await this.finalCommand(s, 'rm');
       s.status = 'removed';
       s.finishedAt = new Date().toISOString();
       delete s.error;
       await this.publish(s);
+      await this.finalizeTerminal(s);
       this.live.get(taskId)?.child.kill('SIGTERM');
       this.live.delete(taskId);
     } catch (e) {
@@ -1073,10 +1219,13 @@ export class DockerRuntime {
         s.traceExport?.verified &&
         /No such (object|container)/i.test(String(e.stderr || ''))
       ) {
+        if (s.terminal?.terminalProtocolVersion === terminalProtocolVersion)
+          await this.finalCommand(s, 'rm');
         s.status = 'removed';
         s.finishedAt = new Date().toISOString();
         delete s.error;
         await this.publish(s);
+        await this.finalizeTerminal(s);
         return;
       }
       s.error = e.message;
@@ -1091,6 +1240,11 @@ export class DockerRuntime {
       const s = this.load(task.id);
       if (!s) continue;
       if (s.status === 'removed') {
+        try {
+          await this.finalizeTerminal(s);
+        } catch (error) {
+          console.error('终端最终完成待重试：' + error.message);
+        }
         if (task.containerStatus !== 'removed')
           await this.report(this.public(s));
         continue;

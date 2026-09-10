@@ -30,12 +30,170 @@ import {
   type Turn,
 } from '@/lib/pipeline';
 import { all, get, save, db, failure, runnerAuth, text } from '@/db/store';
+
+function submissionMetadata(input: unknown, task: Task, turn: Turn) {
+  type Submission = NonNullable<NonNullable<Turn['automation']>['submission']>;
+  const record = (item: unknown): Record<string, unknown> =>
+    item && typeof item === 'object' && !Array.isArray(item)
+      ? (item as Record<string, unknown>)
+      : {};
+  const value = record(input);
+  const sha = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
+  const date = (v: unknown) =>
+    typeof v === 'string' && Number.isFinite(Date.parse(v));
+  if (
+    JSON.stringify(value).length > 65000 ||
+    typeof value.status !== 'string' ||
+    !['passed', 'needs_review', 'awaiting_finalization', 'blocked'].includes(
+      value.status,
+    ) ||
+    !sha(value.sourceArchiveSha256) ||
+    !date(value.verifiedAt)
+  )
+    throw Error('提交包元数据无效');
+  // These are runner receipts, never contents to merge into the scored record.
+  const bounded = (item: unknown, key = '', depth = 0) => {
+    if (depth > 16) throw Error('提交包元数据层级过深');
+    if (
+      (key === 'path' || key.endsWith('Path') || key.endsWith('Dir')) &&
+      (typeof item !== 'string' ||
+        !item.trim() ||
+        item.length > 4000 ||
+        item
+          .split('')
+          .some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127))
+    )
+      throw Error('提交包路径字段无效');
+    if (item && typeof item === 'object')
+      for (const [name, child] of Object.entries(item))
+        bounded(child, name, depth + 1);
+  };
+  bounded(value);
+  for (const [name, digest] of Object.entries(value))
+    if ((name === 'sha256' || name.endsWith('Sha256')) && !sha(digest))
+      throw Error('提交包摘要无效');
+  for (const key of ['files', 'zipBytes'])
+    if (
+      value[key] !== undefined &&
+      (typeof value[key] !== 'number' ||
+        !Number.isSafeInteger(value[key]) ||
+        value[key] < 0)
+    )
+      throw Error('提交包计数字段无效');
+  if (
+    ['passed', 'needs_review'].includes(value.status) &&
+    (!sha(value.manifestSha256) ||
+      !sha(value.zipSha256) ||
+      !value.manifestPath ||
+      !value.zipArchivePath)
+  )
+    throw Error('提交包缺少可复核的清单或压缩包');
+  if (!value.finalization) {
+    if (!['awaiting_finalization', 'blocked'].includes(value.status))
+      throw Error('提交包缺少最终完成回执');
+    return value as Submission;
+  }
+  const finalization = record(value.finalization);
+  const traceExport = record(finalization.traceExport);
+  type TerminalFields = {
+    terminal?: { runId?: string };
+    terminalIdentity?: { runId?: string };
+  };
+  const container = turn.container as
+    | (NonNullable<Turn['container']> & TerminalFields)
+    | undefined;
+  const terminalTurn = turn as Turn & TerminalFields;
+  const questionId =
+    turn.questionRootId || container?.questionId || questionRoot(task, turn);
+  const runId =
+    container?.terminal?.runId ||
+    container?.terminalIdentity?.runId ||
+    terminalTurn.terminal?.runId ||
+    terminalTurn.terminalIdentity?.runId;
+  if (
+    finalization.version !== '2026-09-10.terminal-finalization1' ||
+    finalization.taskId !== task.id ||
+    finalization.questionId !== questionId ||
+    (container?.questionId && container.questionId !== questionId) ||
+    !sha(container?.containerId) ||
+    finalization.containerId !== container?.containerId ||
+    !runId ||
+    finalization.runId !== runId ||
+    finalization.status !== 'removed' ||
+    typeof finalization.commandTransport !== 'string' ||
+    !['original-mac-terminal', 'legacy-runner-migration'].includes(
+      finalization.commandTransport,
+    ) ||
+    !sha(finalization.receiptSha256) ||
+    !sha(finalization.manifestSha256) ||
+    typeof finalization.receiptPath !== 'string' ||
+    !finalization.receiptPath.endsWith(
+      '/questions/' + questionId + '/terminal/finalization.json',
+    ) ||
+    !date(finalization.removedAt) ||
+    traceExport.verified !== true ||
+    traceExport.exportKind !== 'final' ||
+    typeof traceExport.path !== 'string' ||
+    !traceExport.path.trim() ||
+    traceExport.path.length > 4000 ||
+    !traceExport.manifestPath ||
+    typeof traceExport.files !== 'number' ||
+    !Number.isSafeInteger(traceExport.files) ||
+    traceExport.files < 0 ||
+    !sha(traceExport.sha256) ||
+    value.traceExportSha256 !== traceExport.sha256
+  )
+    throw Error('提交包最终回执与原题容器或终端不匹配');
+  if (
+    value.status === 'passed' &&
+    finalization.commandTransport !== 'original-mac-terminal'
+  )
+    throw Error('旧终端迁移提交包必须保留人工复核状态');
+  return value as Submission;
+}
+
 export async function POST(req: Request) {
   try {
     runnerAuth(req);
     const b: any = await req.json();
     if (!b || typeof b !== 'object' || Array.isArray(b))
       throw new Error('请求格式无效');
+    if (b.action === 'submission-package') {
+      const item = await get(text(b.taskId, '任务 ID', 100));
+      const turnId = text(b.turnId, '轮次 ID', 100);
+      const turn = item?.task.turns.find((r) => r.id === turnId);
+      if (
+        !item ||
+        !turn ||
+        !['review', 'failed'].includes(turn.status) ||
+        !Array.isArray(turn.review?.scores) ||
+        turn.review.scores.length !== 5 ||
+        turn.review.scores.some(
+          (score) => !Number.isInteger(score) || score < 1 || score > 5,
+        )
+      )
+        throw Error('仅允许回填已评分并归档的轮次');
+      const source = text(b.sourceArchiveSha256, '原件归档摘要', 64);
+      if (
+        !/^[a-f0-9]{64}$/.test(source) ||
+        source !== turn.automation?.archive?.sha256 ||
+        b.submission?.sourceArchiveSha256 !== source
+      )
+        throw Error('提交包原件归档摘要不匹配');
+      // The trusted runner verifies local bytes; this endpoint checks identity
+      // and source bindings and only attaches the resulting receipt metadata.
+      const submission = submissionMetadata(b.submission, item.task, turn);
+      const existing = turn.automation?.submission;
+      if (
+        (submission.manifestSha256 &&
+          existing?.manifestSha256 === submission.manifestSha256) ||
+        JSON.stringify(existing) === JSON.stringify(submission)
+      )
+        return Response.json({ ok: true, duplicate: true });
+      turn.automation!.submission = submission;
+      await save(item.task, item.revision);
+      return Response.json({ ok: true });
+    }
     if (b.action === 'initial-code-snapshot') {
       const item = await get(text(b.taskId, '任务', 100));
       if (!item) throw Error('任务不存在');

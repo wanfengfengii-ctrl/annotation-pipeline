@@ -10,6 +10,7 @@ import { terminalIssues } from './terminal-policy.mjs';
 import { permissionIssues } from './permission-audit.mjs';
 import { formatQuestionText } from './question-text.mjs';
 import { blocksProject } from './disputed-continuation.mjs';
+import { submissionIssues } from './submission-policy.mjs';
 export type PermissionAudit = {
   version: string;
   passed: boolean;
@@ -30,6 +31,8 @@ export type TraceExport = {
   files: number;
   sha256: string;
   exportedAt: string;
+  exportKind?: 'intermediate' | 'final';
+  commandTransport?: string;
 };
 export type ContainerRecord = {
   terminalIdentity?: {
@@ -167,7 +170,32 @@ export type Turn = {
     score?: any;
     delivery?: any;
     bundlePath?: string;
-    archive?: { archivePath: string; sha256: string; files: number };
+    archive?: {
+      archivePath: string;
+      sha256: string;
+      files: number;
+      stageDir?: string;
+      manifestPath?: string;
+      manifestSha256?: string;
+    };
+    submission?: {
+      version?: string;
+      status: 'passed' | 'needs_review' | 'awaiting_finalization' | 'blocked';
+      finalization?: any;
+      archivePath?: string;
+      sha256?: string;
+      zipArchivePath?: string;
+      zipSha256?: string;
+      zipBytes?: number;
+      manifestPath?: string;
+      manifestSha256?: string;
+      files?: number;
+      redactions?: { kind: string; count: number }[];
+      reviewRequiredFiles?: unknown[];
+      verifiedAt?: string;
+      checkedAt?: string;
+      reason?: string;
+    };
     workflowVersion?: string;
     next?: any;
     nextError?: string;
@@ -367,6 +395,7 @@ export function csv(
       .filter(
         (r) =>
           !r.excluded &&
+          !submissionIssues(t, r).length &&
           (!day || businessDate(r.finishedAt || r.createdAt) === day) &&
           !(source === 'human' ? humanIssues(t, r) : issues(t, r)).length,
       )

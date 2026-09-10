@@ -1,9 +1,11 @@
 // Integration with synthetic CLI responses and Docker adapter; no real model calls.
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { questionIssues } from '../lib/writing-style.mjs';
 import { questionRules } from '../lib/question-writing.mjs';
+import { verifyNativeExport } from '../scripts/evidence.mjs';
+import { verifySubmissionPackage } from '../scripts/submission-package.mjs';
 import {
   fixture,
   api,
@@ -39,7 +41,12 @@ try {
     task.id,
     (t) =>
       t.turns.some((r) => r.status === 'failed' || r.automation?.nextError) ||
-      (t.turns.length === 32 && t.turns.every((r) => r.status === 'review')),
+      (t.turns.length === 32 &&
+        t.turns.every(
+          (r) =>
+            r.status === 'review' &&
+            r.automation?.submission?.status === 'passed',
+        )),
     300000,
   );
   assert.equal(
@@ -119,6 +126,44 @@ try {
         r.automation.archive,
     ),
   );
+  for (const r of t.turns) {
+    assert.equal(r.automation.submission?.status, 'passed', r.id);
+    const dir = path.dirname(r.tracePath);
+    const finalExport = r.automation.submission.finalization.traceExport;
+    const native = verifyNativeExport(finalExport, {
+      dir,
+      containerId: r.container.containerId,
+    });
+    assert.equal(
+      native.files.length,
+      3,
+      'main, nested session and final cleanup',
+    );
+    assert.ok(native.directories.includes('-workspace/empty'));
+    assert.notEqual(finalExport.sha256, r.traceExport.sha256);
+    const original = verifyNativeExport(r.traceExport, {
+      dir,
+      containerId: r.container.containerId,
+    });
+    const archive = JSON.parse(
+      readFileSync(r.automation.archive.manifestPath, 'utf8'),
+    );
+    for (const file of original.files) {
+      const archived = archive.files.find(
+        (item) => item.name === 'native/projects/' + file.name,
+      );
+      assert.equal(archived?.sha256, file.sha256, file.name);
+      assert.equal(archived?.bytes, file.bytes, file.name);
+    }
+    assert.equal(
+      verifySubmissionPackage(r.automation.submission, {
+        dir,
+        sourceArchive: r.automation.archive,
+        traceExport: finalExport,
+      }).passed,
+      true,
+    );
+  }
   t = await waitTask(task.id, (t) => t.container?.status === 'removed');
   await assert.rejects(
     api(

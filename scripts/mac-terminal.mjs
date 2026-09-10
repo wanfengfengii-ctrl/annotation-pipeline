@@ -16,18 +16,22 @@ import { fileURLToPath } from 'node:url';
 const nap = (ms) => new Promise((r) => setTimeout(r, ms));
 const quote = (s) => "'" + s.replaceAll("'", "'\\''") + "'";
 const bridge = fileURLToPath(new URL('./terminal-session.py', import.meta.url));
+export const terminalProtocolVersion = '2026-09-10.mac-terminal2';
 export function prepareTerminal(directory, args) {
   const root = path.join(directory, 'terminal');
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const runId = randomUUID(),
     descriptor = {
       transport: 'mac-terminal',
+      terminalProtocolVersion,
       runId,
       statePath: path.join(root, 'state.json'),
       logPath: path.join(root, 'screen.log'),
       socketPath: '/tmp/annotation-terminal-' + runId + '.sock',
       launchPath: path.join(root, 'question.command'),
       specPath: path.join(root, 'launch.json'),
+      containerIdPath: path.join(root, 'container.id'),
+      operationDir: path.join(root, 'operations'),
     };
   const dockerBinary = execFileSync('/usr/bin/which', ['docker'], {
     encoding: 'utf8',
@@ -177,20 +181,23 @@ export async function exitCompletedTerminal({
   }
   throw Error('容器仍在运行，退出确认未完成，已保留原容器和轨迹');
 }
-function input(d, text) {
+function request(d, payload, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
     const s = createConnection(d.socketPath);
     let received = '';
     const timer = setTimeout(() => {
       s.destroy();
-      reject(Error('终端输入未确认，保留调用额度且不重发'));
-    }, 10000);
+      reject(
+        Error(
+          '原终端请求结果未确认；保留容器，使用同一 operationId 查询，勿重发输入',
+        ),
+      );
+    }, timeoutMs);
     s.once('connect', () =>
       s.write(
         JSON.stringify({
           runId: d.runId,
-          op: 'input',
-          data: Buffer.from(text).toString('base64'),
+          ...payload,
         }) + '\n',
       ),
     );
@@ -199,8 +206,13 @@ function input(d, text) {
       if (received.includes('\n')) {
         clearTimeout(timer);
         s.end();
-        if (JSON.parse(received.split('\n')[0]).ok) resolve();
-        else reject(Error('终端拒绝了输入控制请求'));
+        try {
+          const value = JSON.parse(received.split('\n')[0]);
+          if (value.ok || payload.op === 'command') resolve(value);
+          else reject(Error(value.error || '终端拒绝了控制请求'));
+        } catch (error) {
+          reject(error);
+        }
       }
     });
     s.once('error', (e) => {
@@ -212,6 +224,76 @@ function input(d, text) {
       if (!received.includes('\n')) reject(Error('终端输入结果未确认'));
     });
   });
+}
+const input = (d, text) =>
+  request(d, {
+    op: 'input',
+    data: Buffer.from(text).toString('base64'),
+  });
+function requireTerminalProtocol(d) {
+  if (d?.terminalProtocolVersion !== terminalProtocolVersion)
+    throw Error(
+      '旧终端协议不能执行原终端导出；保留旧会话，不假装已升级或转后台导出',
+    );
+}
+export async function terminalCommand(d, operation) {
+  requireTerminalProtocol(d);
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    const current = state(d);
+    if (
+      current?.runId !== d.runId ||
+      current.terminalProtocolVersion !== terminalProtocolVersion
+    )
+      throw Error('原终端协议或身份不符，保留容器');
+    if (current.status === 'postprocessing')
+      return request(d, { ...operation, op: 'command' }, 195000);
+    if (current.status !== 'running')
+      throw Error('原终端不可恢复为导出状态，保留容器');
+    await nap(100);
+  }
+  throw Error('原终端尚未退出Claude，保留会话与容器');
+}
+export async function completeTerminal(d, { operationId, containerId }) {
+  requireTerminalProtocol(d);
+  const previous = state(d);
+  if (
+    previous?.runId === d.runId &&
+    previous.status === 'exited' &&
+    previous.postprocessingComplete === true &&
+    previous.containerId === containerId &&
+    previous.completeOperationId === operationId
+  )
+    return {
+      ok: true,
+      operationId,
+      action: 'complete',
+      containerId,
+      completed: true,
+    };
+  return terminalCommand(d, { action: 'complete', operationId, containerId });
+}
+export async function connectPostprocessingTerminal(d) {
+  requireTerminalProtocol(d);
+  const current = state(d);
+  if (
+    current?.runId !== d.runId ||
+    current.status !== 'postprocessing' ||
+    current.terminalProtocolVersion !== terminalProtocolVersion ||
+    !current.realTerminal
+  )
+    throw Error('原终端尚未进入导出状态，保留容器');
+  process.kill(current.pid, 0);
+  return {
+    identity: {
+      transport: d.transport,
+      runId: d.runId,
+      tty: current.tty,
+      realTerminal: true,
+      terminalProtocolVersion,
+    },
+    containerId: current.containerId,
+  };
 }
 export async function connectTerminal(d) {
   if (!d || d.transport !== 'mac-terminal')
@@ -246,6 +328,7 @@ export async function connectTerminal(d) {
             runId: d.runId,
             tty: s.tty,
             realTerminal: true,
+            terminalProtocolVersion: s.terminalProtocolVersion || null,
           },
         };
       }

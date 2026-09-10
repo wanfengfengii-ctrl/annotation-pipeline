@@ -8,6 +8,7 @@ import {
   humanIssues,
 } from '@/lib/human-review';
 import type { HumanReview } from '@/lib/human-review';
+import { submissionIssues } from '@/lib/submission-policy.mjs';
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -108,7 +109,10 @@ export async function POST(
       h.state = 'needs_revision';
       h.reworkReason = text(b.reason, '需补充的证据或修改说明', 3000);
     } else if (action === 'receipt') {
-      const errors = humanIssues(item.task, r);
+      const errors = [
+        ...humanIssues(item.task, r),
+        ...submissionIssues(item.task, r),
+      ];
       if (errors.length) throw Error(errors.join('；'));
       if (b.allRoundsChecked !== true)
         throw Error('请核对全部有效轮次后登记交付');
