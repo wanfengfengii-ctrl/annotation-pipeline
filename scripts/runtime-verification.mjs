@@ -1057,6 +1057,7 @@ export async function verifyRuntime({
   const cacheInstructions = toolsCache
     ? `验收专用工具缓存已在同一不可变镜像及平台真实启动验证：Playwright ${toolsCache.toolVersion}，平台 ${toolsCache.platform}，缓存只读挂载到 ${toolsCache.mountPath}。需要浏览器时优先直接 require('${toolsCache.modulePath}')；ESM 脚本可用 createRequire 加载该绝对路径。PLAYWRIGHT_BROWSERS_PATH 已由容器设置为 ${toolsCache.browsersPath}，各步骤不要覆盖此变量，也不要重新 npm 安装不同版本的 Playwright 或下载浏览器。只读缓存不能安装、更新或清理；缺少其他验收库时单独安装到 /tmp。此缓存包含 Node 客户端，不包含 Python playwright 模块；原项目或原测试依赖 Python Playwright 时，允许在 /tmp 独立 Python 环境安装 playwright==${toolsCache.toolVersion} 客户端，并补齐 venv、ensurepip、pip 等实际缺失的前提，继续复用上述 PLAYWRIGHT_BROWSERS_PATH，禁止执行 python -m playwright install 或下载浏览器。先确认该版本满足原依赖声明；若版本不兼容、客户端安装或原测试加载失败，明确 blocked，不修改依赖声明、锁文件、源码或原测试来通过，也不能用 Node 验收冒充原 Python 测试已执行。缓存只提供工具包与浏览器二进制，当前新验收容器仍须在 setup 执行 node ${toolsCache.modulePath}/cli.js install-deps chromium，然后用该缓存 Playwright 的 chromium.launch({headless:true}) 实际启动并打开本地页面验证。Python 测试也须真实加载其客户端并启动缓存浏览器；不要设置 channel；缓存启动失败仍报告环境 blocked，不编造可用。缓存不属于被测模型产物，缓存准备耗时不计为模型或业务验收耗时。\n`
     : '';
+  const projectDependencyInstructions = `\n预装的浏览器工具环境不等于项目依赖完整。setup 必须先读取原项目 requirements.txt、pyproject.toml、package.json 及实际锁文件，按原声明核对业务依赖和测试依赖，并使用后续启动服务、运行测试的同一个解释器或运行时逐项检查导入和版本。声明的依赖缺失时，先在本次验收容器的 /tmp 专用目录补装并重新核对，不能只因第一次 import 失败就结束整个验收。安装命令必须有时限，保留输出、实际版本和失败原因；下载不可用、版本不兼容或安装后仍不能加载时才按真实证据报告环境 blocked。没有执行的业务检查和原测试仍不计通过。\nPython 使用 /opt/annotation/python/bin/python3 时，可以用该解释器的 -m pip install --target /tmp/annotation_verify_<唯一值>/dependencies 安装缺失的原声明依赖及其依赖，再在各步骤设置该专用目录的 PYTHONPATH；不要把整个 /tmp 放入 PYTHONPATH。已有包满足声明时不重复升级，不能因补装业务依赖替换已验证的 Playwright 客户端或浏览器；若原声明与缓存冲突，应单独准备兼容环境或报告阻塞，不篡改依赖声明。所有服务和原测试子进程都必须继承相同的依赖目录，不能在一个解释器安装后改用另一个解释器验证。不得写入预装工具目录、系统目录或改动项目源码、原测试、依赖声明与锁文件；安装前后核对原有文件摘要不变。\n`;
   const imageToolsAdvice = imageTools?.passed
     ? `当前不可变镜像已预装 Python/Node Playwright 1.62.0、Chromium 及系统依赖，并在开题前通过实际启动检查；原件：${imageTools.receiptPath}，摘要 ${imageTools.sha256}。优先使用 /opt/annotation/python/bin/python3 或 require('/opt/annotation/node/node_modules/playwright')，保留 PLAYWRIGHT_BROWSERS_PATH=/opt/annotation/browsers，先在本次验收容器实际启动验证；无需重新下载或 apt 安装。不要为使用缓存修改原项目依赖。\n`
     : '';
@@ -1076,6 +1077,7 @@ export async function verifyRuntime({
     'runtime-plan',
     environmentInstructions +
       imageToolsAdvice +
+      projectDependencyInstructions +
       cacheInstructions +
       manifestTestDependencyInstructions +
       nativeTestResultInstructions +
