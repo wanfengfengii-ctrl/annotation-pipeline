@@ -157,6 +157,28 @@ test('SOLO ZIP only contains complete native directories; audit remains local an
   assert.equal(createSoloNativeAttachment(f.options).sha256, attachment.sha256);
 });
 
+test('native attachment rejects apt permission failure hidden by shell pipeline success', (t) => {
+  const f = fixture(t);
+  const events = fs
+    .readFileSync(f.main, 'utf8')
+    .trim()
+    .split('\n')
+    .map(JSON.parse);
+  events[2].message.content[0].input.command =
+    'apt-get install -y python3.11-venv 2>&1 | tail -3';
+  events[3].message.content[0].content =
+    'E: Could not open lock file /var/lib/dpkg/lock-frontend - open (13: Permission denied)\n' +
+    'E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), are you root?';
+  fs.writeFileSync(
+    f.main,
+    events.map((e) => JSON.stringify(e)).join('\n') + '\n',
+  );
+  f.options.traceExport = f.refresh();
+  const original = fs.readFileSync(f.main);
+  assert.throws(() => createSoloNativeAttachment(f.options), /权限/);
+  assert.deepEqual(fs.readFileSync(f.main), original);
+});
+
 test('native bytes and names preserve normal Basic text, credential-like fixtures, BOM, CRLF and JSON whitespace', (t) => {
   const f = fixture(t);
   const original =

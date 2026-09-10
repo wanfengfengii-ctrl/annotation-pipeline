@@ -29,6 +29,54 @@ const result = (id, content, is_error = true, extra = {}) => ({
     ],
   },
 });
+const aptDenied =
+  'node\n/bin/bash: line 1: sudo: command not found\n' +
+  'E: Could not open lock file /var/lib/dpkg/lock-frontend - open (13: Permission denied)\n' +
+  'E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), are you root?';
+test('apt permission denial survives a successful tail and later user-space install', () => {
+  const apt = call('apt');
+  apt.message.content[0].input.command =
+    'whoami; sudo -n true 2>&1; apt-get install -y python3.11-venv 2>&1 | tail -3';
+  const files = trace([
+    mode,
+    apt,
+    result('apt', aptDenied, false),
+    call('pip'),
+    result('pip', 'pip install succeeded', false),
+  ]);
+  const original = structuredClone(files);
+  const audit = auditPermissionTraces(files);
+  assert.equal(audit.passed, false);
+  assert.equal(audit.denialCount, 1);
+  assert.equal(audit.findings[0].tool, 'Bash');
+  assert.equal(audit.findings[0].kind, 'filesystem');
+  assert.equal(audit.findings[0].toolUseId, 'apt');
+  assert.deepEqual(files, original);
+});
+test('successful reads of apt diagnostics and non-permission apt failures are not denials', () => {
+  for (const name of ['Read', 'Bash']) {
+    const read = call('read', name);
+    read.message.content[0].input.command = 'cat previous-install.log';
+    assert.equal(
+      auditPermissionTraces(
+        trace([mode, read, result('read', aptDenied, false)]),
+      ).denialCount,
+      0,
+    );
+  }
+  const apt = call('apt');
+  apt.message.content[0].input.command = 'apt-get install missing | tail -3';
+  assert.equal(
+    auditPermissionTraces(
+      trace([
+        mode,
+        apt,
+        result('apt', 'E: Unable to locate package missing', false),
+      ]),
+    ).denialCount,
+    0,
+  );
+});
 test('Read/Write/Bash permission-rule denials invalidate the whole native session', () => {
   const events = [
     mode,
