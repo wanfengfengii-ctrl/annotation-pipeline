@@ -1,0 +1,4 @@
+.details:not([open]) .collapse,
+.details[open] .preview {
+  display: none;
+}
