@@ -77,6 +77,39 @@ test('successful reads of apt diagnostics and non-permission apt failures are no
     0,
   );
 });
+test('apt options and cleanup denial remain visible behind successful tail', () => {
+  const diagnostic =
+    "rm: cannot remove '/var/cache/apt/archives/partial/*.deb': Permission denied";
+  for (const options of [
+    '',
+    '-o Dir::State::Lists=/tmp/apt/lists -o Dir::Cache=/tmp/apt/archives ',
+    '--option Dir::Cache=/tmp/apt/archives ',
+  ]) {
+    const apt = call('apt');
+    apt.message.content[0].input.command = `mkdir -p /tmp/apt/lists\napt-get ${options}update 2>&1 | tail -4`;
+    const files = trace([mode, apt, result('apt', diagnostic, false)]);
+    const original = structuredClone(files);
+    const audit = auditPermissionTraces(files);
+    assert.equal(audit.passed, false);
+    assert.equal(audit.denialCount, 1);
+    assert.equal(audit.findings[0].kind, 'filesystem');
+    assert.deepEqual(files, original);
+  }
+  for (const command of [
+    'cat previous-install.log',
+    "echo 'apt-get update'",
+    'apt-get --version',
+  ]) {
+    const read = call('read');
+    read.message.content[0].input.command = command;
+    assert.equal(
+      auditPermissionTraces(
+        trace([mode, read, result('read', diagnostic, false)]),
+      ).denialCount,
+      0,
+    );
+  }
+});
 test('Read/Write/Bash permission-rule denials invalidate the whole native session', () => {
   const events = [
     mode,
