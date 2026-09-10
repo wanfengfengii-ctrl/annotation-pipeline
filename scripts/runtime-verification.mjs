@@ -953,10 +953,10 @@ export async function verifyRuntime({
     };
   }
   const cacheInstructions = toolsCache
-    ? `验收专用工具缓存已在同一不可变镜像及平台真实启动验证：Playwright ${toolsCache.toolVersion}，平台 ${toolsCache.platform}，缓存只读挂载到 ${toolsCache.mountPath}。需要浏览器时优先直接 require('${toolsCache.modulePath}')；ESM 脚本可用 createRequire 加载该绝对路径。PLAYWRIGHT_BROWSERS_PATH 已由容器设置为 ${toolsCache.browsersPath}，各步骤不要覆盖此变量，也不要重新 npm 安装不同版本的 Playwright 或下载浏览器。只读缓存不能安装、更新或清理；缺少其他验收库时单独安装到 /tmp。缓存只提供工具包与浏览器二进制，当前新验收容器仍须在 setup 执行 node ${toolsCache.modulePath}/cli.js install-deps chromium，然后用该缓存 Playwright 的 chromium.launch({headless:true}) 实际启动并打开本地页面验证。不要设置 channel；缓存启动失败仍报告环境 blocked，不编造可用。缓存不属于被测模型产物，缓存准备耗时不计为模型或业务验收耗时。\n`
+    ? `验收专用工具缓存已在同一不可变镜像及平台真实启动验证：Playwright ${toolsCache.toolVersion}，平台 ${toolsCache.platform}，缓存只读挂载到 ${toolsCache.mountPath}。需要浏览器时优先直接 require('${toolsCache.modulePath}')；ESM 脚本可用 createRequire 加载该绝对路径。PLAYWRIGHT_BROWSERS_PATH 已由容器设置为 ${toolsCache.browsersPath}，各步骤不要覆盖此变量，也不要重新 npm 安装不同版本的 Playwright 或下载浏览器。只读缓存不能安装、更新或清理；缺少其他验收库时单独安装到 /tmp。此缓存包含 Node 客户端，不包含 Python playwright 模块；原项目或原测试依赖 Python Playwright 时，允许在 /tmp 独立 Python 环境安装 playwright==${toolsCache.toolVersion} 客户端，并补齐 venv、ensurepip、pip 等实际缺失的前提，继续复用上述 PLAYWRIGHT_BROWSERS_PATH，禁止执行 python -m playwright install 或下载浏览器。先确认该版本满足原依赖声明；若版本不兼容、客户端安装或原测试加载失败，明确 blocked，不修改依赖声明、锁文件、源码或原测试来通过，也不能用 Node 验收冒充原 Python 测试已执行。缓存只提供工具包与浏览器二进制，当前新验收容器仍须在 setup 执行 node ${toolsCache.modulePath}/cli.js install-deps chromium，然后用该缓存 Playwright 的 chromium.launch({headless:true}) 实际启动并打开本地页面验证。Python 测试也须真实加载其客户端并启动缓存浏览器；不要设置 channel；缓存启动失败仍报告环境 blocked，不编造可用。缓存不属于被测模型产物，缓存准备耗时不计为模型或业务验收耗时。\n`
     : '';
   const browserInstallAdvice = toolsCache
-    ? '本次已提供通过完整性校验和实际启动验证的专用浏览器缓存，浏览器验收只复用下文的固定版本客户端与二进制，不执行 Playwright 包或浏览器下载；Python 业务仍使用现有 Python 启动。'
+    ? '本次已提供通过完整性校验和实际启动验证的专用浏览器缓存，复用固定版本的 Node 客户端与浏览器二进制，不重复下载它们；Python 业务仍使用现有 Python 启动，原 Python 测试所需的同版客户端按下文规则单独准备。'
     : '若 Node/npm 可用，浏览器验收可优先通过 npm 在 /tmp 下的独立目录安装 Playwright，Python 业务本身仍可用已有 Python 启动；若选 Python 验收工具链，须先在 setup 补齐 venv、ensurepip 和 pip。';
   const browserDownloadAdvice = toolsCache
     ? '缓存已含默认 headless Chromium，当前容器只准备所需系统库并实际启动验证；只读缓存缺失、损坏或不可用时明确 blocked，不在题目内重新下载。'

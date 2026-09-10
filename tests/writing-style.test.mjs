@@ -421,7 +421,22 @@ test('拒绝推测和情绪语气，保留未核验的事实边界而不是机�
     artifactFindings: '缺少记录',
   });
   assert.equal(draft.value.descriptions[0], '可能通过了测试');
-  assert.ok(draft.issues.length);
+  assert.match(draft.issues[0], /descriptions\[0\].*命中词：可能/);
+  const negated = '没有反复猜测，日志记录了输入校验和重试结果。';
+  assert.match(proseIssues(negated)[0], /命中词：猜测/);
+  assert.equal(
+    checkWriting('score', {
+      descriptions: Array(5).fill(negated),
+      other: '无',
+      processFindings: '未验证',
+      artifactFindings: '缺少记录',
+    }).value.descriptions[0],
+    negated,
+  );
+  assert.match(
+    proseIssues('可能没有反复猜测，也可能未执行。')[0],
+    /命中词：可能、猜测，/,
+  );
   assert.deepEqual(
     proseIssues('已改好筛选逻辑，轨迹中没有测试记录，测试结果未验证。'),
     [],
@@ -450,6 +465,7 @@ process.stdin.on('data', c=>input+=c); process.stdin.on('end',()=>{
   const out=args[args.indexOf('--output-last-message')+1];
   fs.appendFileSync(${JSON.stringify(path.join(dir, 'calls'))}, 'call\\n');
   const revised=out.includes('.writing.');
+  if(revised && !input.includes('命中词：可能')) throw Error('Missing exact writing issue');
   const mode=fs.existsSync(${JSON.stringify(path.join(dir, 'mode'))})?fs.readFileSync(${JSON.stringify(path.join(dir, 'mode'))},'utf8'):'';
   const value={prompt:revised&&mode!=='invalid'?${JSON.stringify(fixture.categoryQuestion('Feature 迭代'))}:'可能需要加上订单筛选',category:revised&&mode==='changed'?'Bug 修复':'Feature 迭代',difficulty:'中等',stack:'TypeScript',acceptance:['切换状态重置页码','空列表测试']};
   fs.writeFileSync(out,JSON.stringify(value)); console.log(JSON.stringify({type:'thread.started',thread_id:'fixture'}));

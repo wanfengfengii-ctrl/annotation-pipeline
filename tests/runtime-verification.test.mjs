@@ -659,6 +659,18 @@ test('Setup dependency failure remains blocked with bound probe evidence and unt
         assert.match(instruction, /Playwright 1\.55\.0/);
         assert.match(instruction, /不在题目内重新下载/);
         assert.match(instruction, /只读缓存不能安装、更新或清理/);
+        assert.match(
+          instruction,
+          /允许在 \/tmp 独立 Python 环境安装 playwright==1\.55\.0 客户端/,
+        );
+        assert.match(instruction, /继续复用上述 PLAYWRIGHT_BROWSERS_PATH/);
+        assert.match(instruction, /先确认该版本满足原依赖声明/);
+        assert.match(instruction, /不修改依赖声明、锁文件、源码或原测试/);
+        assert.match(
+          instruction,
+          /禁止执行 python -m playwright install 或下载浏览器/,
+        );
+        assert.doesNotMatch(instruction, /不执行 Playwright 包或浏览器下载/);
         assert.doesNotMatch(
           instruction,
           /优先通过 npm 在 \/tmp 下的独立目录安装 Playwright/,
