@@ -2,6 +2,10 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { questionRoot } from '../lib/question-session.mjs';
+import {
+  gatewayFailureValid,
+  gatewayContinuationVersion,
+} from '../lib/gateway-continuation.mjs';
 import { validateRuntimePlan } from '../lib/runtime-verification.mjs';
 import { reuseRuntimeVerification } from './runtime-verification.mjs';
 
@@ -31,6 +35,15 @@ export function projectRegressionContext(task, turn, { dir, imageId }) {
   const pending = new Map();
   for (const previous of history) {
     const report = previous.automation?.runtimeVerification;
+    // A provider-error round stopped before business verification. Its original
+    // failure remains evidence; it cannot supply a fabricated regression report.
+    if (
+      !report &&
+      gatewayFailureValid(previous) &&
+      previous.gatewayRecovery?.version === gatewayContinuationVersion &&
+      previous.gatewayRecovery.nextTurnId
+    )
+      continue;
     if (!report) throw Error('项目回归缺少前轮验收报告：' + previous.id);
     regularFile(report.reportPath);
     const receiptPath = path.join(taskDir, previous.id + '.result.json');

@@ -17,6 +17,10 @@ import {
 } from '../lib/disputed-continuation.mjs';
 
 import { continuationContext } from '../lib/round-context.mjs';
+import {
+  isGatewayContinuation,
+  recoveryRepairChecks,
+} from '../lib/gateway-continuation.mjs';
 import { questionRoot } from '../lib/question-session.mjs';
 import { policySessionContext } from '../lib/policy-session-context.mjs';
 import {
@@ -361,7 +365,11 @@ export function createJobExecutor({
         automation.runtimeVerification.status === 'blocked'
       )
         throw Error('缺少完成的独立运行验收，不能自动出后续题');
-      if (!canAddTurn(task) && sessionTurns(task, turn).length >= 3) {
+      if (
+        !canAddTurn(task) &&
+        sessionTurns(task, turn).filter((r) => !isGatewayContinuation(r))
+          .length >= 3
+      ) {
         delete automation.nextError;
         return;
       }
@@ -384,7 +392,7 @@ export function createJobExecutor({
         const next = await step(
           'project-next',
           `${seriesPrompt(task)}
-当前项目题额 ${JSON.stringify(projectCounts(task))}，当前会话已记录 ${sessionTurns(task, turn).length} 条对话，最多三条；当天全局分布（已完成及在途）：${JSON.stringify(context.mix)}。初始项目目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}
+当前项目题额 ${JSON.stringify(projectCounts(task))}，当前会话已记录 ${sessionTurns(task, turn).length} 条实际对话，其中 ${sessionTurns(task, turn).filter((r) => !isGatewayContinuation(r)).length} 道业务题；业务题最多初始题加两道 Bug，已授权的 504 继续不算新题，所有实际调用合计最多十次；当天全局分布（已完成及在途）：${JSON.stringify(context.mix)}。初始项目目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}
 项目路径：${task.projectSeries.directory}
 本轮实际 Prompt：${preparation.value.prompt}
 本轮原始验收目标：${result.evaluationPrompt}
@@ -409,11 +417,12 @@ export function createJobExecutor({
         automation.next = next;
       } else if (
         context.config.autoContinue &&
-        sessionTurns(task, turn).length < 3
+        sessionTurns(task, turn).filter((r) => !isGatewayContinuation(r))
+          .length < 3
       ) {
         const next = await step(
           'next',
-          `只读判断是否需要下一轮。会话最初目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}\n本轮原始目标：${turn.requestedPrompt || turn.prompt}\n完整验收任务：${result.evaluationPrompt}\n轨迹：${result.tracePath}\n产物目录：${result.workDir}\n本轮评价：${JSON.stringify(result.review)}\n执行结果类型：${result.executionOutcome || 'complete'}\n仅对本题未完成部分或已发现 Bug 提出具体修复，不增加无关功能。需要用户凭据、付费、外部访问或关键决策时 needs_input。完成时 complete；截断未完成时 needs_input；已证实产物问题且本会话未到两轮修复时 repair。prompt 必须是可执行的下一轮完整指令，complete/needs_input 时写“无”。reason 给出实际依据。每个会话最多初始题加两轮 Bug 修复，共三条对话，累计调用最多十次。Bug prompt 不写项目名称、标题或编号，直接用 180 至 260 字的 1 至 2 段正文接着描述问题，像同事说话一样写清发生条件、实际结果和希望怎么改，不重新介绍面向人群，不用落实、核验、既有语义等正式表达。保留真实复现数值，围绕既有业务流程说明问题及预期，不增加无关功能，不允许只写继续。`,
+          `只读判断是否需要下一轮。会话最初目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}\n本轮原始目标：${turn.requestedPrompt || turn.prompt}\n完整验收任务：${result.evaluationPrompt}\n轨迹：${result.tracePath}\n产物目录：${result.workDir}\n本轮评价：${JSON.stringify(result.review)}\n执行结果类型：${result.executionOutcome || 'complete'}\n仅对本题未完成部分或已发现 Bug 提出具体修复，不增加无关功能。需要用户凭据、付费、外部访问或关键决策时 needs_input。完成时 complete；截断未完成时 needs_input；已证实产物问题且本会话未到两轮修复时 repair。prompt 必须是可执行的下一轮完整指令，complete/needs_input 时写“无”。reason 给出实际依据。每个会话最多初始题加两道 Bug 修复，共三道业务题；系统处理504的继续不算业务新题，累计实际调用最多十次。Bug prompt 不写项目名称、标题或编号，直接用 180 至 260 字的 1 至 2 段正文接着描述问题，像同事说话一样写清发生条件、实际结果和希望怎么改，不重新介绍面向人群，不用落实、核验、既有语义等正式表达。保留真实复现数值，围绕既有业务流程说明问题及预期，不增加无关功能，不允许只写继续。`,
           result.workDir,
         );
         if (
@@ -566,6 +575,7 @@ export function createJobExecutor({
             ...legacyRepair,
           };
         const continuation = continuationContext(task, turn);
+        const gateway = turn.gatewayContinuation ? continuation : null;
         const allowFollowupFix = !!(
           task.workDir &&
           existsSync(task.workDir) &&
@@ -621,12 +631,20 @@ export function createJobExecutor({
           previousOutput: previousTurn?.output?.slice(0, 8000),
           currentGoal: turn.requestedPrompt || turn.prompt,
         });
-        preparation = await step(
-          'prepare',
-          `${seriesPrompt(task)}\n本题已分配分类：${turn.category}，category 必须保持该值，准备阶段不能更换题型。\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n当前容器内工作目录固定为 /workspace，容器已启动，项目骨架或上题归档代码已准备好，宿主机参考仓库不在容器里。0-1 在该项目内实现全新功能，Feature 迭代现有能力。请读取当前任务目录，准备交给 Claude 的任务 prompt、分类、难度、技术栈和验收条件。${turn.category === 'Bug 修复' ? 'Bug 修复不写项目名称、标题或编号，直接从问题现象开始，用同事聊天的口吻说明发生条件、实际结果和希望怎么改，不重新介绍面向人群，保留真实数值，不用落实、核验、既有语义等正式表达' : turn.category === '0-1 代码生成' ? '题目首行只写项目名称，不加编号' : '本题不写项目名称、标题或编号，直接写需求正文'}，正文用 180 至 260 字自然描述业务，界面要求按下述适用范围执行，原始题目措辞不是格式模板。保留业务目标和必要边界，不擅自增加业务需求；当前目录、权限、评测来源和技术实现细节不附加到 prompt。acceptance 只放实际可执行的验收条件，不混入出题审核、难度分析或待补信息；正文保留用户可见的验收行为。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions(questionContext)}`,
-          task.workDir || task.repoPath,
-          { allocation: { category: turn.category }, questionContext },
-        );
+        preparation = gateway
+          ? {
+              ...structuredClone(gateway.previous.automation.preparation),
+              inheritedFrom: {
+                turnId: gateway.previous.id,
+                reason: '用户授权的 504 原会话继续，复用原题准备记录',
+              },
+            }
+          : await step(
+              'prepare',
+              `${seriesPrompt(task)}\n本题已分配分类：${turn.category}，category 必须保持该值，准备阶段不能更换题型。\n用户任务目标：${turn.requestedPrompt || turn.prompt}\n当前容器内工作目录固定为 /workspace，容器已启动，项目骨架或上题归档代码已准备好，宿主机参考仓库不在容器里。0-1 在该项目内实现全新功能，Feature 迭代现有能力。请读取当前任务目录，准备交给 Claude 的任务 prompt、分类、难度、技术栈和验收条件。${turn.category === 'Bug 修复' ? 'Bug 修复不写项目名称、标题或编号，直接从问题现象开始，用同事聊天的口吻说明发生条件、实际结果和希望怎么改，不重新介绍面向人群，保留真实数值，不用落实、核验、既有语义等正式表达' : turn.category === '0-1 代码生成' ? '题目首行只写项目名称，不加编号' : '本题不写项目名称、标题或编号，直接写需求正文'}，正文用 180 至 260 字自然描述业务，界面要求按下述适用范围执行，原始题目措辞不是格式模板。保留业务目标和必要边界，不擅自增加业务需求；当前目录、权限、评测来源和技术实现细节不附加到 prompt。acceptance 只放实际可执行的验收条件，不混入出题审核、难度分析或待补信息；正文保留用户可见的验收行为。${firstTurn ? '这是首轮，禁止简单题。' : '这是后续轮次，须结合前序目标与产物判断。'}\n轮次上下文：${roundContext}\n这是 AI 自动评测任务，不得声称是人工标注。\n${policyInstructions(questionContext)}`,
+              task.workDir || task.repoPath,
+              { allocation: { category: turn.category }, questionContext },
+            );
         if (continuation) {
           preparation.value = {
             ...preparation.value,
@@ -645,7 +663,7 @@ export function createJobExecutor({
         if (turn.repairOf) {
           if (preparation.value.category !== 'Bug 修复')
             throw Error('当前同会话追问必须为 Bug 修复');
-        } else if (preparation.value.category === 'Bug 修复')
+        } else if (!gateway && preparation.value.category === 'Bug 修复')
           throw Error('Bug 修复只能关联当前会话');
         if (!turn.repairOf && preparation.value.category !== turn.category)
           throw Error('独立题型与已分配额度不一致，需重新出题');
@@ -728,20 +746,28 @@ export function createJobExecutor({
                 source: copyVerificationSource(candidate.repoPath).files,
               }),
         });
-        const audit = latestRejection
+        const audit = gateway
           ? {
-              ...structuredClone(latestRejection),
-              accepted: false,
-              rejection: latestRejection.value.reason,
+              ...structuredClone(gateway.previous.automation.policy),
+              inheritedFrom: {
+                turnId: gateway.previous.id,
+                reason: '504 继续复用发送前已通过的原题审核，不生成新题',
+              },
             }
-          : await step(
-              'policy',
-              `${policyInstructions({ questionStyle: questionStyleApplies, ...questionContext })}\n${!questionStyleApplies ? '本题已在终端发送，保留原始题目，不追溯应用新的题目格式与内容标准；questionCompliant 写 false，questionChecks、workflowFeatures、businessDetails、wordingRequirements、wordingDuplicatePairs 写空数组，allowed 只按原禁出和难度规则判断。' : ''}\n${preserveQuestion ? '这是已发送题目的原会话接续，当前目录已包含 Claude 执行后的改动。按发送时的原题、前序验收报告和复现证据审核禁出与难度；当前代码已修改或已增加回归测试是执行进展，不能据此否定发送前已经复现的缺陷，也不能要求退回旧代码或重新复现旧缺陷才允许收集本轮结果。本轮修复是否有效由后续独立运行验收判断，不在出题审核中预先判定。' : ''}\n轮次上下文：${roundContext}\nquestionSession 是程序按 questionRootId 和实际 SessionID 分组的本会话记录及额度，只按其中同一原题的前序轮次计算 Bug 修复次数；previousGoals 还包含该项目其他独立会话，仅提供项目背景，不能把不同 questionRootId 或不同 SessionID 的历史 Bug 算进本会话。当前候选是否超限以 questionSession 的结构化计数核对，不能凭项目整体题目数量推断。独立审核用户原目标与准备后的实际任务的禁出、难度和业务范围；格式、字数、语气与逐句去重只检查准备后的候选实际 prompt，原目标中已经在候选内修正的表达问题不作为拒绝候选的依据。若当前输入仅为继续或续写，必须根据前序原始目标判断。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选 repoPath 是本轮实际容器产物在本机的映射目录，审核必须读取此处对应项目；原参考仓库仅用于最初选题，不能拿它的代码判断本轮产物。此前复现数值引用 roundContext.previousVerification 给出的独立报告和日志，不在 Claude 原轨迹中寻找独立验收的工具调用。\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同且难度合格时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
-              candidate.repoPath,
-              { questionContext },
-            );
+          : latestRejection
+            ? {
+                ...structuredClone(latestRejection),
+                accepted: false,
+                rejection: latestRejection.value.reason,
+              }
+            : await step(
+                'policy',
+                `${policyInstructions({ questionStyle: questionStyleApplies, ...questionContext })}\n${!questionStyleApplies ? '本题已在终端发送，保留原始题目，不追溯应用新的题目格式与内容标准；questionCompliant 写 false，questionChecks、workflowFeatures、businessDetails、wordingRequirements、wordingDuplicatePairs 写空数组，allowed 只按原禁出和难度规则判断。' : ''}\n${preserveQuestion ? '这是已发送题目的原会话接续，当前目录已包含 Claude 执行后的改动。按发送时的原题、前序验收报告和复现证据审核禁出与难度；当前代码已修改或已增加回归测试是执行进展，不能据此否定发送前已经复现的缺陷，也不能要求退回旧代码或重新复现旧缺陷才允许收集本轮结果。本轮修复是否有效由后续独立运行验收判断，不在出题审核中预先判定。' : ''}\n轮次上下文：${roundContext}\nquestionSession 是程序按 questionRootId 和实际 SessionID 分组的本会话记录及额度，只按其中同一原题的前序轮次计算 Bug 修复次数；previousGoals 还包含该项目其他独立会话，仅提供项目背景，不能把不同 questionRootId 或不同 SessionID 的历史 Bug 算进本会话。当前候选是否超限以 questionSession 的结构化计数核对，不能凭项目整体题目数量推断。独立审核用户原目标与准备后的实际任务的禁出、难度和业务范围；格式、字数、语气与逐句去重只检查准备后的候选实际 prompt，原目标中已经在候选内修正的表达问题不作为拒绝候选的依据。若当前输入仅为继续或续写，必须根据前序原始目标判断。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选 repoPath 是本轮实际容器产物在本机的映射目录，审核必须读取此处对应项目；原参考仓库仅用于最初选题，不能拿它的代码判断本轮产物。此前复现数值引用 roundContext.previousVerification 给出的独立报告和日志，不在 Claude 原轨迹中寻找独立验收的工具调用。\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同且难度合格时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
+                candidate.repoPath,
+                { questionContext },
+              );
         audit.proposedDifficulty = candidate.difficulty;
-        if (!submittedEvidence && !preserveQuestion) {
+        if (!gateway && !submittedEvidence && !preserveQuestion) {
           candidate.difficulty = audit.value.assessedDifficulty;
           preparation.value.difficulty = audit.value.assessedDifficulty;
         }
@@ -752,12 +778,18 @@ export function createJobExecutor({
           actualWorkspace: candidate.repoPath,
           legacyRepair,
         };
-        audit.ruleVersion = rules.version;
-        if (questionStyleApplies)
+        if (!gateway) audit.ruleVersion = rules.version;
+        if (!gateway && questionStyleApplies)
           audit.questionRuleVersion = questionRules.version;
         audit.candidateDigest = await candidateDigest(candidate);
         automation.policy = audit;
-        if (submittedEvidence) {
+        if (gateway) {
+          cached.policy = audit;
+          automation.gatewayContinuation = {
+            ...turn.gatewayContinuation,
+            evaluationPrompt: result.evaluationPrompt,
+          };
+        } else if (submittedEvidence) {
           automation.submittedPolicyEvidence = submittedEvidence;
           cached.submittedPolicyEvidence = submittedEvidence;
         } else {
@@ -789,9 +821,11 @@ export function createJobExecutor({
           runtimeState?.results?.[turn.id] ||
           (runtimeState?.pending?.turnId === turn.id &&
             runtimeState.pending.phase === 'sent');
-        const preserveInitialSnapshot = alreadySent || !!turn.repairOf;
+        const preserveInitialSnapshot =
+          alreadySent || !!turn.repairOf || !!gateway;
         const initialSnapshot =
           cached.snapshot ||
+          gateway?.previous.automation?.snapshot ||
           (turn.repairOf &&
             task.turns.find((r) => r.id === turn.repairOf)?.automation
               ?.snapshot);
@@ -843,7 +877,7 @@ export function createJobExecutor({
           container,
           workRoot,
           publicationMode:
-            alreadySent || turn.repairOf ? 'backfill' : 'before-run',
+            alreadySent || turn.repairOf || gateway ? 'backfill' : 'before-run',
         });
         await api({
           action: 'initial-code-snapshot',
@@ -917,13 +951,8 @@ export function createJobExecutor({
           imageId: result.container.imageId,
         });
         if (regressionContext) {
-          const priorDecision = previousTurn?.automation?.next?.value;
           const selected = new Set(
-            Array.isArray(turn.repairCheckIds)
-              ? turn.repairCheckIds
-              : priorDecision?.prompt === (turn.requestedPrompt || turn.prompt)
-                ? priorDecision.repairCheckIds || []
-                : [],
+            recoveryRepairChecks(task, turn, previousTurn),
           );
           for (const check of regressionContext.checks)
             if (selected.has(check.id)) check.scope = 'question';

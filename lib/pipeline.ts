@@ -156,10 +156,28 @@ export type Turn = {
   stage?: string;
   requestedPrompt?: string;
   continuationOf?: string;
+  gatewayFailure?: {
+    version: string;
+    status: number;
+    eventSha256: string;
+    traceSha256: string;
+    promptId: string;
+    sessionId: string;
+  };
+  gatewayContinuation?: {
+    version: string;
+    failedTurnId: string;
+    failedPromptId: string;
+    sessionId: string;
+    containerId: string;
+    traceSha256: string;
+  };
+  gatewayRecovery?: { version: string; nextTurnId: string };
   planRetry?: boolean;
   evaluationPrompt?: string;
   executionOutcome?: 'complete' | 'truncated' | 'error';
   automation?: {
+    gatewayContinuation?: Record<string, unknown>;
     submittedPolicyEvidence?: Record<string, unknown>;
     projectContinuation?: Record<string, unknown>;
     runtimeVersion?: string;

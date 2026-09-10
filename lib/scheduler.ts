@@ -13,7 +13,7 @@ export const defaultScheduler: SchedulerConfig = {
   useHistory: true,
   repos: [],
   scope:
-    '先准备项目骨架，再按 7:7:10:1:1 设计全新功能、已有功能迭代、真实 Bug 修复、理解和重构题。0-1 和 Feature 各最多十题；独立题目新会话，只有 Bug 在原会话追问，最多两轮。',
+    '先准备项目骨架，再按 7:7:10:1:1 设计全新功能、已有功能迭代、真实 Bug 修复、理解和重构题。0-1 和 Feature 各最多十题；独立题目新会话，Bug 在原会话最多两轮；已确认结束的504由系统发送继续，不算新题，实际调用合计最多十次。',
   concurrency: 3,
   dailyLimit: 20,
 };

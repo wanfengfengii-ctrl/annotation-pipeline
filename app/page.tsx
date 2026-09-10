@@ -763,7 +763,8 @@ export default function Home() {
                 <ul>
                   <li>
                     每个 Prompt-response pair 为一条数据；同项目 0-1 与 Feature
-                    各最多十题，每会话最多三条对话。
+                    各最多十题，每会话最多两道 Bug 修复，含 504
+                    继续最多十次调用。
                   </li>
                   <li>
                     Bug
@@ -1532,7 +1533,8 @@ function TurnPanel({
             {r.permissionAudit?.passed ? '免审批已核验' : '待核验或存在异常'}
           </summary>
           <p className="sub">
-            独立题目使用新 Terminal 会话，只有 Bug 修复保留当前会话，最多两轮。
+            独立题目使用新 Terminal 会话；Bug 修复最多两轮，504
+            后在原会话发送继续，实际调用合计最多十次。
           </p>
           <p className="sub">
             终端：

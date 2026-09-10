@@ -1,5 +1,10 @@
 import { sessionFinalization } from '@/lib/session-finalization.mjs';
 import {
+  gatewayFailureValid,
+  gatewayContinuationVersion,
+  planGatewayContinuation,
+} from '@/lib/gateway-continuation.mjs';
+import {
   validateSeries,
   claudeCallCount,
   shouldFinishSession,
@@ -679,6 +684,19 @@ export async function POST(req: Request) {
       r.output = String(b.output || '').slice(0, 100000);
       r.error = String(b.error || '').slice(0, 10000);
       r.tracePath = String(b.tracePath || '');
+      if (b.gatewayFailure) {
+        const candidate = { ...r, gatewayFailure: b.gatewayFailure };
+        if (b.success || !gatewayFailureValid(candidate))
+          throw Error('504 原生失败证据无效');
+        r.gatewayFailure = {
+          version: gatewayContinuationVersion,
+          status: 504,
+          eventSha256: b.gatewayFailure.eventSha256,
+          traceSha256: b.gatewayFailure.traceSha256,
+          promptId: r.promptId!,
+          sessionId: r.sessionId!,
+        };
+      }
       r.completedJobToken = r.jobToken;
       delete r.jobToken;
       for (const key of [
@@ -703,6 +721,19 @@ export async function POST(req: Request) {
       if (!item.task.snapshot && typeof b.snapshot === 'string')
         item.task.snapshot = b.snapshot;
       const disputedPlan = !b.success && disputeContinuationReady(r);
+      const recovery = planGatewayContinuation(item.task, r, {
+        id: crypto.randomUUID(),
+        callCount: claudeCallCount(item.task, questionRoot(item.task, r)),
+      });
+      if (recovery) {
+        r.gatewayRecovery = {
+          version: gatewayContinuationVersion,
+          nextTurnId: recovery.id,
+        };
+        item.task.turns.push(recovery as Turn);
+        item.task.automationNotice =
+          '本轮已确认 504 结束，原会话排队发送继续；失败原件与实际轮次保留';
+      }
       if ((b.success || disputedPlan) && !item.task.closed) {
         if (disputedPlan) delete r.planRetry;
         let decision;

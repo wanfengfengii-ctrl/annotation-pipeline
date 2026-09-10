@@ -1,4 +1,10 @@
 import { execFileSync } from 'node:child_process';
+import { completedGateway504 } from './native-gateway-error.mjs';
+import {
+  gatewayContinuationVersion,
+  gatewayContinuationContext,
+  isGatewayContinuation,
+} from '../lib/gateway-continuation.mjs';
 import {
   readFileSync,
   writeFileSync,
@@ -266,6 +272,7 @@ export function readNativeTurn(files, prompt, previousIds = []) {
       error: round.some(
         (e) => e.isApiErrorMessage || e.subtype === 'api_error',
       ),
+      gatewayError: completedGateway504(round),
       content: round.map((e) => JSON.stringify(e)).join('\n') + '\n',
       nativeContent: file.content,
     };
@@ -950,7 +957,7 @@ export class DockerRuntime {
     };
   }
   async execute(task, turn, reserve) {
-    if (turn.continuationOf && !turn.repairOf)
+    if (turn.continuationOf && !turn.repairOf && !isGatewayContinuation(turn))
       throw Error('仅 Bug 修复允许继续原会话，普通续写已停止');
     const s = await this.ensure(task, turn);
     if (s.results?.[turn.id])
@@ -966,10 +973,56 @@ export class DockerRuntime {
     let p = s.pending;
     if (p && (p.turnId !== turn.id || p.promptHash !== hash(turn.prompt)))
       throw Error('容器中存在未确认的交互，请核对原始轨迹，不能发送新题');
+    const continuation = gatewayContinuationContext(task, turn);
+    const assertGatewayIdle = () => {
+      if (continuation) {
+        if (
+          s.sessionId !== continuation.previous.sessionId ||
+          s.containerId !== turn.gatewayContinuation.containerId
+        )
+          throw Error('504 继续必须使用原容器和原 Claude 会话');
+        const idle = assertNativeSessionIdle(
+          { ...s, pending: undefined },
+          this.native(s),
+          {
+            failedTurnId: continuation.previous.id,
+          },
+        );
+        const files = this.native(s);
+        const otherIds = files
+          .flatMap((file) => parseNativeJSONL(file.content))
+          .filter(
+            (e) =>
+              isNativeUserMessage(e) &&
+              e.uuid !== continuation.previous.promptId,
+          )
+          .map((e) => e.uuid);
+        const native = readNativeTurn(
+          files,
+          continuation.previous.prompt,
+          otherIds,
+        );
+        if (
+          !idle.completedPromptIds.includes(continuation.previous.promptId) ||
+          !native?.gatewayError ||
+          native.promptId !== continuation.previous.promptId ||
+          native.gatewayError.eventSha256 !==
+            continuation.previous.gatewayFailure.eventSha256
+        )
+          throw Error('504 原生结束证据已变化，未发送继续');
+      }
+    };
     if (!p) {
-      if (Object.keys(s.results).length >= sessionLimits.maxLogicalTurns)
+      assertGatewayIdle();
+      const logicalResults = Object.keys(s.results).filter(
+        (id) => !isGatewayContinuation(task.turns?.find((r) => r.id === id)),
+      );
+      if (
+        !continuation &&
+        logicalResults.length >= sessionLimits.maxLogicalTurns
+      )
         throw Error('同一会话最多初始题加两轮 Bug 修复');
-      if (Object.keys(s.results).length && !turn.repairOf)
+      if (Object.keys(s.results).length && !turn.repairOf && !continuation)
         throw Error('非 Bug 题目必须使用新会话');
       if (
         !Object.keys(s.results).length &&
@@ -1006,6 +1059,7 @@ export class DockerRuntime {
         throw Error('当前会话已达 10 次 Claude 调用上限');
       }
       p.count = quota.count;
+      assertGatewayIdle();
       p.phase = 'sent';
       this.save(s);
       const live = this.live.get(task.id);
@@ -1072,6 +1126,14 @@ export class DockerRuntime {
             native.error || !permissionAudit.passed ? 'error' : 'complete',
           finishedAt: new Date().toISOString(),
         };
+        if (native.gatewayError && permissionAudit.passed)
+          result.gatewayFailure = {
+            version: gatewayContinuationVersion,
+            ...native.gatewayError,
+            promptId: native.promptId,
+            sessionId: native.sessionId,
+            traceSha256: traceExport.sha256,
+          };
         s.results[turn.id] = result;
         delete s.pending;
         s.traceExport = traceExport;
