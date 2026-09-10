@@ -6,7 +6,8 @@ import { verifyNativeExport, evidenceRelativeName } from './evidence.mjs';
 import { digest } from './solo-records.mjs';
 import { savePrivateJSON } from './solo-client.mjs';
 import { auditPermissionTraces } from '../lib/permission-audit.mjs';
-import { sanitizeSensitiveText } from '../lib/sensitive-content.mjs';
+
+export const soloNativeAttachmentVersion = '2026-09-10.native-verbatim1';
 
 // SOLO's attachment classifier expects native CLI traces. Internal evaluation,
 // runtime, workspace and manifest files stay in the separately verified archive.
@@ -19,7 +20,6 @@ export function createSoloNativeAttachment({
   containerId,
   sessionId,
   promptId,
-  knownSecrets = [],
   maxBytes = 20 * 1024 * 1024,
 }) {
   if (!/^[\w-]+$/.test(turnId || '') || !sessionId || !promptId)
@@ -30,13 +30,7 @@ export function createSoloNativeAttachment({
     mapping = [],
     rawTraces = [];
   let foundPrompt = false;
-  const nameFor = (name) => {
-    const result = sanitizeSensitiveText('projects/' + name, { knownSecrets });
-    evidenceRelativeName(result.text);
-    if (sanitizeSensitiveText(result.text, { knownSecrets }).findings.length)
-      throw Error('原生轨迹路径敏感检查未通过');
-    return result.text;
-  };
+  const nameFor = (name) => evidenceRelativeName('projects/' + name);
   for (const directory of native.directories) {
     const name = nameFor(directory) + '/';
     if (entries[name]) throw Error('原生轨迹目录映射冲突');
@@ -47,59 +41,39 @@ export function createSoloNativeAttachment({
     if (entries[name] || entries[name + '/'])
       throw Error('原生轨迹文件映射冲突');
     const original = fs.readFileSync(path.join(native.root, file.name));
+    if (original.length !== file.bytes || digest(original) !== file.sha256)
+      throw Error('原生轨迹在打包时发生变化');
+    // Decode only for read-only identity/permission checks. The ZIP receives
+    // the original buffer: no redaction, reserialization or newline conversion.
     const text = decoder.decode(original);
     if (text.includes('\0') || !/\.(jsonl|json)$/i.test(file.name))
       throw Error('原生目录含需单独复核的非 JSON/JSONL 文件');
-    let redactions = 0;
-    const sanitize = (value) => {
-      const cleaned = sanitizeSensitiveText(value, { knownSecrets });
-      if (sanitizeSensitiveText(cleaned.text, { knownSecrets }).findings.length)
-        throw Error('原生轨迹脱敏复查未通过');
-      redactions += cleaned.findings.length;
-      return cleaned.text;
-    };
-    let copy;
     if (/\.jsonl$/i.test(file.name)) {
       rawTraces.push({ name: file.name, content: text });
-      copy = text
-        .split('\n')
-        .map((line) => {
-          if (!line.trim()) return line;
-          const event = JSON.parse(line);
-          if (
-            event.type === 'user' &&
-            !event.isSidechain &&
-            typeof event.message?.content === 'string' &&
-            event.sessionId === sessionId &&
-            event.promptId === promptId
-          )
-            foundPrompt = true;
-          const cleaned = sanitize(line);
-          const result = JSON.parse(cleaned);
-          if (
-            result.uuid !== event.uuid ||
-            result.promptId !== event.promptId ||
-            result.sessionId !== event.sessionId ||
-            result.type !== event.type
-          )
-            throw Error('脱敏不能改变原生事件标识');
-          return cleaned;
-        })
-        .join('\n');
+      for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (
+          event.type === 'user' &&
+          !event.isSidechain &&
+          typeof event.message?.content === 'string' &&
+          event.sessionId === sessionId &&
+          event.promptId === promptId
+        )
+          foundPrompt = true;
+      }
     } else {
       JSON.parse(text);
-      copy = sanitize(text);
-      JSON.parse(copy);
     }
-    const bytes = Buffer.from(copy);
-    entries[name] = bytes;
+    entries[name] = original;
     mapping.push({
       name,
       sourceNameSha256: digest(file.name),
       originalSha256: file.sha256,
-      sha256: digest(bytes),
-      bytes: bytes.length,
-      redactions,
+      sha256: digest(original),
+      bytes: original.length,
+      redactions: 0,
+      byteIdentical: true,
     });
   }
   if (!foundPrompt)
@@ -132,11 +106,14 @@ export function createSoloNativeAttachment({
   // The audit stays local: inserting this JSON in the ZIP would confuse SOLO's
   // native-trace classifier in the same way as the old internal evidence bundle.
   savePrivateJSON(file + '.audit.json', {
-    version: 1,
+    version: 2,
+    policyVersion: soloNativeAttachmentVersion,
     kind: 'solo-native-only',
     sessionId,
     promptId,
     originalsPreserved: true,
+    byteIdentical: true,
+    redactions: 0,
     traceExportSha256: native.sha256,
     nativeManifestSha256: native.manifestSha256,
     sha256,
@@ -151,5 +128,23 @@ export function createSoloNativeAttachment({
     bytes,
     sha256,
     status: 'passed',
+    policyVersion: soloNativeAttachmentVersion,
+    byteIdentical: true,
   };
+}
+
+// Rebuilding above rechecks the final source manifest. At send time also check
+// the exact file selected by the browser, not just the cached packet's digest.
+export function assertPreparedNativeAttachment(archive, prepared) {
+  if (
+    archive.policyVersion !== soloNativeAttachmentVersion ||
+    archive.byteIdentical !== true ||
+    digest(archive.bytes) !== archive.sha256 ||
+    prepared?.sha256 !== archive.sha256 ||
+    prepared?.path !== archive.path ||
+    prepared?.name !== archive.name ||
+    prepared?.bytes !== archive.bytes.length ||
+    !fs.readFileSync(prepared.path).equals(archive.bytes)
+  )
+    throw Error('待上传附件与原生文件不一致，请重新准备；禁止上传替换版轨迹');
 }

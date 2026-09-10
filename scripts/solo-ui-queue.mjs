@@ -8,6 +8,7 @@ import { records, attachment } from './solo-upload.mjs';
 import { digest, recordKey, parseRound } from './solo-records.mjs';
 import { savePrivateJSON, SOLO_ORIGIN } from './solo-client.mjs';
 import { withSoloLock } from './solo-lock.mjs';
+import { assertPreparedNativeAttachment } from './solo-native-attachment.mjs';
 import {
   blockUpload,
   uploadHolds,
@@ -218,6 +219,8 @@ async function prepareUnlocked() {
           name: archive.name,
           sha256: archive.sha256,
           bytes: archive.bytes.length,
+          policyVersion: archive.policyVersion,
+          byteIdentical: archive.byteIdentical,
         },
         preparedAt: new Date().toISOString(),
       };
@@ -304,8 +307,7 @@ async function markSendingUnlocked(key) {
       throw Error('前序轮次尚未确认上传，先完成前序记录');
   }
   const archive = await attachment(row, { attachment_max_mb: 20 });
-  if (archive.sha256 !== p.attachment.sha256)
-    throw Error('附件在填写后发生变化');
+  assertPreparedNativeAttachment(archive, p.attachment);
   entry.state = 'submitting';
   entry.submittingAt = new Date().toISOString();
   await write(ledger);

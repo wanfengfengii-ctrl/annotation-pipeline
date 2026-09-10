@@ -53,7 +53,7 @@ export function applyManualAdmissions(rows, admissionRoot = root) {
   });
 }
 
-export function manualAttachment(row, knownSecrets) {
+export function manualAttachment(row) {
   const approval = row.manualAdmission;
   if (!approval || digest(row.values) !== approval.approvedValuesDigest)
     throw Error('缺少本条历史上传授权');
@@ -62,7 +62,6 @@ export function manualAttachment(row, knownSecrets) {
     turnId: row.turnId,
     promptId: approval.promptId,
     sessionId: approval.sessionId,
-    knownSecrets,
   });
   if (archive.sha256 !== approval.attachmentSha256)
     throw Error('已审核历史附件发生变化');

@@ -224,7 +224,7 @@ export function requireUploadFinalization(
 
 export async function attachment(row, schema = {}) {
   assertUploadNotHeld(row);
-  if (row.manualAdmission) return manualAttachment(row, submissionSecrets());
+  if (row.manualAdmission) return manualAttachment(row);
   assertUploadNotHeld(row);
   const knownSecrets = submissionSecrets();
   const tasks = await readLocal('/api/tasks');
@@ -313,7 +313,6 @@ export async function attachment(row, schema = {}) {
       containerId: turn.container.containerId,
       sessionId: turn.sessionId,
       promptId: row.nativeIdentity?.promptId,
-      knownSecrets,
       maxBytes: (schema.attachment_max_mb || 20) * 1024 * 1024,
     }),
     submission,

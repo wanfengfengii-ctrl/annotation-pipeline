@@ -8,6 +8,7 @@ import {
   findRemote,
 } from '../scripts/solo-records.mjs';
 import { syncRecords } from '../scripts/solo-sync.mjs';
+import { soloNativeAttachmentVersion } from '../scripts/solo-native-attachment.mjs';
 
 const headers = [
   'User Prompt',
@@ -76,6 +77,8 @@ const file = {
   name: 'native.zip',
   sha256: digest(bytes),
   status: 'passed',
+  policyVersion: soloNativeAttachmentVersion,
+  byteIdentical: true,
 };
 function fixture() {
   const remote = [],
@@ -226,6 +229,8 @@ test('archive bytes, review status and size all gate uploading', async () => {
     { sha256: 'wrong' },
     { status: 'needs_review' },
     { name: 'internal.tar.gz' },
+    { policyVersion: undefined },
+    { byteIdentical: false },
   ]) {
     const f = fixture();
     f.args.prepareAttachment = async () => ({ ...file, ...change });

@@ -5,6 +5,7 @@ import {
   findRemote,
   sameRemote,
 } from './solo-records.mjs';
+import { soloNativeAttachmentVersion } from './solo-native-attachment.mjs';
 
 // Every remote mutation has a durable pre-write state. An ambiguous create is
 // reconciled using SessionID + TurnID; it is never blindly repeated.
@@ -134,6 +135,8 @@ export async function syncRecords({
         !file?.bytes ||
         !file.name.endsWith('.zip') ||
         file.status !== 'passed' ||
+        file.policyVersion !== soloNativeAttachmentVersion ||
+        file.byteIdentical !== true ||
         digest(file.bytes) !== file.sha256
       )
         throw Error('完整轨迹提交副本未通过当前校验');
