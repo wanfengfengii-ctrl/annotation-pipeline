@@ -54,6 +54,7 @@ import { permissionIssues } from '../lib/permission-audit.mjs';
 import { validDockerSnapshot } from '../lib/container-policy.mjs';
 import {
   verifyScoreEvidence,
+  scoreEvidenceInstructions,
   createEvidenceArchive,
   reviewEvidence,
 } from './evidence.mjs';
@@ -293,6 +294,8 @@ export function createJobExecutor({
           '。它只汇总原题、源码摘要及真实运行记录，评分和争议仍须回查所引原件，不视为额外通过结论；无需重新扫描无关源码。';
       if (name === 'score' && automation.scoreRetryContext)
         prompt += '\n' + automation.scoreRetryContext.instructions;
+      if (name === 'score')
+        prompt += '\n' + scoreEvidenceInstructions(cwd, dir);
       if (
         ['runtime-plan', 'runtime-diagnose', 'score', 'delivery'].includes(name)
       )

@@ -126,6 +126,9 @@ export function verifyNativeExport(
     throw Error('完整原生轨迹与容器身份不符');
   return verified;
 }
+export function scoreEvidenceInstructions(workDir, dir) {
+  return `评分引用路径：本阶段工作目录是 ${JSON.stringify(path.resolve(workDir))}，本任务证据目录是 ${JSON.stringify(path.resolve(dir))}。evidenceRefs 使用实际读取文件的绝对路径:行号，空格原样保留，不加引号或 Markdown，不用 basename 或猜测 ../ 层数。原始轨迹、运行日志和冻结索引已提供绝对路径，直接引用对应原文件；源码路径从本阶段工作目录定位。返回前逐个只读确认文件存在、行号对应引用内容。历史相对路径只按本阶段工作目录解析，不按任务目录、项目子目录、输出 JSON 或日志所在目录解析；不能复制旧路径而忽略目录层级。找不到证据时说明实际缺失，不创建文件、符号链接、复制品或改动原件来满足引用。`;
+}
 function scoreCitations(refs, workDir, dir) {
   if (!Array.isArray(refs) || refs.length !== 5)
     throw Error('评分证据须按五维提供 5 组引用');
@@ -142,7 +145,12 @@ function scoreCitations(refs, workDir, dir) {
     for (const ref of entries) {
       const match = ref.match(/^(.*):(\d+)$/);
       if (!match) throw Error('评分证据必须包含文件路径和行号：' + ref);
-      const file = realpathSync(path.resolve(workDir, match[1]));
+      const resolved = path.resolve(workDir, match[1]);
+      if (!existsSync(resolved))
+        throw Error(
+          '评分引用文件不存在（相对路径按评分工作目录解析）：' + resolved,
+        );
+      const file = realpathSync(resolved);
       if (!roots.some((root) => file.startsWith(root + path.sep)))
         throw Error('评分证据超出任务工作区');
       const stat = lstatSync(file);
