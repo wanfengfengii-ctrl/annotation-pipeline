@@ -1,4 +1,4 @@
-import { readFileSync, lstatSync, realpathSync, readdirSync } from 'node:fs';
+import { readFileSync, lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
@@ -8,14 +8,12 @@ import {
 } from '../lib/runtime-verification.mjs';
 import {
   copyVerificationSource,
-  runtimeInputDigest,
-  runtimeInputDigestForImplementation,
+  runtimeHistoricalInputBinding,
   runtimeEvidenceLines,
   validateCodeRef,
   finalizeRuntimeReport,
   verifyRegressionEvidence,
 } from './runtime-verification.mjs';
-import { verifyJobRelease } from './job-release.mjs';
 
 const hash = (data) => createHash('sha256').update(data).digest('hex');
 const same = (a, b) =>
@@ -27,42 +25,6 @@ const inventory = (manifest) => ({
   files: [...manifest.files].sort((a, b) => a.path.localeCompare(b.path)),
   omitted: [...manifest.omitted].sort((a, b) => a.localeCompare(b)),
 });
-
-function retryInputBinding(report, context, taskDir) {
-  if (report.inputDigest === runtimeInputDigest(context))
-    return { kind: 'current-implementation' };
-  const workRoot = path.dirname(taskDir);
-  const releases = path.join(workRoot, 'releases');
-  for (const name of readdirSync(releases)) {
-    if (!/^jobs-[a-f0-9]{12}$/.test(name)) continue;
-    try {
-      const root = path.join(releases, name);
-      if (lstatSync(root).isSymbolicLink()) continue;
-      const bytes = readFileSync(path.join(root, 'job-release.json'));
-      const manifest = JSON.parse(bytes);
-      const implementation = manifest.files?.find(
-        (file) => file.path === 'scripts/runtime-verification.mjs',
-      )?.sha256;
-      if (
-        report.inputDigest !==
-        runtimeInputDigestForImplementation(context, implementation)
-      )
-        continue;
-      const release = verifyJobRelease(
-        { root, manifestSha256: hash(bytes) },
-        workRoot,
-      );
-      return {
-        kind: 'verified-frozen-implementation',
-        ...release,
-        implementation,
-      };
-    } catch {
-      // A partial, changed or invalid release cannot establish prior inputs.
-    }
-  }
-  return null;
-}
 
 // A blocked report can guide a new attempt, but can never be reused as a pass.
 // Every reference is verified against the exact logical turn and current source.
@@ -89,7 +51,11 @@ export function runtimeRetryContext(report, context) {
       hash(readFileSync(report.reportPath)) !== report.reportSha256
     )
       return null;
-    const inputBinding = retryInputBinding(report, context, taskDir);
+    const inputBinding = runtimeHistoricalInputBinding(
+      report,
+      context,
+      taskDir,
+    );
     if (!inputBinding) return null;
     const { reportSha256, ...cached } = report;
     verifyRegressionEvidence(report.regressionContext, dir);

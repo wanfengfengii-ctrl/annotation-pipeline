@@ -7,6 +7,7 @@ import {
   symlinkSync,
   writeFileSync,
   rmSync,
+  chmodSync,
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,7 +24,10 @@ import {
   copyVerificationSource,
   prepareRuntimeDiagnosis,
   writeRuntimeVerificationReport,
+  runtimeInputDigestForImplementation,
+  reuseRuntimeVerification,
 } from '../scripts/runtime-verification.mjs';
+import { jobReleaseProtocol } from '../scripts/job-release.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const ids = ['timeline', 'scene_ports', 'sequential_moves', 'clock'];
@@ -311,8 +315,10 @@ test('matching file hashes alone cannot authorize altered row content, numbering
 });
 
 function fixture(t, { omitted = false } = {}) {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'project-regression-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const parent = mkdtempSync(path.join(os.tmpdir(), 'project-regression-'));
+  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  const dir = path.join(parent, 'task');
+  mkdirSync(dir);
   const source = path.join(dir, 'current-product');
   mkdirSync(source);
   writeFileSync(path.join(source, 'app.js'), 'console.log("original");\n');
@@ -424,6 +430,127 @@ function fixture(t, { omitted = false } = {}) {
     );
   return { task, current, original, addReport, inspect, dir, source };
 }
+
+function freezeHistoricalReport(f, turn = f.original) {
+  const root = path.join(path.dirname(f.dir), 'releases', 'jobs-aaaaaaaaaaaa');
+  const sources = {
+    'scripts/runtime-verification.mjs': '// previous verifier\n',
+    'scripts/job-executor.mjs': '// frozen entry\n',
+    'scripts/docker-runtime.mjs': '// frozen runtime\n',
+    'package.json': '{}\n',
+  };
+  for (const [file, bytes] of Object.entries(sources)) {
+    mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    writeFileSync(path.join(root, file), bytes);
+  }
+  writeFileSync(
+    path.join(root, 'job-release.json'),
+    JSON.stringify({
+      protocol: jobReleaseProtocol,
+      commit: 'a'.repeat(40),
+      files: Object.entries(sources).map(([file, bytes]) => ({
+        path: file,
+        sha256: hash(bytes),
+      })),
+    }),
+  );
+  const report = turn.automation.runtimeVerification;
+  const context = {
+    taskId: f.task.id,
+    turnId: turn.id,
+    dir: f.dir,
+    workDir: f.source,
+    imageId,
+    prompt: turn.evaluationPrompt,
+    acceptance: turn.automation.preparation.value.acceptance,
+    regressionContext: report.regressionContext,
+  };
+  report.inputDigest = runtimeInputDigestForImplementation(
+    context,
+    hash(sources['scripts/runtime-verification.mjs']),
+  );
+  const { reportSha256: _oldHash, ...saved } = report;
+  writeFileSync(report.reportPath, JSON.stringify(saved));
+  report.reportSha256 = hash(readFileSync(report.reportPath));
+  return { root, report, context };
+}
+
+test('verified pre-upgrade reports supply frozen historical scope without reusing their outcomes on current code', (t) => {
+  const f = fixture(t, { omitted: true });
+  const { report, context } = freezeHistoricalReport(f);
+  const originalBytes = readFileSync(report.reportPath);
+  assert.equal(reuseRuntimeVerification(report, context), null);
+  writeFileSync(path.join(f.source, 'app.js'), 'console.log("new product");\n');
+  assert.equal(f.inspect().checks.length, 4);
+  assert.equal(
+    reuseRuntimeVerification(report, { ...context, sourceIsSnapshot: true }),
+    null,
+  );
+  assert.ok(
+    reuseRuntimeVerification(report, {
+      ...context,
+      sourceIsSnapshot: true,
+      workDir: path.join(path.dirname(report.reportPath), 'workspace'),
+    }),
+  );
+  assert.deepEqual(readFileSync(report.reportPath), originalBytes);
+  const repair = f.addReport(
+    'repair',
+    Object.fromEntries(ids.map((id) => [id, 'passed'])),
+  );
+  const fixed = freezeHistoricalReport(f, repair);
+  assert.equal(
+    f.inspect(),
+    null,
+    'verified historical fixes close only their own pending IDs',
+  );
+  assert.equal(
+    reuseRuntimeVerification(fixed.report, fixed.context),
+    null,
+    'historical passes cannot skip current product verification',
+  );
+});
+
+test('pre-upgrade historical verification rejects damaged releases, changed evidence and changed question inputs', (t) => {
+  for (const kind of [
+    'release',
+    'unlisted-file',
+    'missing-release',
+    'prompt',
+    'acceptance',
+    'image',
+    'log',
+    'snapshot',
+    'numbered-view',
+  ]) {
+    const f = fixture(t);
+    const { root, report } = freezeHistoricalReport(f);
+    if (kind === 'release')
+      writeFileSync(path.join(root, 'scripts/job-executor.mjs'), 'changed');
+    if (kind === 'unlisted-file')
+      writeFileSync(path.join(root, 'scripts/extra.mjs'), 'unverified');
+    if (kind === 'missing-release') rmSync(root, { recursive: true });
+    if (kind === 'prompt')
+      f.original.evaluationPrompt = 'Changed historical requirement';
+    if (kind === 'acceptance')
+      f.original.automation.preparation.value.acceptance = [
+        'Different requirement',
+      ];
+    if (kind === 'image')
+      f.original.container.imageId = 'sha256:' + 'b'.repeat(64);
+    if (kind === 'log') writeFileSync(report.checks[1].logPath, 'forged');
+    if (kind === 'snapshot')
+      writeFileSync(
+        path.join(path.dirname(report.reportPath), 'workspace', 'app.js'),
+        'changed',
+      );
+    if (kind === 'numbered-view') {
+      chmodSync(report.diagnosisEvidence.logs[0].numberedPath, 0o600);
+      writeFileSync(report.diagnosisEvidence.logs[0].numberedPath, 'forged');
+    }
+    assert.throws(f.inspect, /验真失败/, kind);
+  }
+});
 
 test('historical defects survive a narrowed question and changed current source with bound evidence', (t) => {
   const f = fixture(t);

@@ -13,6 +13,7 @@ import {
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { runtimeBrowserCache } from './runtime-browser-cache.mjs';
+import { verifyJobRelease } from './job-release.mjs';
 import { assertRegressionPlanCoverage } from './project-regression-context.mjs';
 import {
   runtimeVersion,
@@ -274,6 +275,44 @@ export function runtimeInputDigestForImplementation(
     }),
   );
 }
+// Historical bindings establish past evidence only. Current-source reuse stays
+// pinned to the active verifier; every new product still needs fresh checks.
+export function runtimeHistoricalInputBinding(report, context, taskDir) {
+  if (report.inputDigest === runtimeInputDigest(context))
+    return { kind: 'current-implementation' };
+  const workRoot = path.dirname(taskDir);
+  const releases = path.join(workRoot, 'releases');
+  for (const name of readdirSync(releases)) {
+    if (!/^jobs-[a-f0-9]{12}$/.test(name)) continue;
+    try {
+      const root = path.join(releases, name);
+      if (lstatSync(root).isSymbolicLink()) continue;
+      const bytes = readFileSync(path.join(root, 'job-release.json'));
+      const manifest = JSON.parse(bytes);
+      const implementation = manifest.files?.find(
+        (file) => file.path === 'scripts/runtime-verification.mjs',
+      )?.sha256;
+      if (
+        report.inputDigest !==
+        runtimeInputDigestForImplementation(context, implementation)
+      )
+        continue;
+      const release = verifyJobRelease(
+        { root, manifestSha256: hash(bytes) },
+        workRoot,
+      );
+      return {
+        kind: 'verified-frozen-implementation',
+        ...release,
+        implementation,
+      };
+    } catch {
+      // A partial, changed or invalid release cannot establish prior inputs.
+    }
+  }
+  return null;
+}
+
 export function verifyRegressionEvidence(context, dir) {
   if (!context) return;
   const root = realpathSync(dir);
@@ -326,7 +365,12 @@ export function reuseRuntimeVerification(report, context) {
     // Older reports bind their inputs through the failed job's existing receipt.
     // Never assume a matching report or code hash alone proves the same question.
     if (report.inputDigest) {
-      if (report.inputDigest !== inputDigest) return null;
+      if (
+        report.inputDigest !== inputDigest &&
+        (!context.sourceIsSnapshot ||
+          !runtimeHistoricalInputBinding(report, context, realpathSync(dir)))
+      )
+        return null;
     } else {
       if (
         previousResult?.taskId !== taskId ||
