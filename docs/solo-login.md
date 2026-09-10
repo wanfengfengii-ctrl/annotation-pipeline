@@ -29,8 +29,10 @@ node scripts/solo-keychain.mjs --status
 `solo-browser-login.mjs` 已将内存回调接到 CUA 浏览器填表。定时任务先读取当前登录页面，为同一个标签的用户名框、密码框和登录按钮建立实际观察到的 locator，再在 CUA JavaScript 会话中运行以下调用。变量必须来自当前页面，不能照抄固定序号或猜控件。适配器反复核对准确的 HTTPS 域名和密码框类型；只填写一次并点击一次，不读取 Cookie，也不使用另一个浏览器驱动。密码不会出现在这段工具调用源文本或返回值中。
 
 ```js
+// projectRoot 使用这台 Mac 实际克隆目录的绝对路径。
+const { pathToFileURL } = await import('node:url');
 const { submitSoloLogin } =
-  await import('file:///Users/niuyuhang/Documents/New%20project/annotation-pipeline/scripts/solo-browser-login.mjs');
+  await import(pathToFileURL(projectRoot + '/scripts/solo-browser-login.mjs').href);
 try {
   nodeRepl.write(
     await submitSoloLogin({

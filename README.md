@@ -6,14 +6,13 @@ Codex CLI 沿用现有配置；Claude 使用 Mac 作业文档指定镜像内的�
 
 ## 使用
 
-需要 Node.js 22.13+、Python 3、Git、Docker Desktop、已配置的 Codex CLI 和 GitHub CLI。先启动 Docker，并拉取 `adminfather/benzhi-claude-code:20260909-isolated-git`。
+新电脑请按 [Mac 部署说明](docs/mac-install.md) 安装。当前固定镜像支持已验证的 Apple Silicon（M 系列）Mac，需要 ARM64 Node.js 22.13+、Python 3、Git、Docker Desktop、已登录的 Codex CLI 和 GitHub CLI，以及本机 Claude 服务认证配置。模型、网关与 100 万上下文保持既有设置。
 
 ```sh
-npm install
-# 首次初始化才需要执行；已有数据库不要重复执行
-npm run db:local
-node scripts/init-local.mjs
-npm run dev
+npm ci
+# 新电脑：检查环境、生成本机密钥、完整数据库迁移、构建固定镜像和页面
+npm run setup:mac
+API_WORK_ROOT="$PWD" npm run api:local
 # 另一个终端
 npm run runner
 ```
@@ -137,7 +136,7 @@ npm run build
 
 页面默认导出“复核副本”：有效轮次的五维评分和评语完整后即可勾选，供人工二次核对。Excel/CSV 保持原字段，并在质检结果注明非正式交付及待处理项；AI 来源和原评分不变。切换“正式交付”后才要求完整初始快照、最终轨迹、交付包和相关校验，页面可展开查看阻塞原因。切换导出用途清空勾选，两种用途均按实际生成文件累计次数。API 调用须显式传入 `purpose: "review"` 才能导出复核副本，省略用途仍执行正式校验；SOLO 自动上传继续使用正式资格。
 
-已有本机数据库另应用一次：`npx wrangler d1 execute DB --local --config wrangler.local.json --file drizzle/0002_modern_lenny_balinger.sql`。新环境需顺序应用 0000、0001、0002；升级不要重复应用已完成的迁移。
+新环境通过 `npm run db:local` 顺序应用 `drizzle/` 的全部迁移（当前 0000–0003），后续只执行未应用项。旧手动迁移的数据库会停止初始化，先备份并核对实际表结构，再补缺失迁移；不要对已有数据库重新执行建表文件。
 
 ## 同一项目连续出题
 

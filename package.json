@@ -15,7 +15,9 @@
     "runner": "node scripts/runner.mjs",
     "api:local": "node scripts/local-api.mjs",
     "context:check": "node scripts/context-check.mjs",
-    "db:local": "wrangler d1 execute DB --local --config wrangler.local.json --file drizzle/0000_dusty_viper.sql"
+    "db:local": "node scripts/init-db.mjs",
+    "setup:mac": "node scripts/setup-mac.mjs",
+    "check:mac": "node scripts/setup-mac.mjs --check"
   },
   "dependencies": {
     "@base-ui/react": "1.7.0",
