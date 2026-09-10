@@ -27,6 +27,7 @@ import {
 } from '../lib/permission-audit.mjs';
 import { questionRoot, priorQuestionTurn } from '../lib/question-session.mjs';
 import { terminalConfirmation } from '../lib/terminal-confirmation.mjs';
+import { NativeProgressWatch } from './native-progress.mjs';
 import {
   containerImage,
   containerPolicyVersion,
@@ -883,14 +884,16 @@ export class DockerRuntime {
       await nap(500);
       await live.child.stdin.write('\r');
     }
-    const deadline =
-      Date.now() + Number(process.env.RUNNER_TIMEOUT_MS || 1800000);
-    while (Date.now() < deadline) {
+    const progress = new NativeProgressWatch(
+      Number(process.env.RUNNER_TIMEOUT_MS || 1800000),
+    );
+    while (true) {
       if (this.shouldStop())
         throw Error('执行器停止，容器中的当前交互保留；重新连接后核对原始轨迹');
       if (!this.owned(s).State.Running)
         throw Error('容器交互已退出，保留容器供导出；不恢复或重发题目');
       const native = readNativeTurn(this.native(s), turn.prompt, p.previousIds);
+      const idle = progress.observe(native);
       if (!native?.complete)
         await this.confirmLocalCommand(s, task, turn, native);
       if (native?.complete) {
@@ -939,11 +942,12 @@ export class DockerRuntime {
         await this.publish(s);
         return { ...result, container: this.public(s) };
       }
+      if (idle)
+        throw Error(
+          '本轮长时间没有新的原生执行记录，尚未确认结束；已保留容器和调用额度，重试只核对原交互，不重发题目',
+        );
       await nap(1500);
     }
-    throw Error(
-      '本轮未确认结束；已保留容器和调用额度，重试只核对原交互，不重发题目',
-    );
   }
   async confirmLocalCommand(s, task, turn, native) {
     const live = this.live.get(s.taskId);
