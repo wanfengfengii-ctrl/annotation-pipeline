@@ -103,6 +103,8 @@ export async function submittedPolicyEvidence({
   if (digest !== original.candidateDigest)
     throw Error('发送前审核候选摘要不匹配');
   assertPolicyAudit(structuredClone(original), digest, {
+    // Verify historical pre-send approval under its recorded style version.
+    expectedQuestionRuleVersion: original.questionRuleVersion,
     firstTurn: original.roundContext?.firstTurn ?? true,
     allowFollowupFix: original.roundContext?.allowFollowupFix ?? false,
     requireQuestionStyle: !!original.questionRuleVersion,
@@ -312,12 +314,12 @@ export function submittedPolicyInstructions(evidence) {
   const findings = evidence.postExecutionPolicy.filter(
     (record) => record.disputed === true,
   );
-  return `本轮已发送且 Claude 原生交互已完整结束，但后置题目审核发现以下异议：${JSON.stringify(findings)}\n保持原题、原验收要求和原轨迹不变，按真实输入完成本轮独立验收及 AI 评分。明确区分出题方的事实错误与 Claude 对实际收到需求的响应，不把出题错误归因于 Claude；既有日志不支持的操作不能声称此前已经复现。当前验收应实际分别检查原题要求的交互和历史日志中真实执行的交互，陈述真实结果，不制造失败或成功。把审核异议及其对证据解释的影响写入 processFindings、artifactFindings 和交付校验结论；即使内部评测材料完整，本轮仍保留审核失败，禁止自动续题、生成合格交付包、归档或标准导出。`;
+  return `本轮已发送且 Claude 原生交互已完整结束，但后置题目审核发现以下异议：${JSON.stringify(findings)}\n保持原题、原验收要求和原轨迹不变，按真实输入完成本轮独立验收及 AI 评分。明确区分出题方的事实错误与 Claude 对实际收到需求的响应，不把出题错误归因于 Claude；既有日志不支持的操作不能声称此前已经复现。当前验收应实际分别检查原题要求的交互和历史日志中真实执行的交互，陈述真实结果，不制造失败或成功。把审核异议及其对证据解释的影响写入 processFindings、artifactFindings 和交付校验结论；即使内部评测材料完整，本轮仍保留审核失败，禁止生成合格交付包、归档或标准导出；内部评测完成后，独立的项目规划器可在保留异议和全部会话额度的前提下安排后续题，本评分阶段不负责续题。`;
 }
 
 export function assertSubmittedPolicyDeliverable(evidence) {
   if (evidence)
     throw Error(
-      '已发送题目存在后置审核异议；验收与 AI 评分证据已保留，本轮仍审核失败，禁止自动续题、归档或标准导出',
+      '已发送题目存在后置审核异议；验收与 AI 评分证据已保留，本轮仍审核失败，禁止合格归档或标准导出，项目续题须单独核验',
     );
 }

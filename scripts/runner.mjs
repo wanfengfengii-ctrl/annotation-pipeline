@@ -5,6 +5,11 @@ import {
   sealStage,
 } from './stage-checkpoint.mjs';
 import { installScaffold } from './project-scaffold.mjs';
+import { planDisputedProject } from './disputed-project-plan.mjs';
+import {
+  disputedEvaluationComplete,
+  disputeContinuationReady,
+} from '../lib/disputed-continuation.mjs';
 import { createRunnerApi } from './runner-api.mjs';
 import { continuationContext } from '../lib/round-context.mjs';
 import { questionRoot } from '../lib/question-session.mjs';
@@ -205,6 +210,18 @@ async function execute({ task, turn }) {
   const dir = path.join(workRoot, task.id);
   mkdirSync(dir, { recursive: true });
   const cachePath = path.join(dir, turn.id + '.stages.json');
+  if (turn.planRetry && turn.automation?.submittedPolicyEvidence)
+    return planDisputedProject({
+      task,
+      turn,
+      dir,
+      api,
+      containers,
+      onChild: (child) => {
+        track(child);
+        if (child) journalChild(path.join(dir, turn.id + '.job.json'), child);
+      },
+    });
   const cached = existsSync(cachePath)
     ? JSON.parse(readFileSync(cachePath, 'utf8'))
     : {};
@@ -555,7 +572,10 @@ async function execute({ task, turn }) {
       const previousTurns = task.turns
         .slice(0, Math.max(0, index))
         .filter(
-          (r) => !r.excluded && ['review', 'submitted'].includes(r.status),
+          (r) =>
+            !r.excluded &&
+            (['review', 'submitted'].includes(r.status) ||
+              disputeContinuationReady(r)),
         );
       const firstTurn = previousTurns.length === 0;
       const previousTurn = previousTurns.at(-1);
@@ -584,6 +604,8 @@ async function execute({ task, turn }) {
         actualWorkspace: task.workDir,
         projectDirectory: task.projectSeries?.directory,
         legacyRepair,
+        previousQuestionDispute:
+          previousTurn?.automation?.projectContinuation || null,
         previousVerification: previousTurn?.automation?.runtimeVerification && {
           status: previousTurn.automation.runtimeVerification.status,
           reportPath: previousTurn.automation.runtimeVerification.reportPath,
@@ -1127,6 +1149,20 @@ async function execute({ task, turn }) {
   result.automation = automation;
   const receipt = path.join(dir, turn.id + '.result.json');
   writeFileSync(receipt, JSON.stringify(result, null, 2), { mode: 0o600 });
+  if (
+    task.projectSeries &&
+    disputedEvaluationComplete({ ...turn, ...result, id: turn.id })
+  )
+    return planDisputedProject({
+      task,
+      turn,
+      previousResult: result,
+      cached,
+      dir,
+      api,
+      containers,
+      onChild,
+    });
   return { result, receipt };
 }
 

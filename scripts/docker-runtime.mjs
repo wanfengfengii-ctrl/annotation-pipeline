@@ -641,12 +641,14 @@ export class DockerRuntime {
         ))
     )
       throw Error('上一题缺少合格的权限核验，不能导入其代码');
-    const evidence = path.join(
-      path.dirname(this.file(task.id)),
-      previous.id + '.evidence',
-    );
+    const retained = previous.automation?.projectContinuation?.sourceSnapshot;
+    const evidence = retained?.verified
+      ? path.dirname(retained.manifestPath)
+      : path.join(path.dirname(this.file(task.id)), previous.id + '.evidence');
     const manifestPath = path.join(evidence, 'manifest.json');
     const manifestBytes = readFileSync(manifestPath);
+    if (retained?.verified && hash(manifestBytes) !== retained.manifestSha256)
+      throw Error('异常题保留代码快照摘要不匹配');
     const manifest = JSON.parse(manifestBytes);
     if (
       (manifest.omitted || []).some(

@@ -209,7 +209,7 @@ test('collects bound original approval and later factual rejection without appro
     submittedPolicyInstructions(evidence),
     /不把出题错误归因于 Claude/,
   );
-  assert.match(submittedPolicyInstructions(evidence), /禁止自动续题/);
+  assert.match(submittedPolicyInstructions(evidence), /标准导出/);
 });
 
 test('no post-execution dispute returns null and earlier rejected unsent draft does not trigger collection', async (t) => {
@@ -231,6 +231,17 @@ test('legacy style not applicable is not mistaken for a factual rejection', asyn
   assert.equal(await f.read(), null);
 });
 
+test('completed disputed evidence retains its original style version after a rule upgrade', async (t) => {
+  const f = await setup(t);
+  f.cached.policy.questionRuleVersion = '2026-09-10.questions4';
+  const evidence = await f.read();
+  assert.equal(
+    evidence.originalPolicy.questionRuleVersion,
+    '2026-09-10.questions4',
+  );
+  assert.throws(() => assertSubmittedPolicyDeliverable(evidence), /标准导出/);
+});
+
 test('an existing dispute cannot fall back to fresh execution if its success receipt changes', async (t) => {
   const f = await setup(t);
   f.cached.submittedPolicyEvidence = await f.read();
@@ -244,10 +255,7 @@ test('a later policy approval cannot erase an already recorded rejection', async
   const evidence = await f.read();
   assert.equal(evidence.postExecutionPolicy.length, 2);
   assert.equal(evidence.postExecutionPolicy[1].value.allowed, true);
-  assert.throws(
-    () => assertSubmittedPolicyDeliverable(evidence),
-    /禁止自动续题/,
-  );
+  assert.throws(() => assertSubmittedPolicyDeliverable(evidence), /标准导出/);
   f.cached.submittedPolicyEvidence = evidence;
   f.cached.policy = { value: f.refused, accepted: false };
   assert.equal((await f.read()).originalPolicy.value.allowed, true);

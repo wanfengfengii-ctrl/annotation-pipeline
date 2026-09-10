@@ -2,6 +2,10 @@ import { repairDecision, canRepair } from '@/lib/project-series.mjs';
 import { isContinuation } from '@/lib/round-context.mjs';
 import { updateRecordMetadata } from '@/lib/record-metadata';
 import { canAddTurn } from '@/lib/project-series.mjs';
+import {
+  canPlanDisputedTurn,
+  blocksProject,
+} from '@/lib/disputed-continuation.mjs';
 import { get, save, failure, protect, text } from '@/db/store';
 import {
   counted,
@@ -43,8 +47,7 @@ export async function PATCH(
         (!counted(t) && b.difficulty === '简单')
       )
         throw Error('题型或难度无效');
-      if (t.turns.some((r) => r.status === 'failed' && !r.excluded))
-        throw Error('先处理未完成轮次');
+      if (t.turns.some(blocksProject)) throw Error('先处理未完成轮次');
       if (isContinuation(b.prompt))
         throw Error('只允许具体的 Bug 修复追问，不能仅填写继续');
       const previous = t.turns.at(-1),
@@ -88,15 +91,16 @@ export async function PATCH(
         throw new Error('此轮不能重试');
       if (t.turns.at(-1)?.id !== r.id)
         throw Error('后续轮次已存在，不能重跑历史轮次覆盖原始证据');
+      if (canPlanDisputedTurn(t, r)) r.planRetry = true;
       r.status = 'queued';
       r.error = '';
     } else if (b.action === 'retry-plan') {
       const r = t.turns.at(-1);
+      const disputed = canPlanDisputedTurn(t, r);
       if (
         !r ||
         r.id !== b.turnId ||
-        r.status !== 'review' ||
-        !r.automation?.nextError ||
+        (!disputed && (r.status !== 'review' || !r.automation?.nextError)) ||
         r.humanReview ||
         r.receipt ||
         t.closed ||

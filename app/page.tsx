@@ -8,6 +8,7 @@ import {
 } from '@/lib/project-series.mjs';
 import { RecordsTable } from '@/components/pipeline/records-table';
 import { formatQuestionText } from '@/lib/question-text.mjs';
+import { canPlanDisputedTurn } from '@/lib/disputed-continuation.mjs';
 import { initialCodeURL, recordRound, recordStack } from '@/lib/record-fields';
 import { roundNumber } from '@/lib/record-metadata';
 import { RecordMetadataPanel } from '@/components/pipeline/record-metadata-panel';
@@ -1572,12 +1573,16 @@ function TurnPanel({
           <p className="sub">{r.evaluationPrompt}</p>
         </details>
       )}
-      {r.automation?.nextError && (
+      {(r.automation?.nextError || canPlanDisputedTurn(t, r)) && (
         <div className="section">
           <p className="issue">
-            本轮评分和归档已保留；后续出题失败：{r.automation.nextError}
+            {r.automation?.submittedPolicyEvidence
+              ? '本轮题面异常和评测证据已保留；后续题目单独规划。'
+              : '本轮评分和归档已保留。'}
+            {r.automation?.nextError &&
+              '后续出题失败：' + r.automation.nextError}
           </p>
-          {r.status === 'review' &&
+          {(r.status === 'review' || canPlanDisputedTurn(t, r)) &&
             t.turns.at(-1)?.id === r.id &&
             !r.humanReview &&
             !r.receipt &&
@@ -1592,7 +1597,7 @@ function TurnPanel({
             )}
         </div>
       )}
-      {r.status === 'failed' && !r.excluded && (
+      {r.status === 'failed' && !r.excluded && !canPlanDisputedTurn(t, r) && (
         <Button
           variant="outline"
           disabled={busy}

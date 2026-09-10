@@ -9,6 +9,7 @@ import { validDockerSnapshot } from './container-policy.mjs';
 import { terminalIssues } from './terminal-policy.mjs';
 import { permissionIssues } from './permission-audit.mjs';
 import { formatQuestionText } from './question-text.mjs';
+import { blocksProject } from './disputed-continuation.mjs';
 export type PermissionAudit = {
   version: string;
   passed: boolean;
@@ -156,6 +157,8 @@ export type Turn = {
   evaluationPrompt?: string;
   executionOutcome?: 'complete' | 'truncated' | 'error';
   automation?: {
+    submittedPolicyEvidence?: Record<string, unknown>;
+    projectContinuation?: Record<string, unknown>;
     runtimeVersion?: string;
     runtimeVerification?: any;
     preparation?: any;
@@ -267,6 +270,8 @@ export function deadline(createdAt: string) {
 }
 export function issues(t: Task, r: Turn) {
   const e: string[] = [];
+  if (r.automation?.submittedPolicyEvidence)
+    e.push('本轮题目存在审核异议，仅保留内部评测，不可标准导出');
   if (r.excluded) return ['该轮已按工程故障排除'];
   if (r.contextCheck && !r.contextCheck.ready) e.push('上下文配置未通过核验');
   if (!['review', 'submitted'].includes(r.status)) e.push('该轮尚未完成执行');
@@ -319,8 +324,7 @@ export function status(t: Task) {
   if (pending(t))
     return t.turns.some((x) => x.status === 'running') ? '执行中' : '排队中';
   if (t.closed) return '已结束';
-  if (t.turns.some((x) => x.status === 'failed' && !x.excluded))
-    return '执行异常';
+  if (t.turns.some(blocksProject)) return '执行异常';
   if (
     t.turns.some(
       (x) => x.status === 'review' && !x.excluded && issues(t, x).length,
