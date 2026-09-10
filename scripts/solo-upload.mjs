@@ -25,6 +25,7 @@ import { verifyTerminalFinalization } from './terminal-finalization.mjs';
 import { applyUploadHolds, assertUploadNotHeld } from './solo-upload-holds.mjs';
 import { createSoloNativeAttachment } from './solo-native-attachment.mjs';
 import { resolveSoloNativeIdentity } from './solo-native-identity.mjs';
+import { uploadTimes } from './solo-schedule.mjs';
 import {
   applyManualAdmissions,
   manualAttachment,
@@ -331,7 +332,7 @@ export async function main(action) {
       : {};
     return {
       configured: existsSync(authPath),
-      schedule: 'Asia/Shanghai 08:00,20:00',
+      schedule: 'Asia/Shanghai ' + uploadTimes.join(','),
       lastRun: state.lastRun,
       entries: Object.values(state.entries || {}).map(
         ({ taskId, turnId, state, remoteId, remoteStatus, message }) => ({
@@ -349,7 +350,7 @@ export async function main(action) {
   try {
     if (action === '--once' && existsSync(path.join(stateDir, 'ui-state.json')))
       throw Error(
-        '本系统已启用浏览器上传台账，禁止混用 API 写入；请使用早晚浏览器任务',
+        '本系统已启用浏览器上传台账，禁止混用 API 写入；请使用定时浏览器任务',
       );
     const source = await records();
     const sessionIndex = source.headers.indexOf('SessionID'),

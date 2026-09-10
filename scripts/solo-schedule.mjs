@@ -5,7 +5,15 @@ import { fileURLToPath } from 'node:url';
 import { savePrivateJSON, SOLO_ORIGIN } from './solo-client.mjs';
 import { withSoloLock } from './solo-lock.mjs';
 
-export const scheduleVersion = '2026-09-10.login-resume1';
+export const scheduleVersion = '2026-09-10.two-hour1';
+const uploadHours = Array.from({ length: 12 }, (_, i) =>
+  String(i * 2).padStart(2, '0'),
+);
+export const uploadTimes = uploadHours.map((hour) => `${hour}:00`);
+export const loginTimes = Array.from(
+  { length: 12 },
+  (_, i) => `${String(i * 2 + 1).padStart(2, '0')}:30`,
+);
 export const loginMaxAgeMs = 5 * 60 * 1000;
 export const attemptLeaseMs = 45 * 60 * 1000;
 const loginFailures = new Set([
@@ -51,15 +59,16 @@ function shanghai(now) {
 const slotFor = (p, hour) => `${p.year}-${p.month}-${p.day}T${hour}:00+08:00`;
 export function uploadSlot(now = new Date()) {
   const p = shanghai(now);
-  return ['08', '20'].includes(p.hour) && Number(p.minute) < 30
+  return uploadHours.includes(p.hour) && Number(p.minute) < 30
     ? slotFor(p, p.hour)
     : null;
 }
 export function preflightSlot(now = new Date()) {
   const p = shanghai(now);
-  return ['07', '19'].includes(p.hour) && Number(p.minute) >= 30
-    ? slotFor(p, p.hour === '07' ? '08' : '20')
-    : null;
+  if (Number(p.hour) % 2 !== 1 || Number(p.minute) < 30) return null;
+  // The 23:30 preflight belongs to the following day's 00:00 upload.
+  const upcoming = shanghai(new Date(now.getTime() + 30 * 60 * 1000));
+  return slotFor(upcoming, upcoming.hour);
 }
 function freshLogin(now, login) {
   const age = now.getTime() - Date.parse(login?.checkedAt);
@@ -111,8 +120,8 @@ export function dueUpload(now, state) {
         }
       : null,
     timezone: 'Asia/Shanghai',
-    times: ['08:00', '20:00'],
-    loginTimes: ['07:30', '19:30'],
+    times: [...uploadTimes],
+    loginTimes: [...loginTimes],
   };
 }
 

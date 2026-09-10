@@ -44,27 +44,60 @@ const finish = (state, attempt, status, now, extra = {}) =>
     now,
   );
 
-test('Shanghai preflight and upload windows have distinct half-hour boundaries', () => {
-  for (const hour of ['07', '19']) {
-    const upcoming = hour === '07' ? '08' : '20';
+test('all two-hour Shanghai windows have half-hour boundaries and midnight preflight advances the date', () => {
+  for (let h = 1; h < 24; h += 2) {
+    const hour = String(h).padStart(2, '0');
+    const upcoming = String((h + 1) % 24).padStart(2, '0');
+    const day = h === 23 ? '2026-09-11' : '2026-09-10';
     assert.equal(preflightSlot(at(`2026-09-10T${hour}:29:59+08:00`)), null);
     assert.equal(
       preflightSlot(at(`2026-09-10T${hour}:30:00+08:00`)),
-      `2026-09-10T${upcoming}:00+08:00`,
+      `${day}T${upcoming}:00+08:00`,
     );
     assert.equal(
       preflightSlot(at(`2026-09-10T${hour}:59:59+08:00`)),
-      `2026-09-10T${upcoming}:00+08:00`,
+      `${day}T${upcoming}:00+08:00`,
     );
     assert.equal(uploadSlot(at(`2026-09-10T${hour}:59:59+08:00`)), null);
     assert.equal(
-      uploadSlot(at(`2026-09-10T${upcoming}:29:59+08:00`)),
-      `2026-09-10T${upcoming}:00+08:00`,
+      uploadSlot(at(`${day}T${upcoming}:29:59+08:00`)),
+      `${day}T${upcoming}:00+08:00`,
     );
     assert.equal(uploadSlot(at(`2026-09-10T${upcoming}:30:00+08:00`)), null);
     assert.equal(preflightSlot(at(`2026-09-10T${upcoming}:00:00+08:00`)), null);
   }
   assert.equal(uploadSlot(at('2026-09-10T00:00:00Z')), firstSlot);
+  assert.equal(
+    preflightSlot(at('2026-12-31T23:30:00+08:00')),
+    '2027-01-01T00:00+08:00',
+  );
+  const due = dueUpload(start, { runs: {} });
+  assert.equal(due.times.length, 12);
+  assert.equal(due.loginTimes.length, 12);
+});
+
+test('new two-hour windows preserve completed old batches and prioritize unfinished batches', () => {
+  const old = {
+    version: '2026-09-10.login-resume1',
+    runs: { [firstSlot]: { status: 'completed' } },
+  };
+  assert.equal(dueUpload(start, old).due, false);
+  const ten = at('2026-09-10T10:00:00+08:00');
+  assert.equal(dueUpload(ten, old).slot, '2026-09-10T10:00+08:00');
+  old.runs[firstSlot] = {
+    status: 'waiting_login',
+    reasonCode: 'session_expired',
+    members: [member()],
+  };
+  assert.equal(dueUpload(ten, old).slot, firstSlot);
+  assert.equal(dueUpload(ten, old).mode, 'resume');
+  old.runs[firstSlot] = {
+    status: 'running',
+    attemptId: 'existing',
+    leaseUntil: '2026-09-10T10:30:00+08:00',
+  };
+  assert.equal(dueUpload(ten, old).due, false);
+  assert.equal(dueUpload(ten, old).active.attemptId, 'existing');
 });
 
 test('preflight records login without starting or completing an upload batch', () => {

@@ -422,7 +422,7 @@ test('browser queue preserves genuine rounds and holds gaps, changed environment
   );
 });
 
-test('shared heartbeat only admits the 08:00 and 20:00 Shanghai upload slots once', async () => {
+test('shared heartbeat admits each even Shanghai hour once and preserves prior batches', async () => {
   const { uploadSlot, dueUpload } =
     await import('../scripts/solo-schedule.mjs');
   assert.equal(
@@ -435,7 +435,10 @@ test('shared heartbeat only admits the 08:00 and 20:00 Shanghai upload slots onc
   );
   assert.equal(uploadSlot(new Date('2026-09-10T12:30:00Z')), null);
   assert.equal(uploadSlot(new Date('2026-09-10T03:00:00Z')), null);
-  assert.equal(uploadSlot(new Date('2026-09-10T16:00:00Z')), null);
+  assert.equal(
+    uploadSlot(new Date('2026-09-10T16:00:00Z')),
+    '2026-09-11T00:00+08:00',
+  );
   assert.equal(
     dueUpload(new Date('2026-09-10T00:01:00Z'), {
       runs: { '2026-09-10T08:00+08:00': { status: 'running' } },
