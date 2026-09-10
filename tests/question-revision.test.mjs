@@ -6,6 +6,7 @@ import {
 } from '../lib/question-revision.mjs';
 import { assertWritingRevision } from '../lib/writing-style.mjs';
 import { questionCacheState } from '../lib/question-cache.mjs';
+import { questionRules } from '../lib/question-writing.mjs';
 
 const preparation = {
   value: {
@@ -92,4 +93,66 @@ test('sent or uncertain Terminal prompts and business-only rejections are never 
     }),
     false,
   );
+});
+
+test('an unsent language-only rejection gets one revision without changing its scope or audit', () => {
+  const languageAudit = {
+    ...audit,
+    value: {
+      ...audit.value,
+      duplicateTaskIds: [],
+      wordingDuplicatePairs: [],
+      questionChecks: Object.keys(questionRules.criteria).map(
+        (id) =>
+          `${id}：${id === 'language' ? '不通过，先说异常现象' : '通过，依据完整'}`,
+      ),
+    },
+  };
+  const cached = { prepare: structuredClone(preparation) };
+  assert.equal(
+    beginQuestionRevision(cached, {
+      audit: languageAudit,
+      preserveQuestion: false,
+    }),
+    true,
+  );
+  assert.equal(cached.questionRevision.issue, 'language');
+  assert.deepEqual(cached.questionRevision.preparation, preparation);
+  assert.deepEqual(cached.questionRevision.rejectedAudit, languageAudit);
+  cached.prepare = structuredClone(preparation);
+  assert.equal(
+    beginQuestionRevision(cached, {
+      audit: languageAudit,
+      preserveQuestion: false,
+    }),
+    false,
+  );
+  for (const change of [
+    'missing-check',
+    'business-failure',
+    'duplicate-task',
+    'already-sent',
+    'unknown-outcome',
+  ]) {
+    const candidate = { prepare: structuredClone(preparation) };
+    const rejected = structuredClone(languageAudit);
+    if (change === 'missing-check') rejected.value.questionChecks.pop();
+    if (change === 'business-failure')
+      rejected.value.questionChecks[0] = 'audience：不通过，范围错误';
+    if (change === 'duplicate-task')
+      rejected.value.duplicateTaskIds = ['existing'];
+    if (change === 'already-sent') candidate.claude = { success: true };
+    if (change === 'unknown-outcome')
+      rejected.value.questionChecks[0] = 'audience：尚待核验';
+    const before = structuredClone(candidate);
+    assert.equal(
+      beginQuestionRevision(candidate, {
+        audit: rejected,
+        preserveQuestion: false,
+      }),
+      false,
+      change,
+    );
+    assert.deepEqual(candidate, before);
+  }
 });
