@@ -317,14 +317,14 @@ for (const [label, checks, error] of [
   );
 }
 
-test('reports without regression context keep the original input digest and reuse behavior', async (t) => {
+test('reports bind the current verifier implementation and omit empty regression context', async (t) => {
   const f = fixture(t),
     { report, context } = await execute(f, { checks: [currentCheck] });
   const legacyDigest = hash(JSON.stringify({ imageId, prompt, acceptance }));
-  assert.equal(report.inputDigest, legacyDigest);
+  assert.notEqual(report.inputDigest, legacyDigest);
   assert.equal(
     runtimeInputDigest({ imageId, prompt, acceptance }),
-    legacyDigest,
+    report.inputDigest,
   );
   assert.equal(
     runtimeInputDigest({
@@ -333,9 +333,13 @@ test('reports without regression context keep the original input digest and reus
       acceptance,
       regressionContext: null,
     }),
-    legacyDigest,
+    report.inputDigest,
   );
   assert.equal(Object.hasOwn(report, 'regressionContext'), false);
   assert.equal(report.status, 'passed');
   assert.strictEqual(reuseRuntimeVerification(report, context), report);
+  assert.equal(
+    reuseRuntimeVerification({ ...report, inputDigest: legacyDigest }, context),
+    null,
+  );
 });

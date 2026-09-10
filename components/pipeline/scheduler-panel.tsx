@@ -73,24 +73,72 @@ export function SchedulerPanel({
           ? s?.supply || '等待本机执行器连接'
           : '云端设置仅作用于云端队列；请在本机工作台配置本机执行器。'}
       </p>
+      {s?.stages && (
+        <p className="sub">
+          阶段执行 {s.stages.running.length} / {s.stages.capacity} · 等待{' '}
+          {s.stages.waiting.length} · 归档中 {s.finalizing || 0} · 候选题{' '}
+          {s.queuedCandidates || 0} / {s.candidateBuffer || 2}。 Claude 最多 3
+          个，重型验收 1 个，Codex 准备与评分共用 1 个额度。
+        </p>
+      )}
+      {s?.pilot?.status === 'pilot' && (
+        <p className="sub">
+          新流程先运行一条项目链，通过评分、交付和原终端归档后，自动恢复最多三个项目并行。
+        </p>
+      )}
+      {s?.throughput && (
+        <p className="sub">
+          已评分 {s.throughput.counts.scored} · 已最终归档{' '}
+          {s.throughput.counts.finalized} · 已上传{' '}
+          {s.throughput.counts.submitted} · 质检通过{' '}
+          {s.throughput.counts.qcPassed} · 待返修{' '}
+          {s.throughput.counts.pendingFix}。 本次观察新增通过{' '}
+          {s.throughput.newQcPassed} 条，已观察{' '}
+          {s.throughput.observationHours.toFixed(1)} 小时。
+          {s.throughput.comparisonReady
+            ? '可查看同题型耗时样本。'
+            : '累计满 24 小时后比较耗时与通过数量。'}
+        </p>
+      )}
+      {s?.providerHealth?.pausedUntil && (
+        <p className="sub">
+          模型服务出现连续错误，新会话正在退避；现有会话继续保留，恢复时先运行一个新任务核实。
+        </p>
+      )}
       <details className="scheduler-details">
         <summary>资源与流程详情</summary>
         <p className="sub">
-          待执行队列为空且有空闲容量时，由 Codex 先生成 0–1
-          项目骨架和全新功能题，再在同一项目生成新功能、迭代、修复、理解和重构题。目标比例
+          保持最多两条已通过审核的候选题，在资源有余量时补充。Codex 先准备
+          项目骨架和全新功能题，再依据实际产物生成新功能、迭代、修复、理解和重构题。目标比例
           7:7:10:1:1，独立题目新建 Terminal 会话，只有 Bug 修复沿用当前会话。
         </p>
         {s && (
           <p className="sub">
             {s.cpu} · {s.cores} 核 / {s.totalGB} GB · 可用及可回收内存约{' '}
             {s.availableGB} GB · 1 分钟负载 {s.load} · {s.reason}。
-            {s.generating ? '出题占用 1 个槽位。' : ''}
+            {s.generating ? '正在准备候选题，与评分共享 Codex 额度。' : ''}
             {s.recovering
               ? ` ${s.recovering} 个旧任务等待进程退出，占用相应槽位。`
               : ''}
             今日补充 {s.generatedToday} / {s.dailyLimit} 个。
           </p>
         )}
+        {s?.throughput?.groups
+          ?.filter(
+            (g: { completedAttempts: number }) => g.completedAttempts > 0,
+          )
+          .map(
+            (g: {
+              group: string;
+              completedAttempts: number;
+              medianElapsedMs: number;
+            }) => (
+              <p className="sub" key={g.group}>
+                {g.group}：{g.completedAttempts} 次完成尝试，中位耗时{' '}
+                {(g.medianElapsedMs / 60000).toFixed(1)} 分钟。
+              </p>
+            ),
+          )}
         <p className="sub">
           GitHub CLI：
           {runner?.github?.available
@@ -116,7 +164,12 @@ export function SchedulerPanel({
             <p className="sub">
               Docker 分配 {s.docker.cpus} 核 /{' '}
               {(s.docker.memoryBytes / 2 ** 30).toFixed(1)} GB，当前{' '}
-              {s.residentContainers} 个项目容器保留。每个容器限制 2 核 / 3
+              {s.residentContainers} 个项目容器保留。每个容器限制{' '}
+              {s.resourceProfile?.cpus || 2} 核 /{' '}
+              {(
+                (s.resourceProfile?.memoryBytes || 3 * 2 ** 30) /
+                2 ** 30
+              ).toFixed(1)}
               GB，同时按宿主机余量限制并行数。
             </p>
           )}

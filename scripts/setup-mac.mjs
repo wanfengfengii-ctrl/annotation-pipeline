@@ -112,7 +112,7 @@ try {
         'linux/arm64',
         '--tag',
         containerImage,
-        'docker/claude-2.1.266',
+        'docker/claude-webdeps',
       ]);
     resolveContainerImage(
       JSON.parse(

@@ -74,6 +74,12 @@ export const schemas = {
     },
   }),
   scaffold: schema({
+    templateId: str,
+    readiness: schema({
+      startCommand: str,
+      port: { type: 'integer', minimum: 1024, maximum: 65535 },
+      smokeCommand: str,
+    }),
     stack,
     summary: str,
     startup: str,

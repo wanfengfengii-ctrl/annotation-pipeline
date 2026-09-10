@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import {
   mkdirSync,
@@ -19,6 +20,7 @@ import {
   validateRuntimeVerdict,
 } from '../lib/runtime-verification.mjs';
 const hash = (b) => createHash('sha256').update(b).digest('hex');
+const runtimeImplementationDigest = hash(readFileSync(fileURLToPath(import.meta.url)));
 const environmentProbeVersion = '2026-09-10.env1';
 const diagnosisCheckpointVersion = '2026-09-10.diagnosis-checkpoint1';
 const nativeTestAttributionInstructions =
@@ -171,7 +173,7 @@ export async function probeRuntimeEnvironment({
 }
 const ignored =
   /(^|\/)(\.git|node_modules|\.venv|venv|__pycache__|\.next|\.claude|\.codex|\.env[^/]*|.ssh|.npmrc|.netrc|credentials[^/]*|[^/]*\.(pem|key|p12))($|\/)/i;
-export function copyVerificationSource(source, dest) {
+export function copyVerificationSource(source, dest, { hashCache } = {}) {
   if (dest) mkdirSync(dest, { recursive: true });
   const files = [],
     omitted = [];
@@ -205,7 +207,13 @@ export function copyVerificationSource(source, dest) {
         copyFileSync(src, target);
       }
       bytes += st.size;
-      files.push({ path: rel, sha256: hash(readFileSync(target)) });
+      files.push({
+        path: rel,
+        sha256:
+          !dest && hashCache
+            ? hashCache.read(src, st)
+            : hash(readFileSync(target)),
+      });
     }
   }
   walk(source);
@@ -220,6 +228,7 @@ export function runtimeInputDigest({
   return hash(
     JSON.stringify({
       imageId,
+      implementation: runtimeImplementationDigest,
       prompt,
       acceptance,
       ...(regressionContext ? { regressionContext } : {}),
@@ -883,6 +892,8 @@ export async function verifyRuntime({
   browserCache,
   onChild = () => {},
   docker = runDocker,
+  withHeavy = async (_name, work) => work(),
+  imageTools = null,
 }) {
   if (!/^sha256:[a-f0-9]{64}$/.test(imageId || ''))
     throw Error('独立验收缺少不可变镜像 ID');
@@ -911,20 +922,25 @@ export async function verifyRuntime({
     path.join(root, 'source-manifest.json'),
     JSON.stringify(manifest, null, 2),
   );
-  const environmentProbe = await probeRuntimeEnvironment({
-    imageId,
-    root,
-    onChild,
-    docker,
-  });
-  const toolsCache =
-    browserCache === undefined
-      ? await runtimeBrowserCache.ensure({
-          imageId,
-          cacheRoot: path.resolve(dir, '..', 'runtime-tool-cache'),
-          docker,
-          onChild,
-        })
+  const environmentProbe = await withHeavy('runtime-environment', () =>
+    probeRuntimeEnvironment({
+      imageId,
+      root,
+      onChild,
+      docker,
+    }),
+  );
+  const toolsCache = imageTools?.passed
+    ? null
+    : browserCache === undefined
+      ? await withHeavy('runtime-tool-cache', () =>
+          runtimeBrowserCache.ensure({
+            imageId,
+            cacheRoot: path.resolve(dir, '..', 'runtime-tool-cache'),
+            docker,
+            onChild,
+          }),
+        )
       : browserCache;
   if (toolsCache) {
     if (toolsCache.imageId !== imageId || !path.isAbsolute(toolsCache.root))
@@ -958,6 +974,9 @@ export async function verifyRuntime({
   const cacheInstructions = toolsCache
     ? `验收专用工具缓存已在同一不可变镜像及平台真实启动验证：Playwright ${toolsCache.toolVersion}，平台 ${toolsCache.platform}，缓存只读挂载到 ${toolsCache.mountPath}。需要浏览器时优先直接 require('${toolsCache.modulePath}')；ESM 脚本可用 createRequire 加载该绝对路径。PLAYWRIGHT_BROWSERS_PATH 已由容器设置为 ${toolsCache.browsersPath}，各步骤不要覆盖此变量，也不要重新 npm 安装不同版本的 Playwright 或下载浏览器。只读缓存不能安装、更新或清理；缺少其他验收库时单独安装到 /tmp。此缓存包含 Node 客户端，不包含 Python playwright 模块；原项目或原测试依赖 Python Playwright 时，允许在 /tmp 独立 Python 环境安装 playwright==${toolsCache.toolVersion} 客户端，并补齐 venv、ensurepip、pip 等实际缺失的前提，继续复用上述 PLAYWRIGHT_BROWSERS_PATH，禁止执行 python -m playwright install 或下载浏览器。先确认该版本满足原依赖声明；若版本不兼容、客户端安装或原测试加载失败，明确 blocked，不修改依赖声明、锁文件、源码或原测试来通过，也不能用 Node 验收冒充原 Python 测试已执行。缓存只提供工具包与浏览器二进制，当前新验收容器仍须在 setup 执行 node ${toolsCache.modulePath}/cli.js install-deps chromium，然后用该缓存 Playwright 的 chromium.launch({headless:true}) 实际启动并打开本地页面验证。Python 测试也须真实加载其客户端并启动缓存浏览器；不要设置 channel；缓存启动失败仍报告环境 blocked，不编造可用。缓存不属于被测模型产物，缓存准备耗时不计为模型或业务验收耗时。\n`
     : '';
+  const imageToolsAdvice = imageTools?.passed
+    ? `当前不可变镜像已预装 Python/Node Playwright 1.62.0、Chromium 及系统依赖，并在开题前通过实际启动检查；原件：${imageTools.receiptPath}，摘要 ${imageTools.sha256}。优先使用 /opt/annotation/python/bin/python3 或 require('/opt/annotation/node/node_modules/playwright')，保留 PLAYWRIGHT_BROWSERS_PATH=/opt/annotation/browsers，先在本次验收容器实际启动验证；无需重新下载或 apt 安装。不要为使用缓存修改原项目依赖。\n`
+    : '';
   const browserInstallAdvice = toolsCache
     ? '本次已提供通过完整性校验和实际启动验证的专用浏览器缓存，复用固定版本的 Node 客户端与浏览器二进制，不重复下载它们；Python 业务仍使用现有 Python 启动，原 Python 测试所需的同版客户端按下文规则单独准备。'
     : '若 Node/npm 可用，浏览器验收可优先通过 npm 在 /tmp 下的独立目录安装 Playwright，Python 业务本身仍可用已有 Python 启动；若选 Python 验收工具链，须先在 setup 补齐 venv、ensurepip 和 pip。';
@@ -973,6 +992,7 @@ export async function verifyRuntime({
   const plan = await step(
     'runtime-plan',
     environmentInstructions +
+      imageToolsAdvice +
       cacheInstructions +
       manifestTestDependencyInstructions +
       nativeTestResultInstructions +
@@ -997,72 +1017,77 @@ export async function verifyRuntime({
     if (c.kind !== 'setup') validateCodeRef(c.codeEvidence, workDir);
   const name = 'annotation-verify-' + randomUUID(),
     runs = [];
-  try {
-    const start = await docker(
-      [
-        'run',
-        '--detach',
-        '--rm',
-        '--name',
-        name,
-        '--label',
-        'annotation.verification=true',
-        '--cpus',
-        '2',
-        '--memory',
-        '3g',
-        '--pids-limit',
-        '256',
-        '--user',
-        '0:0',
-        '--security-opt',
-        'no-new-privileges',
-        '--mount',
-        `type=bind,source=${workspace},target=/workspace`,
-        ...(toolsCache
-          ? [
-              '--mount',
-              `type=bind,source=${toolsCache.root},target=${toolsCache.mountPath},readonly`,
-              '--env',
-              `PLAYWRIGHT_BROWSERS_PATH=${toolsCache.browsersPath}`,
-            ]
-          : []),
-        '--workdir',
-        '/workspace',
-        '--entrypoint',
-        '/bin/sh',
-        imageId,
-        '-c',
-        'sleep 1200',
-      ],
-      { onChild },
-    );
-    if (start.exitCode !== 0 || start.timedOut)
-      throw Error('验收容器启动失败：' + start.output.slice(-1000));
-    for (const c of plan.value.checks) {
-      await step('runtime-running', c.id, workDir);
-      const logPath = path.join(root, c.id + '.log');
-      const run = await docker(runtimeCommandArgs(name, c.command), {
-        timeoutSeconds: c.timeoutSeconds,
-        onChild,
-        logPath,
-      });
-      const sourceChanged = changedSource(manifest, workspace);
-      runs.push({ ...run, id: c.id, sourceChanged });
+  await withHeavy('runtime-running', async (grant = {}) => {
+    try {
+      const start = await docker(
+        [
+          'run',
+          '--detach',
+          '--rm',
+          '--name',
+          name,
+          '--label',
+          'annotation.verification=true',
+          '--cpus',
+          '2',
+          '--memory',
+          String(grant.memoryBytes || 2 * 2 ** 30),
+          '--pids-limit',
+          '256',
+          '--user',
+          '0:0',
+          '--security-opt',
+          'no-new-privileges',
+          '--mount',
+          `type=bind,source=${workspace},target=/workspace`,
+          ...(toolsCache
+            ? [
+                '--mount',
+                `type=bind,source=${toolsCache.root},target=${toolsCache.mountPath},readonly`,
+                '--env',
+                `PLAYWRIGHT_BROWSERS_PATH=${toolsCache.browsersPath}`,
+              ]
+            : []),
+          '--workdir',
+          '/workspace',
+          '--entrypoint',
+          '/bin/sh',
+          imageId,
+          '-c',
+          'sleep 1200',
+        ],
+        { onChild },
+      );
+      if (start.exitCode !== 0 || start.timedOut)
+        throw Error('验收容器启动失败：' + start.output.slice(-1000));
+      for (const c of plan.value.checks) {
+        await step('runtime-running', c.id, workDir);
+        const logPath = path.join(root, c.id + '.log');
+        const run = await docker(runtimeCommandArgs(name, c.command), {
+          timeoutSeconds: c.timeoutSeconds,
+          onChild,
+          logPath,
+        });
+        const sourceChanged = changedSource(manifest, workspace);
+        runs.push({ ...run, id: c.id, sourceChanged });
+        if (
+          run.timedOut ||
+          run.limited ||
+          sourceChanged ||
+          run.exitCode === null ||
+          (c.kind === 'setup' && run.exitCode !== 0)
+        )
+          break;
+      }
+    } finally {
+      const cleanup = await docker(['rm', '--force', name]);
       if (
-        run.timedOut ||
-        run.limited ||
-        sourceChanged ||
-        run.exitCode === null ||
-        (c.kind === 'setup' && run.exitCode !== 0)
+        cleanup.exitCode !== 0 &&
+        !cleanup.output.includes('No such container')
       )
-        break;
+        throw Error('验收容器清理失败：' + cleanup.output.slice(-500));
     }
-  } finally {
-    const cleanup = await docker(['rm', '--force', name]);
-    if (cleanup.exitCode !== 0 && !cleanup.output.includes('No such container'))
-      throw Error('验收容器清理失败：' + cleanup.output.slice(-500));
-  }
+  });
   const executionPath = path.join(root, 'execution.json');
   writeFileSync(
     executionPath,

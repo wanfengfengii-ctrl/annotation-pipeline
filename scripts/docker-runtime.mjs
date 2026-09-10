@@ -314,21 +314,37 @@ export function assertNativeSessionIdle(state, files, { failedTurnId } = {}) {
       ) || [];
     // Explicit recovery may archive a completed provider error without turning
     // it into a successful result. Normal scheduling never opts into this path.
-    const confirmedFailure =
+    const blocks = after.flatMap((e) =>
+      Array.isArray(e.message?.content) ? e.message.content : [],
+    );
+    const completedQualityFailure =
       failedTurnId === turnId &&
       typeof failedTurnId === 'string' &&
       result?.success === false &&
-      result.executionOutcome === 'error' &&
-      after.some(
-        (e) => e.isApiErrorMessage === true && e.error === 'server_error',
-      ) &&
-      !after.some((e) =>
-        Array.isArray(e.message?.content)
-          ? e.message.content.some((c) =>
-              ['tool_use', 'tool_result'].includes(c.type),
-            )
-          : false,
-      );
+      result.permissionAudit?.passed === false &&
+      blocks
+        .filter((b) => b.type === 'tool_use')
+        .every((b) =>
+          blocks.some(
+            (r) => r.type === 'tool_result' && r.tool_use_id === b.id,
+          ),
+        );
+    const confirmedFailure =
+      completedQualityFailure ||
+      (failedTurnId === turnId &&
+        typeof failedTurnId === 'string' &&
+        result?.success === false &&
+        result.executionOutcome === 'error' &&
+        after.some(
+          (e) => e.isApiErrorMessage === true && e.error === 'server_error',
+        ) &&
+        !after.some((e) =>
+          Array.isArray(e.message?.content)
+            ? e.message.content.some((c) =>
+                ['tool_use', 'tool_result'].includes(c.type),
+              )
+            : false,
+        ));
     if (
       (!result?.success && !confirmedFailure) ||
       !result.traceExport?.verified ||
@@ -940,6 +956,15 @@ export class DockerRuntime {
         throw Error('同一会话最多初始题加两轮 Bug 修复');
       if (Object.keys(s.results).length && !turn.repairOf)
         throw Error('非 Bug 题目必须使用新会话');
+      if (
+        !Object.keys(s.results).length &&
+        this.native(s).some((file) =>
+          parseNativeJSONL(file.content).some(isNativeUserMessage),
+        )
+      )
+        throw Error(
+          '独立题目开始前检测到已有原生用户对话，禁止在受污染会话发送',
+        );
       const previousIds = this.native(s).flatMap((f) =>
         parseNativeJSONL(f.content)
           .filter((e) => e.type === 'user')
@@ -983,6 +1008,14 @@ export class DockerRuntime {
         throw Error('容器交互已退出，保留容器供导出；不恢复或重发题目');
       const native = readNativeTurn(this.native(s), turn.prompt, p.previousIds);
       const idle = progress.observe(native);
+      const diagnostic = progress.diagnostics();
+      if (
+        diagnostic.level !== s.progress?.level ||
+        Date.now() - (s.progress?.observedMs || 0) >= 30000
+      ) {
+        s.progress = { ...diagnostic, observedMs: Date.now() };
+        this.save(s);
+      }
       if (!native?.complete)
         await this.confirmLocalCommand(s, task, turn, native);
       if (native?.complete) {

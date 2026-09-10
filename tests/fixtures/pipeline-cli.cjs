@@ -10,6 +10,22 @@ if (a.includes('--version')) {
   console.log(name + ' fixture');
   process.exit(0);
 }
+if (
+  name === 'docker' &&
+  process.argv.some((arg) => arg.includes('ANNOTATION_ENV_READY'))
+) {
+  console.log(
+    'ANNOTATION_READINESS=' +
+      JSON.stringify({
+        passed: true,
+        browser: true,
+        venv: true,
+        scaffold: true,
+        dependencies: [],
+      }),
+  );
+  process.exit(0);
+}
 if (name === 'docker') {
   if (a[0] === 'run' && a.includes('annotation.verification-probe=true')) {
     console.log(
@@ -162,8 +178,7 @@ if (name === 'docker') {
                     'sha256:f77014d9e56cd3db2ac96627a286814cb1aa9f0b4bb807bea98a01383c9bc4d8',
                   'annotation.pipeline.claude-version': '2.1.266',
                   'annotation.pipeline.node-version': '22.22.1',
-                  'annotation.pipeline.image-policy':
-                    '2026-09-10.claude-upgrade1',
+                  'annotation.pipeline.image-policy': '2026-09-10.webdeps1',
                 },
               },
             },
@@ -301,6 +316,12 @@ process.stdin.on('end', async () => {
       ],
     },
     scaffold: {
+      templateId: 'custom',
+      readiness: {
+        startCommand: 'node src/index.js',
+        port: 8080,
+        smokeCommand: 'node --check src/index.js',
+      },
       stack: 'fixture',
       summary: '用于测试的最小项目骨架',
       startup: 'node src/index.js',

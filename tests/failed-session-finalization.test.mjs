@@ -79,6 +79,41 @@ test('explicit completed error may finalize; default still holds and failure rem
   assert.equal(f.result.success, false);
 });
 
+test('completed permission failure can archive unchanged only after every tool has returned', () => {
+  const f = fixture();
+  f.result.permissionAudit.passed = false;
+  f.result.executionOutcome = 'complete';
+  f.events[1].message.content = [
+    { type: 'tool_use', id: 'tool', name: 'Bash' },
+  ];
+  f.events[2] = {
+    type: 'user',
+    message: {
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'tool',
+          is_error: true,
+          content: 'Permission denied',
+        },
+      ],
+    },
+  };
+  const before = f.files()[0].content;
+  assert.throws(() => assertNativeSessionIdle(f.state, f.files()));
+  assert.equal(
+    assertNativeSessionIdle(f.state, f.files(), { failedTurnId: 'failed' })
+      .completedPromptIds[0],
+    'prompt',
+  );
+  assert.equal(f.files()[0].content, before);
+  assert.equal(f.result.success, false);
+  f.events[2].message.content[0].tool_use_id = 'different';
+  assert.throws(() =>
+    assertNativeSessionIdle(f.state, f.files(), { failedTurnId: 'failed' }),
+  );
+});
+
 test('pending, partial, later activity, tools, wrong error, missing archive or wrong identity are held', () => {
   const changes = [
     (f) => {

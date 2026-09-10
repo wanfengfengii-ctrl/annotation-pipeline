@@ -10,8 +10,26 @@ export class NativeProgressWatch {
     this.lastProgressAt = startedAt;
     this.identity = null;
     this.seen = new Set();
+    this.pendingTools = new Set();
+    this.lastProgressKind = null;
   }
 
+  diagnostics(now = Date.now()) {
+    const silentMs = Math.max(0, now - this.lastProgressAt);
+    return {
+      silentMs,
+      lastProgressAt: new Date(this.lastProgressAt).toISOString(),
+      lastProgressKind: this.lastProgressKind,
+      pendingTools: this.pendingTools.size,
+      level:
+        silentMs >= 1200000
+          ? 'terminal-review-due'
+          : silentMs >= 600000
+            ? 'observe'
+            : 'progressing',
+      automaticResend: false,
+    };
+  }
   observe(native, now = Date.now()) {
     if (native) {
       const identity = JSON.stringify([native.sessionId, native.promptId]);
@@ -42,6 +60,12 @@ export class NativeProgressWatch {
         if (this.seen.has(key)) continue;
         this.seen.add(key);
         this.lastProgressAt = now;
+        this.lastProgressKind = event.type;
+        for (const block of content) {
+          if (block.type === 'tool_use') this.pendingTools.add(block.id);
+          if (block.type === 'tool_result')
+            this.pendingTools.delete(block.tool_use_id);
+        }
       }
     }
     return now - this.lastProgressAt >= this.timeoutMs;

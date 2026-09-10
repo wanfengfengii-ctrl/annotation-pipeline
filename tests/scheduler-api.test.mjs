@@ -163,16 +163,12 @@ try {
   );
   remember({ id: responses.find((r) => r.taskId).taskId });
   assert.ok((await run(payload)).duplicate);
-  assert.ok(
-    (
-      await run({
-        ...payload,
-        fingerprint: fingerprint(draft.repoPath, 'next'),
-        prompt: fixture.question('next'),
-      })
-    ).skipped,
-    'nonempty queue must block supply',
-  );
+  const buffered = await run({ ...payload, fingerprint: fingerprint(draft.repoPath, 'next'), prompt: fixture.question('next') });
+  assert.ok(buffered.taskId, 'second qualified candidate fills the buffer');
+  const full = await run({ ...payload, fingerprint: fingerprint(draft.repoPath, 'overflow'), prompt: fixture.question('overflow') });
+  assert.ok(full.skipped, 'buffer cannot exceed two queued candidates');
+  ctx = await run({ action: 'supply-context' });
+  assert.equal(ctx.queuedCount, 2);
   await finish((await run({ action: 'claim', capacity: 3 })).job);
   const second = await run({
     ...payload,
@@ -203,7 +199,7 @@ try {
     ).skipped,
   );
   console.log(
-    'Scheduler API passed: 12 racing claims, distinct jobs, live concurrency reduction, idempotent supply, nonempty queue, daily quota and pause.',
+    'Scheduler API passed: 12 racing claims, distinct jobs, live concurrency reduction, idempotent supply, two-candidate buffer, daily quota and pause.',
   );
 } finally {
   await call('/api/scheduler', original);

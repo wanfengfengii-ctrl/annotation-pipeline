@@ -165,7 +165,11 @@ export function supplyDecision(context, state, now = Date.now()) {
   if (!context.repos.length) return '等待配置仓库，或创建首个手动任务';
   if (context.generatedToday >= context.config.dailyLimit)
     return '已达今日补充上限';
-  if (context.queued) return '队列中已有待执行任务';
+  if (
+    (context.queuedCount ?? Number(!!context.queued)) >=
+    (context.candidateBuffer ?? 1)
+  )
+    return '合格候选缓冲已满';
   if (now < (state.nextAt || 0))
     return state.lastError
       ? '补充失败，退避等待：' + state.lastError
@@ -177,7 +181,7 @@ export function supplyDecision(context, state, now = Date.now()) {
   return null;
 }
 
-// Generation fills at most the existing single queued-task buffer. Resident
+// Generation fills at most the configured qualified candidate buffer. Resident
 // failed/review containers retain their evidence and physical memory budget,
 // but are not work in flight. Claiming the generated job still requires the
 // runner's independent container admission check.
@@ -190,6 +194,7 @@ export function canReplenish(
     recovering = 0,
     generating = false,
     readySources = context.repos,
+    stageAvailable = false,
   },
   now = Date.now(),
 ) {
@@ -202,8 +207,62 @@ export function canReplenish(
     recovering < 0 ||
     generating ||
     !readySources?.length ||
-    active + recovering >= capacity
+    (!stageAvailable && active + recovering >= capacity)
   )
     return false;
   return supplyDecision(context, state, now) === null;
+}
+
+export function heavyMemoryBudget(engine, profile = resourceProfile()) {
+  const sample = engine?.resourceSample;
+  if (!engine?.ready || !sample?.ok) return 0;
+  const reserved = (sample.ownedContainers || []).reduce(
+    (n, c) => n + c.memoryLimitBytes,
+    0,
+  );
+  const external = sample.externalWorkingSetBytes;
+  if (!Number.isFinite(external)) return 0;
+  if (
+    sample.vmObserved &&
+    (sample.memAvailableBytes < profile.dockerReserveBytes + 512 * 2 ** 20 ||
+      sample.pressure?.someAvg10 >= 10 ||
+      sample.pressure?.fullAvg10 >= 1)
+  )
+    return 0;
+  const bytes =
+    Math.floor(
+      Math.min(
+        2 * 2 ** 30,
+        engine.memoryBytes - reserved - external - profile.dockerReserveBytes,
+      ) /
+        (256 * 2 ** 20),
+    ) *
+    (256 * 2 ** 20);
+  return bytes >= 2 ** 30 ? bytes : 0;
+}
+export function canStartHeavy(engine, profile = resourceProfile()) {
+  return heavyMemoryBudget(engine, profile) > 0;
+}
+// Reserve at least 1 GiB for one verifier before admitting new project containers.
+export function projectCapacityWithVerifier(
+  engine,
+  profile = resourceProfile(),
+) {
+  const sample = engine?.resourceSample;
+  if (
+    !engine?.ready ||
+    !sample?.ok ||
+    !Number.isFinite(sample.externalWorkingSetBytes)
+  )
+    return 0;
+  return Math.max(
+    0,
+    Math.floor(
+      (engine.memoryBytes -
+        sample.externalWorkingSetBytes -
+        profile.dockerReserveBytes -
+        2 ** 30) /
+        profile.memoryBytes,
+    ),
+  );
 }

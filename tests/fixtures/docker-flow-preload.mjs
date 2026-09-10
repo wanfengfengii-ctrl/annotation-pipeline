@@ -1,3 +1,4 @@
+import { terminalProtocolVersion } from '../../scripts/mac-terminal.mjs';
 // Injectable test boundary: never launches Docker or a real model.
 import { questionRoot } from '../../lib/question-session.mjs';
 import { auditPermissionTraces } from '../../lib/permission-audit.mjs';
@@ -114,6 +115,7 @@ DockerRuntime.prototype.ensure = async function (task, turn) {
     const terminalDirectory = path.join(path.dirname(workDir), 'terminal');
     mkdirSync(terminalDirectory, { recursive: true });
     const terminal = {
+      terminalProtocolVersion,
       runId: 'fixture-terminal-' + questionId,
       statePath: path.join(terminalDirectory, 'state.json'),
       launchPath: path.join(terminalDirectory, 'question.command'),

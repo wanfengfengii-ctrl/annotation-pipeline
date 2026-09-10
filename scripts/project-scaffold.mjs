@@ -1,3 +1,4 @@
+import { validateReadiness } from './environment-readiness.mjs';
 import {
   readFileSync,
   writeFileSync,
@@ -48,6 +49,7 @@ export function validateScaffoldSyntax(files, { containerId } = {}) {
     );
 }
 export function validateScaffold(value) {
+  if (value?.readiness) validateReadiness(value.readiness);
   if (
     ['stack', 'summary', 'startup'].some(
       (k) =>
