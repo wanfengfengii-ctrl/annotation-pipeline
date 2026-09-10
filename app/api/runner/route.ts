@@ -110,6 +110,16 @@ function submissionMetadata(input: unknown, task: Task, turn: Turn) {
     container?.terminalIdentity?.runId ||
     terminalTurn.terminal?.runId ||
     terminalTurn.terminalIdentity?.runId;
+  // Old completed bridges exported this fixed directory before exportKind was
+  // recorded. Register their unchanged receipt for review only, never delivery.
+  const legacyFinalForReview =
+    value.status === 'needs_review' &&
+    finalization.commandTransport === 'legacy-runner-migration' &&
+    traceExport.exportKind === undefined &&
+    typeof traceExport.path === 'string' &&
+    /\/final\.traces-\d+\/projects$/.test(traceExport.path) &&
+    traceExport.manifestPath ===
+      traceExport.path.replace(/\/projects$/, '/manifest.json');
   if (
     finalization.version !== '2026-09-10.terminal-finalization1' ||
     finalization.taskId !== task.id ||
@@ -119,6 +129,8 @@ function submissionMetadata(input: unknown, task: Task, turn: Turn) {
     finalization.containerId !== container?.containerId ||
     !runId ||
     finalization.runId !== runId ||
+    !turn.sessionId ||
+    finalization.sessionId !== turn.sessionId ||
     finalization.status !== 'removed' ||
     typeof finalization.commandTransport !== 'string' ||
     !['original-mac-terminal', 'legacy-runner-migration'].includes(
@@ -132,7 +144,7 @@ function submissionMetadata(input: unknown, task: Task, turn: Turn) {
     ) ||
     !date(finalization.removedAt) ||
     traceExport.verified !== true ||
-    traceExport.exportKind !== 'final' ||
+    (traceExport.exportKind !== 'final' && !legacyFinalForReview) ||
     typeof traceExport.path !== 'string' ||
     !traceExport.path.trim() ||
     traceExport.path.length > 4000 ||

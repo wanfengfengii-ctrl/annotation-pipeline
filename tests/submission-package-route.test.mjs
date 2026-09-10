@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import { questionRoot } from '../lib/question-session.mjs';
+import { submissionIssues } from '../lib/submission-policy.mjs';
 
 const source = (file) =>
   ts.transpileModule(readFileSync(new URL(file, import.meta.url), 'utf8'), {
@@ -29,6 +30,7 @@ function fixture(change = () => {}) {
         {
           id: 'turn-fixture',
           questionRootId: 'turn-fixture',
+          sessionId: 'session-fixture',
           status: 'review',
           prompt: 'original prompt',
           output: 'original output',
@@ -110,6 +112,7 @@ function fixture(change = () => {}) {
     taskId: 'task-fixture',
     questionId: 'turn-fixture',
     runId: 'run-fixture',
+    sessionId: 'session-fixture',
     containerId: digest('a'),
     status: 'removed',
     commandTransport: 'original-mac-terminal',
@@ -277,6 +280,12 @@ test('final completion metadata binds task, root question, original container an
       v.runId = 'other-run';
     },
     (v) => {
+      v.sessionId = 'other-session';
+    },
+    (v) => {
+      delete v.sessionId;
+    },
+    (v) => {
       v.status = 'stopped';
     },
     (v) => {
@@ -346,6 +355,83 @@ test('legacy migration keeps needs_review and cannot claim passed', async () => 
   assert.equal((await f.call()).status, 400);
   f.body.submission.status = 'needs_review';
   assert.equal((await f.call()).status, 200);
+});
+
+test('old legacy final directories register unchanged review metadata without opening delivery', async () => {
+  const legacy = () => {
+    const f = fixture();
+    const final = f.body.submission.finalization;
+    f.body.submission.version = '2026-09-10.submission2';
+    f.body.submission.status = 'needs_review';
+    final.commandTransport = 'legacy-runner-migration';
+    delete final.traceExport.exportKind;
+    final.traceExport.path = '/fixture/final.traces-1789008365979/projects';
+    final.traceExport.manifestPath =
+      '/fixture/final.traces-1789008365979/manifest.json';
+    return f;
+  };
+  const f = legacy();
+  const before = structuredClone(f.initial.task);
+  assert.equal((await f.call()).status, 200);
+  assert.equal(f.saves(), 1);
+  const saved = f.state().task;
+  assert.deepEqual(saved.turns[0].automation.submission, f.body.submission);
+  assert.equal(
+    saved.turns[0].automation.submission.finalization.traceExport.exportKind,
+    undefined,
+  );
+  assert.ok(submissionIssues(saved, saved.turns[0]).length > 0);
+  delete saved.turns[0].automation.submission;
+  assert.deepEqual(saved, before);
+  for (const change of [
+    (s) => {
+      s.status = 'passed';
+    },
+    (s) => {
+      s.status = 'awaiting_finalization';
+    },
+    (s) => {
+      s.status = 'blocked';
+    },
+    (s) => {
+      s.finalization.commandTransport = 'original-mac-terminal';
+    },
+    (s) => {
+      s.finalization.taskId = 'other-task';
+    },
+    (s) => {
+      s.finalization.questionId = 'other-question';
+    },
+    (s) => {
+      s.finalization.containerId = digest('9');
+    },
+    (s) => {
+      s.finalization.runId = 'other-run';
+    },
+    (s) => {
+      s.finalization.sessionId = 'other-session';
+    },
+    (s) => {
+      delete s.finalization.sessionId;
+    },
+    (s) => {
+      s.finalization.traceExport.exportKind = 'intermediate';
+    },
+    (s) => {
+      s.finalization.traceExport.exportKind = null;
+    },
+    (s) => {
+      s.finalization.traceExport.path = '/fixture/turn.traces-123/projects';
+    },
+    (s) => {
+      s.finalization.traceExport.manifestPath = '/other/manifest.json';
+    },
+  ]) {
+    const rejected = legacy();
+    change(rejected.body.submission);
+    assert.equal((await rejected.call()).status, 400);
+    assert.equal(rejected.saves(), 0);
+  }
 });
 
 test('oversized, invalid time, digest, path and deeply nested metadata is rejected without writes', async () => {
