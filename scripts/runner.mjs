@@ -24,7 +24,14 @@ import {
   repairBatchInstructions,
 } from '../lib/project-series.mjs';
 import { workflow, scoreInstructions, nextDecision } from '../lib/workflow.mjs';
-import { questionIssues } from '../lib/writing-style.mjs';
+import {
+  questionIssues,
+  assertWritingRevision,
+} from '../lib/writing-style.mjs';
+import {
+  beginQuestionRevision,
+  questionRevisionInstructions,
+} from '../lib/question-revision.mjs';
 import { questionRules } from '../lib/question-writing.mjs';
 import {
   questionCacheState,
@@ -279,6 +286,9 @@ async function execute({ task, turn }) {
     workflowVersion: workflow.version,
     runtimeVersion,
     questionRuleVersion: questionRules.version,
+    ...(cached.questionRevision
+      ? { questionRevision: cached.questionRevision }
+      : {}),
   };
   let preparation = cached.prepare;
   const journal = path.join(dir, turn.id + '.job.json');
@@ -302,6 +312,7 @@ async function execute({ task, turn }) {
       'rules/difficulty.json',
       'rules/question-writing.json',
       'lib/question-writing.mjs',
+      'lib/question-revision.mjs',
     ]
       .filter((f) => existsSync(path.join(root, f)))
       .map((f) => [f, readFileSync(path.join(root, f), 'utf8')]),
@@ -355,6 +366,8 @@ async function execute({ task, turn }) {
       stage: name,
     });
     if (name === 'runtime-running') return;
+    if (name === 'prepare' && !preserveQuestion)
+      prompt += questionRevisionInstructions(cached.questionRevision);
     if (name === 'next') prompt += '\n' + repairBatchInstructions();
     if (['score', 'project-next', 'next', 'delivery'].includes(name)) {
       prompt +=
@@ -685,6 +698,12 @@ async function execute({ task, turn }) {
           acceptance: continuation.acceptance,
         };
       }
+      if (!preserveQuestion && cached.questionRevision)
+        assertWritingRevision(
+          'prepare',
+          cached.questionRevision.preparation.value,
+          preparation.value,
+        );
       if (turn.repairOf) {
         if (preparation.value.category !== 'Bug 修复')
           throw Error('当前同会话追问必须为 Bug 修复');
@@ -779,7 +798,7 @@ async function execute({ task, turn }) {
           }
         : await step(
             'policy',
-            `${policyInstructions({ questionStyle: questionStyleApplies, ...questionContext })}\n${!questionStyleApplies ? '本题已在终端发送，保留原始题目，不追溯应用新的题目格式与内容标准；questionCompliant 写 false，questionChecks、workflowFeatures、businessDetails、wordingRequirements、wordingDuplicatePairs 写空数组，allowed 只按原禁出和难度规则判断。' : ''}\n${preserveQuestion ? '这是已发送题目的原会话接续，当前目录已包含 Claude 执行后的改动。按发送时的原题、前序验收报告和复现证据审核禁出与难度；当前代码已修改或已增加回归测试是执行进展，不能据此否定发送前已经复现的缺陷，也不能要求退回旧代码或重新复现旧缺陷才允许收集本轮结果。本轮修复是否有效由后续独立运行验收判断，不在出题审核中预先判定。' : ''}\n轮次上下文：${roundContext}\nquestionSession 是程序按 questionRootId 和实际 SessionID 分组的本会话记录及额度，只按其中同一原题的前序轮次计算 Bug 修复次数；previousGoals 还包含该项目其他独立会话，仅提供项目背景，不能把不同 questionRootId 或不同 SessionID 的历史 Bug 算进本会话。当前候选是否超限以 questionSession 的结构化计数核对，不能凭项目整体题目数量推断。独立审核用户原目标与准备后的实际任务，两个都必须合规。若当前输入仅为继续或续写，必须根据前序原始目标判断。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选 repoPath 是本轮实际容器产物在本机的映射目录，审核必须读取此处对应项目；原参考仓库仅用于最初选题，不能拿它的代码判断本轮产物。此前复现数值引用 roundContext.previousVerification 给出的独立报告和日志，不在 Claude 原轨迹中寻找独立验收的工具调用。\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同且难度合格时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
+            `${policyInstructions({ questionStyle: questionStyleApplies, ...questionContext })}\n${!questionStyleApplies ? '本题已在终端发送，保留原始题目，不追溯应用新的题目格式与内容标准；questionCompliant 写 false，questionChecks、workflowFeatures、businessDetails、wordingRequirements、wordingDuplicatePairs 写空数组，allowed 只按原禁出和难度规则判断。' : ''}\n${preserveQuestion ? '这是已发送题目的原会话接续，当前目录已包含 Claude 执行后的改动。按发送时的原题、前序验收报告和复现证据审核禁出与难度；当前代码已修改或已增加回归测试是执行进展，不能据此否定发送前已经复现的缺陷，也不能要求退回旧代码或重新复现旧缺陷才允许收集本轮结果。本轮修复是否有效由后续独立运行验收判断，不在出题审核中预先判定。' : ''}\n轮次上下文：${roundContext}\nquestionSession 是程序按 questionRootId 和实际 SessionID 分组的本会话记录及额度，只按其中同一原题的前序轮次计算 Bug 修复次数；previousGoals 还包含该项目其他独立会话，仅提供项目背景，不能把不同 questionRootId 或不同 SessionID 的历史 Bug 算进本会话。当前候选是否超限以 questionSession 的结构化计数核对，不能凭项目整体题目数量推断。独立审核用户原目标与准备后的实际任务的禁出、难度和业务范围；格式、字数、语气与逐句去重只检查准备后的候选实际 prompt，原目标中已经在候选内修正的表达问题不作为拒绝候选的依据。若当前输入仅为继续或续写，必须根据前序原始目标判断。用户原目标：${turn.requestedPrompt || turn.prompt}\n候选 repoPath 是本轮实际容器产物在本机的映射目录，审核必须读取此处对应项目；原参考仓库仅用于最初选题，不能拿它的代码判断本轮产物。此前复现数值引用 roundContext.previousVerification 给出的独立报告和日志，不在 Claude 原轨迹中寻找独立验收的工具调用。\n候选题：${JSON.stringify(candidate)}\n跨仓库历史题目：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。allowed 只有无禁出项、无实质雷同且难度合格时才为 true。matchedRuleIds 使用组 ID 或 general；duplicateTaskIds 使用实际历史 ID。reason 给出实质判断依据。`,
             candidate.repoPath,
             { questionContext },
           );
@@ -1169,6 +1188,16 @@ async function execute({ task, turn }) {
       await safePlan();
     }
   } catch (e) {
+    if (
+      stage === 'policy' &&
+      beginQuestionRevision(cached, {
+        audit: automation.policy,
+        preserveQuestion,
+      })
+    ) {
+      persist();
+      return execute({ task, turn });
+    }
     result.success = false;
     result.error = e.message;
     const container = containers.load(task.id);

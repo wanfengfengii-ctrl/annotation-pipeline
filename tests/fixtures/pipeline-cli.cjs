@@ -401,6 +401,20 @@ process.stdin.on('end', async () => {
       projectEvidence: 'project engine.ts exists',
     },
   };
+  if (process.env.FIXTURE_REJECT_WORDING_ONCE) {
+    const rejected = path.join(dir, 'wording-rejected');
+    if (stage === 'prepare' && !fs.existsSync(rejected))
+      values.prepare.prompt += '处理结果可以回看和比较。';
+    if (stage === 'policy' && !fs.existsSync(rejected)) {
+      Object.assign(values.policy, {
+        allowed: false,
+        questionCompliant: false,
+        wordingDuplicatePairs: ['方便回看和比较与处理结果可以回看和比较重复'],
+        reason: '候选结尾重复已有结果，需合并后重新审核',
+      });
+      fs.writeFileSync(rejected, '1');
+    }
+  }
   fs.writeFileSync(out, JSON.stringify(values[stage]));
   console.log(
     JSON.stringify({ type: 'thread.started', thread_id: 'fixture-' + stage }),

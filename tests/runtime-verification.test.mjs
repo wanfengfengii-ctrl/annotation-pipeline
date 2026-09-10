@@ -195,6 +195,12 @@ test('Runtime planning receives measured capabilities and Bash contract after is
           /系统依赖安装与浏览器二进制下载拆成不同 setup/,
         );
         assert.match(instruction, /为实际业务 acceptance 留出时间预算/);
+        assert.match(instruction, /download.saveAs/);
+        assert.match(instruction, /不要调用 download.path/);
+        assert.match(instruction, /日志预算每步 2 MiB/);
+        assert.match(instruction, /在内存中完整比较或逐字段比较/);
+        assert.match(instruction, /不能笼统归为环境 blocked/);
+        assert.match(instruction, /不能据此声称对应网页业务功能失败/);
         assert.equal(calls.length, 2);
         assert.equal(calls[1][0], 'rm');
         throw stopAfterPlan;
