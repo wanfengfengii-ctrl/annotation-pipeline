@@ -11,6 +11,37 @@ import {
 } from '../lib/writing-style.mjs';
 import { codexStage } from '../scripts/codex-stages.mjs';
 import fixture from './fixtures/question.cjs';
+import { formatQuestionText } from '../lib/question-text.mjs';
+
+test('所有出题阶段去掉反引号及空白行，其他字段和已发送原题保持', () => {
+  for (const category of [
+    '0-1 代码生成',
+    'Feature 迭代',
+    'Bug 修复',
+    '代码理解',
+    '代码重构',
+  ]) {
+    const prompt = fixture
+      .categoryQuestion(category)
+      .replace(/\n/g, '\r\n\r\n')
+      .replace('。', '。`');
+    for (const stage of ['generate', 'prepare', 'next', 'project-next']) {
+      const value = {
+        prompt,
+        category,
+        action: category === 'Bug 修复' ? 'repair' : 'advance',
+        reason: '继续完善原有功能',
+        acceptance: ['原验收内容'],
+      };
+      const result = checkWriting(stage, value);
+      assert.deepEqual(result.issues, [], category + ':' + stage);
+      assert.equal(result.value.prompt, formatQuestionText(prompt));
+      assert.ok(!/[`\r]|\n\s*\n/.test(result.value.prompt));
+      assert.equal(value.prompt, prompt);
+      assert.deepEqual(result.value.acceptance, value.acceptance);
+    }
+  }
+});
 import {
   questionCacheState,
   upgradeQuestionCache,
@@ -188,7 +219,7 @@ test('0-1 题目使用无编号的项目名称和一至两段正文，点评保�
     acceptance: ['原值'],
   });
   assert.deepEqual(checked.issues, []);
-  assert.equal(checked.value.prompt, prompt);
+  assert.equal(checked.value.prompt, formatQuestionText(prompt));
   assert.deepEqual(checked.value.acceptance, ['原值']);
   assert.equal(questionParts(prompt).paragraphs.length, 2);
   assert.ok(questionParts(prompt).bodyLength <= 260);
@@ -434,7 +465,10 @@ process.stdin.on('data', c=>input+=c); process.stdin.on('end',()=>{
       onChild() {},
     };
     const result = await codexStage({ ...options, turnId: 'good' });
-    assert.equal(result.value.prompt, fixture.categoryQuestion('Feature 迭代'));
+    assert.equal(
+      result.value.prompt,
+      formatQuestionText(fixture.categoryQuestion('Feature 迭代')),
+    );
     assert.deepEqual(result.value.acceptance, [
       '切换状态重置页码',
       '空列表测试',

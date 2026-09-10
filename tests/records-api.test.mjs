@@ -325,6 +325,16 @@ try {
   assert.equal((await records({ page: 999 })).page, 2);
   assert.equal((await records({ category: 'Bug 修复' })).total, 0);
   assert.equal((await records({ query: "' OR 1=1 --" })).total, 0);
+  const oneProject = await records({ projectId: ids[2], page: 999 });
+  assert.equal(oneProject.total, 1);
+  assert.equal(oneProject.page, 1);
+  assert.equal(oneProject.rows[0].taskId, ids[2]);
+  assert.equal((await records({ projectId: 'missing' })).total, 0);
+  assert.equal(
+    (await records({ projectId: ids[2], category: 'Bug 修复' })).total,
+    0,
+  );
+  assert.ok(!oneProject.headers.includes('项目名称'));
   const id = crypto.randomUUID(),
     first = await exportFile(filter, 'page', id);
   assert.equal(first.status, 200, await first.clone().text());
@@ -502,6 +512,28 @@ try {
     (await exportFile(filter, 'page', id)).status,
     400,
     'old batch must not bypass a later permission denial',
+  );
+  const projectFile = await exportFile(
+    { ...filter, projectId: ids[2] },
+    'filtered',
+    crypto.randomUUID(),
+    'csv',
+  );
+  assert.equal(projectFile.status, 200);
+  assert.equal(projectFile.headers.get('X-Export-Count'), '1');
+  const projectCsv = await projectFile.text();
+  assert.ok(!projectCsv.split('\n')[0].includes('项目名称'));
+  assert.equal(
+    (
+      await exportFile(
+        { ...filter, projectId: ids[2] },
+        'selected',
+        crypto.randomUUID(),
+        'xlsx',
+        [{ taskId: ids[3], turnId: (await latest(ids[3])).turns[0].id }],
+      )
+    ).status,
+    400,
   );
   console.log(
     'Records API passed: serial plus 30 fields, 12 records on two pages, selected export, stale/invalid selection rejection, exact counts, XLSX/CSV, idempotent retries and permission gates.',

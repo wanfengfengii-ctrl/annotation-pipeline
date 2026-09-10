@@ -2,6 +2,7 @@ import { issues, type Task, type Turn, type Review } from './pipeline.ts';
 import { humanAsReview } from './human-review.ts';
 import { roundNumber } from './record-metadata.ts';
 import { formatStack } from './stack-field.mjs';
+import { formatQuestionText } from './question-text.mjs';
 export const recordHeaders = [
   'User Prompt',
   'SessionID',
@@ -148,7 +149,7 @@ export function recordRow(
         : '',
   };
   const base = [
-    r.prompt,
+    formatQuestionText(r.prompt),
     r.sessionId || '',
     r.promptId || '',
     recordRound(roundNumber(t, r)),
@@ -204,6 +205,7 @@ export function recordRow(
 }
 export type RecordFilter = {
   source: RecordSource;
+  projectId?: string;
   query: string;
   category: string;
   day: string;
@@ -221,6 +223,7 @@ export function recordFilter(v: Record<string, unknown>): RecordFilter {
   };
   const out: RecordFilter = {
     source: v.source === 'human' ? 'human' : 'ai',
+    ...(v.projectId ? { projectId: String(v.projectId) } : {}),
     query: String(v.query || '').trim(),
     category: String(v.category || ''),
     day: String(v.day || ''),
@@ -233,6 +236,7 @@ export function recordFilter(v: Record<string, unknown>): RecordFilter {
     !['ai', 'human', undefined, ''].includes(v.source as string) ||
     !['all', 'never', 'exported', 'exact'].includes(out.exports) ||
     out.query.length > 300 ||
+    (out.projectId && !/^[a-zA-Z0-9_-]{1,100}$/.test(out.projectId)) ||
     out.category.length > 100 ||
     !out.page ||
     ![10, 20, 50, 100].includes(out.pageSize)

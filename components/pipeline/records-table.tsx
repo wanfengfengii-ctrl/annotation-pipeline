@@ -18,13 +18,16 @@ import {
 } from '@/lib/record-fields';
 export function RecordsTable({
   source = 'ai',
+  projects,
   onOpen,
 }: {
   source?: RecordSource;
+  projects: { id: string; name: string }[];
   onOpen: (taskId: string) => void;
 }) {
   const [filter, setFilter] = useState<RecordFilter>({
     source,
+    projectId: '',
     query: '',
     category: '',
     day: '',
@@ -160,6 +163,20 @@ export function RecordsTable({
         </Button>
       </div>
       <fieldset className="record-filters" disabled={busy}>
+        <label className="field">
+          项目名称
+          <select
+            value={filter.projectId || ''}
+            onChange={(e) => update({ projectId: e.target.value })}
+          >
+            <option value="">全部项目</option>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </label>
         <label className="field">
           评分来源
           <select

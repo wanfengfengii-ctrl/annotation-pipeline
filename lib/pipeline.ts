@@ -8,6 +8,7 @@ import type { RecordMetadata } from './record-metadata.ts';
 import { validDockerSnapshot } from './container-policy.mjs';
 import { terminalIssues } from './terminal-policy.mjs';
 import { permissionIssues } from './permission-audit.mjs';
+import { formatQuestionText } from './question-text.mjs';
 export type PermissionAudit = {
   version: string;
   passed: boolean;
@@ -380,7 +381,7 @@ export function csv(
           r.os || t.os,
           r.reproducibility || t.reproducibility,
           t.snapshot,
-          r.prompt,
+          formatQuestionText(r.prompt),
           r.sessionId,
           r.promptId,
           r.tracePath,

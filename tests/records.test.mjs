@@ -12,6 +12,31 @@ import {
 } from '../lib/record-fields.ts';
 import { exportScope, recordSelection } from '../lib/record-selection.ts';
 import { xlsx, recordsCsv } from '../lib/xlsx.ts';
+import { formatQuestionText } from '../lib/question-text.mjs';
+
+test('项目筛选独立于导出字段，题面只规范显示副本', () => {
+  assert.equal(recordFilter({ projectId: 'task-1' }).projectId, 'task-1');
+  assert.deepEqual(recordFilter({ projectId: '' }), recordFilter({}));
+  assert.throws(() => recordFilter({ projectId: "' OR 1=1 --" }), /筛选/);
+  assert.ok(!recordHeaders.includes('项目名称'));
+  const prompt = ' `校样台` \r\n\r\n  对比 `A` 与 `B`。\n \n 保留图片。\n';
+  const turn = {
+    id: 'round',
+    prompt,
+    category: '0-1 代码生成',
+    difficulty: '困难',
+  };
+  const row = recordRow({ id: 'task', title: '校样台' }, turn, 'ai');
+  assert.equal(row.values[0], '校样台\n对比 A 与 B。\n保留图片。');
+  assert.equal(turn.prompt, prompt);
+  assert.equal(formatQuestionText(row.values[0]), row.values[0]);
+  const sheet = strFromU8(
+    unzipSync(xlsx([row], 'formatted'))['xl/worksheets/sheet1.xml'],
+  );
+  assert.ok(!sheet.includes('`') && !sheet.includes('\n\n'));
+  assert.ok(!sheet.includes('项目名称'));
+  assert.ok(!recordsCsv([row]).includes('`'));
+});
 
 test('实际工作簿字段完整有序，AI 与实际提交来源分开，Excel 文本不执行公式', () => {
   assert.equal(recordHeaders.length, 30);

@@ -19,6 +19,10 @@ export async function selectRecords(
   if (f.source === 'human')
     conditions.push("json_extract(r.value,'$.humanReview') IS NOT NULL");
   else conditions.push("json_extract(r.value,'$.review.source')='codex'");
+  if (f.projectId) {
+    conditions.push('t.id=?');
+    args.push(f.projectId);
+  }
   if (f.query) {
     conditions.push(
       "(instr(lower((SELECT printf('nyh-%05d',sequence) FROM project_names WHERE task_id=t.id)),lower(?))>0 OR instr(lower(json_extract(t.data,'$.title')),lower(?))>0 OR instr(lower(json_extract(r.value,'$.prompt')),lower(?))>0 OR instr(COALESCE(json_extract(r.value,'$.sessionId'),''),?)>0)",

@@ -7,6 +7,7 @@ import {
   freshCategories,
 } from '@/lib/project-series.mjs';
 import { RecordsTable } from '@/components/pipeline/records-table';
+import { formatQuestionText } from '@/lib/question-text.mjs';
 import { initialCodeURL, recordRound, recordStack } from '@/lib/record-fields';
 import { roundNumber } from '@/lib/record-metadata';
 import { RecordMetadataPanel } from '@/components/pipeline/record-metadata-panel';
@@ -181,6 +182,7 @@ export default function Home() {
     [selected, setSelected] = useState<string | null>(null),
     [page, setPage] = useState('tasks'),
     [query, setQuery] = useState(''),
+    [projectId, setProjectId] = useState(''),
     [filter, setFilter] = useState('全部状态');
   const reload = useCallback(async () => {
     try {
@@ -278,6 +280,7 @@ export default function Home() {
   }
   const filtered = tasks.filter(
     (t) =>
+      (!projectId || t.id === projectId) &&
       (!query ||
         `${t.projectName || ''} ${t.title} ${t.stack} ${t.repoPath}`
           .toLowerCase()
@@ -430,6 +433,20 @@ export default function Home() {
                       onChange={(e) => setQuery(e.target.value)}
                     />
                   </label>
+                  <label className="field">
+                    项目名称
+                    <select
+                      value={projectId}
+                      onChange={(e) => setProjectId(e.target.value)}
+                    >
+                      <option value="">全部项目</option>
+                      {tasks.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.projectName || t.title}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <div style={{ minWidth: 130 }}>
                     <Picker
                       value={filter}
@@ -563,6 +580,10 @@ export default function Home() {
           </TabsContent>
           <TabsContent value="records">
             <RecordsTable
+              projects={tasks.map((t) => ({
+                id: t.id,
+                name: t.projectName || t.title,
+              }))}
               key={recordsSource}
               source={recordsSource}
               onOpen={setSelected}
@@ -1261,7 +1282,7 @@ function TurnPanel({
       <details style={{ marginTop: 12 }}>
         <summary className="row-title">执行 Prompt</summary>
         <pre className="sub" style={{ whiteSpace: 'pre-wrap', marginTop: 10 }}>
-          {r.prompt}
+          {formatQuestionText(r.prompt)}
         </pre>
       </details>
       {r.output && (
