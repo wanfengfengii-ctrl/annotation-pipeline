@@ -18,8 +18,16 @@ if (
     'ANNOTATION_READINESS=' +
       JSON.stringify({
         passed: true,
+        uid: 1000,
         browser: true,
         venv: true,
+        writableCaches: true,
+        systemAptCleanupDisabled: true,
+        caches: {
+          npm_config_cache: '/home/node/.cache/annotation/npm',
+          PIP_CACHE_DIR: '/home/node/.cache/annotation/pip',
+          XDG_CACHE_HOME: '/home/node/.cache/annotation/xdg',
+        },
         scaffold: true,
         dependencies: [],
       }),

@@ -1214,7 +1214,7 @@ export function createJobExecutor({
         })
       ) {
         persist();
-        return execute({ task, turn });
+        return executeJob({ task, turn }, timing);
       }
       result.success = false;
       result.error = e.message;

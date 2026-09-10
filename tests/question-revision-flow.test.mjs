@@ -1,6 +1,6 @@
 // Real runner against a fresh isolated API, with synthetic CLI/Terminal adapters.
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import {
   fixture,
   api,
@@ -55,6 +55,21 @@ try {
   assert.deepEqual(turn.automation.preparation.value.acceptance, [
     'fixture evidence',
   ]);
+  const timing = readFileSync(turn.automation.timing.path, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.equal(new Set(timing.map((event) => event.attemptId)).size, 1);
+  for (const event of ['attempt-start', 'attempt-end'])
+    assert.equal(timing.filter((entry) => entry.event === event).length, 1);
+  for (const stage of ['prepare', 'policy'])
+    assert.equal(
+      timing.filter(
+        (entry) => entry.event === 'stage-start' && entry.stage === stage,
+      ).length,
+      2,
+      'wording correction retains both stages in the same attempt',
+    );
   console.log(
     'PASS: rejected unsent wording corrected once, audited again, original rejection preserved, one Terminal submission',
   );
