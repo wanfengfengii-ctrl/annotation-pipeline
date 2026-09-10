@@ -1,3 +1,4 @@
+import { parseTask } from '@/lib/task-storage.mjs';
 import { selectRecords } from '@/db/records';
 import { recordFilter, type RecordRow } from '@/lib/record-fields';
 import { xlsx, recordsCsv } from '@/lib/xlsx';
@@ -145,7 +146,7 @@ export async function POST(req: Request) {
       .bind(id)
       .all<{ id: string; data: string }>();
     const tasks = new Map(
-      current.results.map((t) => [t.id, JSON.parse(t.data) as Task]),
+      current.results.map((t) => [t.id, parseTask(t.data) as Task]),
     );
     for (const row of rows) {
       const task = tasks.get(row.taskId);

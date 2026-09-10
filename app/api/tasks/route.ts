@@ -1,4 +1,5 @@
 import { seriesVersion } from '@/lib/project-series.mjs';
+import { serializeTask } from '@/lib/task-storage.mjs';
 import {
   all,
   get,
@@ -84,7 +85,7 @@ export async function POST(req: Request) {
     await ensureProjectNames();
     await db()
       .prepare('INSERT INTO tasks(id,data,created_at) VALUES(?,?,?)')
-      .bind(task.id, JSON.stringify(task), task.createdAt)
+      .bind(task.id, serializeTask(task), task.createdAt)
       .run();
     return Response.json({ task: (await get(task.id))!.task }, { status: 201 });
   } catch (e) {

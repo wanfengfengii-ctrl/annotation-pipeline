@@ -1,5 +1,6 @@
 import { db } from './store';
 import type { Task } from '@/lib/pipeline';
+import { serializeTask } from '@/lib/task-storage.mjs';
 export async function saveHumanReview(
   task: Task,
   revision: number,
@@ -27,7 +28,7 @@ export async function saveHumanReview(
       .prepare(
         'UPDATE tasks SET data=?, revision=revision+1 WHERE id=? AND revision=?',
       )
-      .bind(JSON.stringify(task), task.id, revision),
+      .bind(serializeTask(task), task.id, revision),
   ]);
   if (!results[1].meta.changes)
     throw Error('数据已更新，草稿仍保留在页面；刷新后重试');

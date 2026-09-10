@@ -1,4 +1,5 @@
 import { sessionFinalization } from '@/lib/session-finalization.mjs';
+import { serializeTask } from '@/lib/task-storage.mjs';
 import {
   gatewayFailureValid,
   gatewayContinuationVersion,
@@ -389,7 +390,7 @@ export async function POST(req: Request) {
         AND COALESCE((SELECT json_extract(data,'$.enabled') FROM runners WHERE id='scheduler'),1)=1`)
         .bind(
           task.id,
-          JSON.stringify(task),
+          serializeTask(task),
           now,
           fingerprint,
           day,
@@ -451,7 +452,7 @@ export async function POST(req: Request) {
         const claimed = await db()
           .prepare(`UPDATE tasks SET data=?,revision=revision+1 WHERE id=? AND revision=?
           AND (SELECT count(*) FROM tasks,json_each(tasks.data,'$.turns') r WHERE json_extract(r.value,'$.status')='running') < ?`)
-          .bind(JSON.stringify(task), task.id, revision, capacity)
+          .bind(serializeTask(task), task.id, revision, capacity)
           .run();
         if (claimed.meta.changes)
           return Response.json({ job: { task, turn: r } });

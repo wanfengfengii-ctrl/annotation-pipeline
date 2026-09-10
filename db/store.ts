@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:workers';
 import type { Task } from '@/lib/pipeline';
+import { parseTask, serializeTask } from '@/lib/task-storage.mjs';
 export function db() {
   return (env as unknown as { DB: D1Database }).DB;
 }
@@ -21,7 +22,7 @@ export async function all() {
     )
     .all<{ data: string; revision: number; project_name: string }>();
   return results.map((r) => ({
-    ...JSON.parse(r.data),
+    ...parseTask(r.data),
     projectName: r.project_name,
     revision: r.revision,
   }));
@@ -37,7 +38,7 @@ export async function get(id: string) {
   return row
     ? {
         task: {
-          ...JSON.parse(row.data),
+          ...parseTask(row.data),
           projectName: row.project_name,
         } as Task,
         revision: row.revision,
@@ -49,7 +50,7 @@ export async function save(task: Task, revision: number) {
     .prepare(
       'UPDATE tasks SET data=?, revision=revision+1 WHERE id=? AND revision=?',
     )
-    .bind(JSON.stringify(task), task.id, revision)
+    .bind(serializeTask(task), task.id, revision)
     .run();
   if (!r.meta.changes) throw new Error('数据已更新，请刷新后重试');
 }
