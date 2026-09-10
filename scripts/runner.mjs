@@ -294,6 +294,7 @@ async function execute({ task, turn }) {
     [
       'scripts/codex-stages.mjs',
       'lib/workflow.mjs',
+      'lib/score-consistency.mjs',
       'rules/workflow.json',
       'lib/writing-style.mjs',
       'lib/task-policy.mjs',

@@ -54,7 +54,10 @@ export function sealStage(stage, saved, key, dir, extraFiles = []) {
     !isDeepStrictEqual(JSON.parse(last?.item.text), JSON.parse(output))
   )
     throw Error('阶段结果与完成轨迹不一致');
-  const references = [...new Set(extraFiles)]
+  const reviewFiles = (
+    saved.consistencyRevision?.originalTracePaths || []
+  ).flatMap((file) => [file, file.slice(0, -'.events.jsonl'.length) + '.json']);
+  const references = [...new Set([...extraFiles, ...reviewFiles])]
     .sort()
     .map((file) => ({ path: file, sha256: hash(readEvidence(file, dir)) }));
   return {

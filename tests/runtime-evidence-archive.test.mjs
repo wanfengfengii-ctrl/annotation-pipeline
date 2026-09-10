@@ -142,6 +142,35 @@ test('score retry archive preserves exactly four whitelisted prior audit files w
     );
 });
 
+test('score consistency review preserves both original output and events in the evidence archive', (t) => {
+  const f = fixture(t);
+  const originalTrace = path.join(f.dir, 'turn.attempt-1.score.events.jsonl');
+  const originalOutput = originalTrace.replace('.events.jsonl', '.json');
+  writeFileSync(originalTrace, '{"type":"turn.completed"}\n');
+  writeFileSync(originalOutput, '{"scores":[5,5,5,5,5]}');
+  f.args.automation.score = {
+    consistencyRevision: { originalTracePaths: [originalTrace] },
+  };
+  const artifacts = addScoreRetry(f);
+  for (const artifact of artifacts.filter((a) => a.name.includes('score'))) {
+    const updated = artifact.path.replace(
+      '.score.',
+      '.consistency.writing.score.',
+    );
+    writeFileSync(updated, readFileSync(artifact.path));
+    artifact.path = updated;
+  }
+  const archive = f.archive();
+  for (const [name, file] of [
+    ['score.before-consistency-0.jsonl', originalTrace],
+    ['score.before-consistency-0.json', originalOutput],
+  ])
+    assert.deepEqual(
+      execFileSync('tar', ['-xOzf', archive.archivePath, name]),
+      readFileSync(file),
+    );
+});
+
 for (const [label, change, pattern] of [
   [
     'changed bytes',

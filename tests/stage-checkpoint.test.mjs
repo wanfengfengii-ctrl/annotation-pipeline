@@ -71,6 +71,27 @@ test('only unchanged inputs, validated result and completed stage evidence can r
     writeFileSync(output, JSON.stringify({ scores: [5, 5, 5, 5, 5] }));
     assert.equal(restoreStage('score', saved, receipt, key, dir), null);
     writeFileSync(output, JSON.stringify(value));
+    const originalTrace = path.join(
+      dir,
+      'turn.attempt-1.original.score.events.jsonl',
+    );
+    const originalOutput = originalTrace.replace('.events.jsonl', '.json');
+    writeFileSync(originalTrace, events.map(JSON.stringify).join('\n'));
+    writeFileSync(originalOutput, JSON.stringify(value));
+    const reviewed = {
+      ...saved,
+      consistencyRevision: { originalTracePaths: [originalTrace] },
+    };
+    const reviewReceipt = sealStage('score', reviewed, key, dir);
+    assert.deepEqual(
+      restoreStage('score', reviewed, reviewReceipt, key, dir),
+      reviewed,
+    );
+    writeFileSync(originalOutput, JSON.stringify({ scores: [5, 5, 5, 5, 5] }));
+    assert.equal(
+      restoreStage('score', reviewed, reviewReceipt, key, dir),
+      null,
+    );
     writeFileSync(trace, events.slice(0, -1).map(JSON.stringify).join('\n'));
     assert.equal(restoreStage('score', saved, receipt, key, dir), null);
     writeFileSync(trace, events.map(JSON.stringify).join('\n'));

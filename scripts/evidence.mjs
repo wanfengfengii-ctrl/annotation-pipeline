@@ -386,7 +386,7 @@ export function createEvidenceArchive({
       const sourceName = new RegExp(
         '^' +
           escapedTurnId +
-          '\\.attempt-[1-9]\\d*\\.' +
+          '\\.attempt-[1-9]\\d*(?:\\.consistency)?(?:\\.writing)?\\.' +
           suffix.replaceAll('.', '\\.') +
           '$',
       );
@@ -412,6 +412,15 @@ export function createEvidenceArchive({
         value.writingRevision.originalTracePath,
         key + '.before-writing.jsonl',
       );
+    for (const [i, trace] of (
+      value?.consistencyRevision?.originalTracePaths || []
+    ).entries()) {
+      add(trace, `${key}.before-consistency-${i}.jsonl`);
+      add(
+        trace.slice(0, -'.events.jsonl'.length) + '.json',
+        `${key}.before-consistency-${i}.json`,
+      );
+    }
   }
   // Freeze every cited file before any later Claude round changes the workspace.
   const citations = [],

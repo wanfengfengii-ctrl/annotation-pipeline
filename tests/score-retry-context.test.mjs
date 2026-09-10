@@ -306,6 +306,28 @@ test('later rejected delivery binds the exact restored score checkpoint without 
   assert.equal(f.receipt.automation.delivery.value.passed, false);
 });
 
+test('consistency-reviewed score remains resumable and its earlier scoring evidence is sealed', (t) => {
+  const f = fixture(t);
+  const original = f.cached.score.tracePath;
+  const reviewed = original.replace('.score.', '.consistency.score.');
+  writeFileSync(reviewed, readFileSync(original));
+  writeFileSync(
+    reviewed.replace('.events.jsonl', '.json'),
+    readFileSync(original.replace('.events.jsonl', '.json')),
+  );
+  f.cached.score.tracePath = reviewed;
+  f.cached.score.consistencyRevision = {
+    originalTracePaths: [original],
+    originalScores: f.cached.score.value.scores,
+  };
+  f.receipt.automation.score = clone(f.cached.score);
+  bindScoreCheckpoint(f);
+  moveDelivery(f, 4);
+  assert.ok(scoreRetryContext(f.cached, f.context));
+  writeFileSync(original, '{"changed":true}\n');
+  assert.equal(scoreRetryContext(f.cached, f.context), null);
+});
+
 test('cross-attempt feedback requires matching checkpoint receipts and every cited file hash', (t) => {
   const f = fixture(t);
   moveDelivery(f, 4);

@@ -159,7 +159,11 @@ export function scoreRetryContext(cached, { dir, taskId, turnId, workDir }) {
       const attempt = path
         .basename(stem)
         .match(
-          new RegExp('^' + turnId + '\\.attempt-([1-9][0-9]*)(?:\\.writing)?$'),
+          new RegExp(
+            '^' +
+              turnId +
+              '\\.attempt-([1-9][0-9]*)(?:\\.consistency)?(?:\\.writing)?$',
+          ),
         );
       if (!attempt || !Number.isSafeInteger(Number(attempt[1])))
         throw Error('Stage belongs to another attempt');

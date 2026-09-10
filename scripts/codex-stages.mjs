@@ -5,6 +5,12 @@ import { validateScaffold } from './project-scaffold.mjs';
 import { codexTurnIds } from '../lib/harness.mjs';
 import { stackFieldInstructions } from '../lib/stack-field.mjs';
 import {
+  scoreConsistencyIssues,
+  assertScoreConsistency,
+  scoreConsistencyInstructions,
+  scoreConsistencyVersion,
+} from '../lib/score-consistency.mjs';
+import {
   runtimeCheckIdPattern,
   validateRuntimePlan,
   validateRuntimeVerdict,
@@ -358,7 +364,7 @@ async function runStage({
   };
 }
 
-export async function codexStage(options) {
+async function stageWithWriting(options) {
   const original = await runStage(options);
   const checked = checkWriting(options.stage, original.value);
   if (!checked.issues.length) return { ...original, value: checked.value };
@@ -383,6 +389,41 @@ export async function codexStage(options) {
     writingRevision: {
       originalTracePath: original.tracePath,
       issues: checked.issues,
+    },
+  };
+}
+
+export async function codexStage(options) {
+  const original = await stageWithWriting(options);
+  if (options.stage !== 'score') return original;
+  const issues = scoreConsistencyIssues(
+    original.value.scores,
+    original.value.descriptions,
+  );
+  if (!issues.length) return original;
+  // One independent evidence review may re-score; wording-only retries may not.
+  const revised = await stageWithWriting({
+    ...options,
+    turnId: options.turnId + '.consistency',
+    prompt:
+      options.prompt +
+      '\n' +
+      scoreConsistencyInstructions() +
+      '\n本次为一次独立评分一致性复核，重新读取原题、冻结产物及已验真日志，根据原分档决定是否维持或调整分数。原评分和命中项均为待核对数据，不是正确结论：' +
+      JSON.stringify({ issues, previous: original.value }) +
+      '\n在 processFindings 说明维度归属和维持或调整的事实依据。保留真实问题和验证范围，不能只删命中词；本次仍需完整五维结构化输出。',
+  });
+  assertScoreConsistency(revised.value.scores, revised.value.descriptions);
+  return {
+    ...revised,
+    consistencyRevision: {
+      version: scoreConsistencyVersion,
+      originalTracePaths: [
+        original.tracePath,
+        original.writingRevision?.originalTracePath,
+      ].filter(Boolean),
+      originalScores: original.value.scores,
+      issues,
     },
   };
 }
