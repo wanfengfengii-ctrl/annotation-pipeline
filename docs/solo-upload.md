@@ -44,8 +44,8 @@ SOLO 附件由 `solo-native-attachment.mjs` 从已核验的完整原生 projects
 
 ## 每次定时执行
 
-1. 现有巡检在整点和半点运行，先执行 `node scripts/solo-schedule.mjs --due`。只有北京时间 08:00、20:00 对应半小时窗口且当天该批次未启动才 due；其他时刻仅执行原巡检。due 时运行 `--claim`，仅 claimed=true 才开始本批并记住 slot。检查本地接口和上述 prepare 输出。没有新数据且无新的异常时保持安静。对反复出现且未变化的 blocked 不重复通知。
-2. 使用 CUA 的 `cua.getState()` 查找 SOLO 已登录标签页，按返回的浏览器和标签 ID 选择；不存在则在内置浏览器打开目标站点。只通过支持的浏览器/原生 UI API 操作，不从浏览器提取认证信息。确认账号为牛宇航（可见用户名 niuyuhang）；登录过期、账号变化或需要验证码时暂停上传并通知用户，不尝试猜测凭据。
+1. 现有巡检在整点和半点运行，先执行 `node scripts/solo-schedule.mjs --due`。北京时间 07:30、19:30 做登录预检，08:00、20:00 的半小时窗口创建新批次；已因登录暂停的批次优先续传，不受原时段限制。新批次先运行 `--prepare`，将完整输出保存为私有 plan.json，再执行 `solo-schedule.mjs --claim PLAN_JSON`，即使 canClaim=false 也要执行这次 claim，固定本批成员及原件摘要。无新数据会直接结束空批次。登录未就绪时保存 waiting_login；不能登录失败就丢掉本次批次。resume 模式执行 `--claim`，不传新成员。仅 claimed=true 才进入上传，并保存返回的 slot、attemptId。没有新数据且无新的异常时保持安静。
+2. preflightDue 或 loginCheckDue 时，使用 CUA 的 `cua.getState()` 查找 SOLO 标签页，按返回的浏览器和标签 ID 选择；不存在则在内置浏览器打开目标站点。复用牛宇航（可见用户名 niuyuhang）的登录。登录页可按 [SOLO 登录密码保存](solo-login.md) 使用 macOS 钥匙串与 CUA 内存填表；密码未保存、被拒绝、账号不符或需要验证码时保留批次并提示，不猜密码或绕过确认。每次记录真实浏览器观察到的登录结果，运行 `--login-result RECEIPT_JSON`；仅该输出 notify=true 时发送新的登录提示，重复问题保持安静。预检不提前上传，07:30 的结果也不能代替 08:00 的实际账号确认。认证观察最多有效 5 分钟；正式开始前必须仍然有效。登录恢复后再次 --claim 原批次，并用新 prepare 输出执行 --batch-plan；只能处理返回的本批成员，新增记录留待下一个新批次。
 3. 对每条记录，先在我的提交通过原生 SessionID 和 TurnID/PromptID 核对有无远端记录。两者均一致才能认为同一条；打开详情核对全部字段和附件。已有记录保存回执并跳过，内容不一致则保留原记录并报告，不创建副本或自动覆盖。
 4. 如果本地状态为 submitting/uncertain，只查远端结果，不再次点击提交。没有明确结果时留在待核对状态。普通 prepared 记录且未找到远端匹配，才填写新表单。相同会话前序记录无法确认已提交时，暂停该会话后续记录，继续其他会话。
 5. 读取 packetPath 文件，照 fields 填写表单。User Prompt、五维分数和描述来自本地原始记录，不为了平台查重改写题目或评分。任务类型的 `feature迭代` 对应表单 `Feature迭代`。当前对话轮次排序是数值 1–10，Excel 的第一轮等显示不直接填到数字控件。填写后失焦并读取实际 value；该网站数字控件 fill 后可能显示空值，可使用可见增减按钮调整至目标数值，并再次确认。
@@ -54,7 +54,40 @@ SOLO 附件由 `solo-native-attachment.mjs` 从已核验的完整原生 projects
 8. 最终点击前运行 `node scripts/solo-ui-queue.mjs --mark-sending TASK_ID:TURN_ID`；它重新确认当前准入、数据和附件未变，并先持久化 submitting。命令失败则不要点击。成功后只点击一次提交并质检。
 9. 等待提交回执，打开数据详情，核对平台记录编号、原生 ID、轮次、全部文本、分数和附件。保存私有 JSON 回执后运行 `node scripts/solo-ui-queue.mjs --receipt TASK_ID:TURN_ID RECEIPT_JSON_PATH`。回执格式见下节。网络中断或结果不明时保留 submitting，下次仅查询确认。
 10. 平台待返修或废弃的记录已提交，不重新创建；保留理由并通知用户。根据真实轨迹进行评分返修属于独立处理，不删关键词、编造事实或调分来规避质检。不得点击管理员飞书同步、删除、质检覆盖等无关操作。
-11. 本批按顺序处理可提交项，结束保存 slot、status（completed/blocked/failed）、本次计数、异常签名和时间到私有 run-summary.json，并运行 `node scripts/solo-schedule.mjs --finish .runner/solo-upload/run-summary.json`。仅在有新上传、状态变化、失败或需要用户处理时通知。保留 SOLO 标签页作为 handoff/deliverable，维持下次可复用的登录状态。
+11. 本批按顺序处理可提交项。长批次至少每 15 分钟用 slot、attemptId 执行 --touch。登录中断时立即停止后续提交，以 waiting_login 和真实 reasonCode 结束本次 attempt，保留成员、已上传回执及 submitting 状态；恢复后只续传该批剩余项。正常结束保存 slot、attemptId、status（completed/blocked/failed）、counts 到私有 run-summary.json，再执行 `node scripts/solo-schedule.mjs --finish .runner/solo-upload/run-summary.json`。附件、题目等非登录拦截用 blocked，不能靠重新登录解除。仅在有新上传、状态变化、失败或需要用户处理时通知。保留 SOLO 标签页作为 handoff/deliverable，维持下次可复用的登录状态。
+
+## 登录与批次命令合同
+
+调度台账为 `.runner/solo-upload/schedule.json`，不含密码、Cookie 或 token。`--login-result` 只接受以下字段；失败观察省略 username/account，并使用 login_required、session_expired、account_mismatch、challenge_required、credentials_rejected 或 unavailable。unavailable 表示网页或登录通道暂不可验证，不当作密码错误。用户名及显示名须从实际页面确认，不从保存密码成功推定。
+
+```json
+{
+  "status": "authenticated",
+  "origin": "https://solo2.jzxhnh.com",
+  "username": "niuyuhang",
+  "account": "牛宇航",
+  "checkedAt": "实际观察时间的 ISO 字符串",
+  "source": "browser"
+}
+```
+
+`--touch` 输入为 `{"slot":"claim 返回的 slot","attemptId":"claim 返回的 attemptId"}`。`--batch-plan` 在上述字段之外接受 planPath，指向刚刚 prepare 保存的私有 JSON。输出 packets/blocked/settled，仅含本批原始成员；原件摘要变化或当前准入失效的记录进入 blocked。已核验回执进入 settled，有未核验编号或 submitting/uncertain 的记录只查询远端详情。查询条目没有 packetPath 时按 key 从私有 packets 目录读取已有包用于核对，不能据此重新提交。原包缺失则保留待核对。
+
+`--finish` 输入示例：
+
+```json
+{
+  "slot": "claim 返回的 slot",
+  "attemptId": "claim 返回的 attemptId",
+  "status": "waiting_login",
+  "reasonCode": "session_expired",
+  "counts": { "uploaded": 2, "existing": 1, "blocked": 0, "uncertain": 1 }
+}
+```
+
+非 waiting_login 状态不需要 reasonCode。counts 只接受 uploaded、existing、blocked、uncertain 四种非负整数。额外诊断放在独立私有报告，不能混入登录回执，更不能保存凭据。旧 attempt 的 touch/finish 会被拒绝，不能覆盖恢复后的新 attempt。
+
+running 批次不会被自动抢占，租期为 45 分钟。`--due` 返回 active 时不要重新 claim；leaseExpired=false 表示已有执行正在持有该批。leaseExpired=true 仅授权核对原 attempt：先确认前一次浏览器操作已结束，再核对其全部远端回执，不能重发状态不明的提交。确认登录过期时对原 attempt 执行 --finish waiting_login；确认已结束则以 completed/blocked/failed 如实收尾。仍在执行则继续原 attempt 并 --touch。没有充分证据时提示待核对，不能通过改台账或删除运行状态制造新批次。历史版本没有 attemptId 的 running 需要单独人工核对，不自动迁移放行。
 
 ## 回执格式
 
@@ -82,8 +115,7 @@ SOLO 附件由 `solo-native-attachment.mjs` 从已核验的完整原生 projects
 
 验证：`node --test tests/solo-upload.test.mjs tests/solo-upload-holds.test.mjs tests/solo-native-attachment.test.mjs`。测试覆盖字段映射、消息 UUID 与原生 PromptID 区分、原生目录完整性、内部证据隔离、原件不变、禁止上传、分页查重、断网与不明确回执、重复启动、资格变化、附件摘要和大小、服务端拒绝、字段回读、浏览器回执、台账锁及会话连续性。
 
-这是本机 Codex 定时任务，需要电脑开机、Codex 运行、本地流水线可访问且 SOLO 登录有效；不是服务器离线任务。Codex 同一任务只允许一个 heartbeat，因此合并到现有每 30 分钟巡检中，调度对齐整点和半点；上传入口单独校验 08:00、20:00 的时段及当天批次幂等标识。错过时段不在其他时间擅自补发，下一次早晚时段会继续处理未上传数据。
-
+这是本机 Codex 定时任务，需要电脑开机、Codex 运行、本地流水线可访问；自动登录还需要本机钥匙串可读取。复用现有每 30 分钟巡检，调度对齐整点和半点。错过 08:00/20:00 的新批次窗口不补造批次；已经固定成员且因登录暂停的批次，会在之后的巡检中检查登录，恢复后续传原批，跨时段和跨日也保留同一清单。预检发生在 07:30/19:30，不提前提交。
 
 ## 页面上传状态与题目去重（2026-09-10）
 
