@@ -6,6 +6,8 @@ import {
   writeFileSync,
   readFileSync,
   existsSync,
+  lstatSync,
+  realpathSync,
   rmSync,
 } from 'node:fs';
 import os from 'node:os';
@@ -16,11 +18,48 @@ import {
   apiHealthUrl,
   acquireApiLock,
   localApiPaths,
+  ensureLocalApiCredentials,
 } from '../scripts/local-api.mjs';
 import {
   localWorkerOptions,
   startLocalWorker,
 } from '../scripts/local-api-worker.mjs';
+
+void test('API release binds source credentials beside built config and refuses conflicting or missing tokens', (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'api-credentials-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const config = path.join(root, 'release/dist/server/wrangler.json');
+  const target = path.join(path.dirname(config), '.dev.vars');
+  const source = path.join(root, '.dev.vars');
+  mkdirSync(path.dirname(config), { recursive: true });
+  writeFileSync(config, '{}');
+  assert.throws(
+    () => ensureLocalApiCredentials(config, root),
+    /API_CREDENTIALS_MISSING/,
+  );
+  assert.equal(existsSync(target), false);
+  writeFileSync(source, 'RUNNER_TOKEN="synthetic-fixture-only"\n', {
+    mode: 0o600,
+  });
+  assert.equal(ensureLocalApiCredentials(config, root).verified, true);
+  assert.equal(lstatSync(target).isSymbolicLink(), true);
+  assert.equal(realpathSync(target), realpathSync(source));
+  assert.doesNotThrow(() => ensureLocalApiCredentials(config, root));
+  rmSync(target);
+  writeFileSync(target, 'RUNNER_TOKEN=conflicting-fixture\n', { mode: 0o600 });
+  assert.throws(
+    () => ensureLocalApiCredentials(config, root),
+    /API_CREDENTIALS_MISMATCH/,
+  );
+  assert.equal(
+    readFileSync(target, 'utf8'),
+    'RUNNER_TOKEN=conflicting-fixture\n',
+  );
+  assert.equal(
+    readFileSync(source, 'utf8'),
+    'RUNNER_TOKEN="synthetic-fixture-only"\n',
+  );
+});
 
 function setup(options = {}) {
   let now = 0,

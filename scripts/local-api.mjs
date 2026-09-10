@@ -4,7 +4,9 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  lstatSync,
   renameSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -12,6 +14,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { parseEnv } from 'node:util';
 
 export const apiHealthUrl = 'http://127.0.0.1:3000/api/scheduler';
 export const monitorDefaults = Object.freeze({
@@ -238,6 +241,34 @@ export function localApiPaths(
   };
 }
 
+// Wrangler resolves .dev.vars beside its built config, not the source checkout.
+// Bind that file before launch so a new release cannot serve pages while every
+// runner write fails authentication. Never print, copy or replace credentials.
+export function ensureLocalApiCredentials(config, workRoot) {
+  const source = path.join(workRoot, '.dev.vars');
+  const target = path.join(path.dirname(config), '.dev.vars');
+  const readToken = (file) => {
+    try {
+      const token = parseEnv(readFileSync(file, 'utf8')).RUNNER_TOKEN;
+      if (!token?.trim()) throw Error();
+      return token;
+    } catch {
+      throw Error('API_CREDENTIALS_MISSING');
+    }
+  };
+  const expected = readToken(source);
+  let present = true;
+  try {
+    lstatSync(target);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw Error('API_CREDENTIALS_UNREADABLE');
+    present = false;
+  }
+  if (!present) symlinkSync(source, target);
+  if (readToken(target) !== expected) throw Error('API_CREDENTIALS_MISMATCH');
+  return { verified: true, path: target };
+}
+
 // The detached group is created here and never adopted from another process.
 // Wrangler stdout/stderr are deliberately suppressed: the supervisor logs only
 // its own status vocabulary, not environment values or raw child diagnostics.
@@ -300,6 +331,7 @@ export async function main() {
     process.env.API_WORK_ROOT,
     process.env.API_RELEASE_DIR,
   );
+  ensureLocalApiCredentials(paths.config, process.env.API_WORK_ROOT);
   mkdirSync(paths.stateRoot, { recursive: true });
   const unlock = acquireApiLock(path.join(paths.stateRoot, 'local-api.lock'));
   const stateFile = path.join(paths.stateRoot, 'local-api.json');
