@@ -352,13 +352,12 @@ export async function attachment(row, schema = {}) {
     });
     savePrivateJSON(packageCache, submission);
   }
-  if (submission.status !== 'passed')
-    throw Error('提交副本包含需人工核查的内容');
   const verified = await api.verifySubmissionPackage(submission, {
     dir,
     sourceArchive,
     traceExport,
     knownSecrets,
+    purpose: 'native-only',
   });
   if (!verified || verified.status !== 'passed')
     throw Error('完整轨迹提交包校验失败');

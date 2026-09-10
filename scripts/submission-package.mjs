@@ -16,6 +16,7 @@ import {
 } from '../lib/sensitive-content.mjs';
 import { verifyTerminalFinalization } from './terminal-finalization.mjs';
 import { isSqlite, scanSqliteContent } from './sqlite-content-scan.mjs';
+import { internalContentWarnings } from '../lib/submission-policy.mjs';
 
 export const submissionPackageVersion = '2026-09-10.submission2';
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -707,15 +708,28 @@ function unzipSubmission(bytes) {
 
 export function verifySubmissionPackage(
   submission,
-  { dir, sourceArchive, traceExport, maxBytes, knownSecrets = [] } = {},
+  {
+    dir,
+    sourceArchive,
+    traceExport,
+    maxBytes,
+    knownSecrets = [],
+    purpose = 'internal-copy',
+  } = {},
 ) {
+  if (!['internal-copy', 'native-only'].includes(purpose))
+    throw Error('提交核验用途无效');
+  const nativeOnly = purpose === 'native-only';
+  const warnings = nativeOnly ? internalContentWarnings(submission) : [];
+  if (nativeOnly && !sourceArchive) throw Error('原生上传核验缺少源归档');
   if (submission?.status === 'awaiting_finalization')
     throw Error('提交包仍等待原终端最终导出和清理回执');
   if (
     submission?.version !== submissionPackageVersion ||
-    submission.scannerVersion !== sensitiveContentVersion ||
-    submission.status !== 'passed' ||
-    submission.reviewRequiredFiles?.length
+    (!nativeOnly && submission.scannerVersion !== sensitiveContentVersion) ||
+    (!warnings.length &&
+      (submission.status !== 'passed' ||
+        submission.reviewRequiredFiles?.length))
   )
     throw Error('提交包尚未通过完整脱敏检查，需人工复核');
   if (
@@ -741,15 +755,18 @@ export function verifySubmissionPackage(
     manifest = JSON.parse(manifestBytes.toString('utf8'));
   if (
     hash(manifestBytes) !== submission.manifestSha256 ||
-    manifest.status !== 'passed' ||
+    manifest.status !== submission.status ||
     manifest.version !== submissionPackageVersion ||
-    manifest.scannerVersion !== sensitiveContentVersion ||
-    manifest.reviewRequiredFiles.length ||
+    manifest.scannerVersion !== submission.scannerVersion ||
+    !isDeepStrictEqual(
+      manifest.reviewRequiredFiles,
+      submission.reviewRequiredFiles,
+    ) ||
     manifest.sourceArchiveSha256 !== submission.sourceArchiveSha256 ||
     manifest.traceExportSha256 !== submission.traceExportSha256 ||
     manifest.files.length !== submission.files ||
-    manifest.contentScanStatus !== 'passed' ||
-    submission.contentScanStatus !== 'passed' ||
+    manifest.contentScanStatus !== submission.contentScanStatus ||
+    (!warnings.length && submission.contentScanStatus !== 'passed') ||
     manifest.originalTerminalBound !== true
   )
     throw Error('提交包检查清单不符');
@@ -799,7 +816,7 @@ export function verifySubmissionPackage(
     evidenceRelativeName(file.name);
     if (
       expected.has(file.name) ||
-      file.scanStatus !== 'passed' ||
+      (!nativeOnly && file.scanStatus !== 'passed') ||
       !/^[a-f0-9]{64}$/.test(file.originalSha256 || '') ||
       !/^[a-f0-9]{64}$/.test(file.sourceNameSha256 || '')
     )
@@ -818,6 +835,9 @@ export function verifySubmissionPackage(
     );
     if (hash(readFileSync(staged)) !== file.submissionSha256)
       throw Error('提交副本文件已变化');
+    // These bytes are local evidence, not the outgoing native attachment.
+    // Keep verifying inventory and hashes without repeating its content scan.
+    if (nativeOnly) continue;
     if (file.textFormat === 'sqlite') {
       const scan = scanSqliteContent(bytes, { knownSecrets });
       if (
@@ -849,6 +869,7 @@ export function verifySubmissionPackage(
   )
     throw Error('提交 ZIP 含缺失或额外成员');
   if (
+    !nativeOnly &&
     sanitizeSensitiveText(manifestBytes.toString('utf8'), { knownSecrets })
       .findings.length
   )
@@ -916,5 +937,8 @@ export function verifySubmissionPackage(
     zipArchivePath: submission.zipArchivePath,
     zipSha256: submission.zipSha256,
     files: manifest.files.length,
+    purpose,
+    contentScanStatus: submission.contentScanStatus,
+    internalWarnings: warnings,
   };
 }

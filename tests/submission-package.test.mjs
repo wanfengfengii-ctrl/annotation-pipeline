@@ -297,6 +297,64 @@ test('SQLite engineering files stay byte-identical and are rescanned when verify
   );
 });
 
+test('native delivery keeps internal database warnings without bypassing source integrity', (t) => {
+  const f = fixture(t),
+    file = path.join(f.workDir, 'fixture.sqlite3');
+  execFileSync('python3', [
+    '-c',
+    "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('CREATE TABLE notes(phone TEXT)'); c.execute('INSERT INTO notes VALUES(?)',('13800138000',)); c.commit(); c.close()",
+    file,
+  ]);
+  const archive = f.makeArchive(),
+    submission = f.makeSubmission(archive);
+  assert.equal(submission.status, 'needs_review');
+  const options = {
+    dir: f.dir,
+    sourceArchive: archive,
+    purpose: 'native-only',
+  };
+  const verified = verifySubmissionPackage(submission, options);
+  assert.equal(verified.status, 'passed');
+  assert.equal(verified.contentScanStatus, 'needs_review');
+  assert.ok(
+    verified.internalWarnings.some(
+      (x) => x.reason === 'sensitive-sqlite-content',
+    ),
+  );
+  assert.throws(
+    () =>
+      verifySubmissionPackage(submission, {
+        dir: f.dir,
+        sourceArchive: archive,
+      }),
+    /人工复核/,
+  );
+  assert.throws(
+    () =>
+      verifySubmissionPackage(submission, {
+        dir: f.dir,
+        purpose: 'native-only',
+      }),
+    /源归档/,
+  );
+  const manifest = JSON.parse(readFileSync(submission.manifestPath));
+  for (const file of [
+    archive.archivePath,
+    submission.zipArchivePath,
+    submission.manifestPath,
+    submission.finalization.receiptPath,
+    path.join(path.dirname(submission.manifestPath), manifest.files[0].name),
+  ]) {
+    const original = readFileSync(file);
+    writeFileSync(file, 'changed');
+    assert.throws(() => verifySubmissionPackage(submission, options));
+    writeFileSync(file, original);
+  }
+  assert.equal(verifySubmissionPackage(submission, options).status, 'passed');
+  const pending = f.makeSubmission(archive, { finalize: false });
+  assert.throws(() => verifySubmissionPackage(pending, options));
+});
+
 test('internal archive captures full native directory and immutable retries retain the earlier archive', (t) => {
   const f = fixture(t),
     archive = f.makeArchive();

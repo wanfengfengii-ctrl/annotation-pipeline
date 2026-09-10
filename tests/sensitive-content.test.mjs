@@ -127,3 +127,34 @@ test('URLs retain scheme, credential delimiter, query keys and fragments', () =>
   assert.equal(url.searchParams.get('token'), '[REDACTED_SECRET]');
   assert.equal(url.searchParams.get('email'), '[REDACTED_EMAIL]');
 });
+
+test('JSON embedded commands and escaped quotes redact without consuming structural bytes', () => {
+  const text = JSON.stringify(
+    {
+      message:
+        'curl --data \'{"api_key":"live-fixture-value","password":"p\\"q"}\' https://service.test',
+      api_key: 'value"with\\escapes',
+      nested: [{ password: 123456 }, { value: 'hello\nworld' }],
+    },
+    null,
+    2,
+  );
+  const result = sanitizeSensitiveText(text);
+  const value = JSON.parse(result.text);
+  assert.equal(value.api_key, '[REDACTED_SECRET]');
+  assert.equal(value.nested[0].password, '[REDACTED_SECRET]');
+  assert.equal(value.nested[1].value, 'hello\nworld');
+  assert.ok(!result.text.includes('live-fixture-value'));
+  assert.equal(sanitizeSensitiveText(result.text).changed, false);
+  assert.equal(result.text.split('\n').length, text.split('\n').length);
+});
+
+test('untouched JSON tokens preserve number precision, escapes and whitespace', () => {
+  const text =
+    '{ "count": 99999999999999999999, "duration": 0.13800138000, "name": "\\u4e2d", "values": [true, false, null] }';
+  assert.deepEqual(sanitizeSensitiveText(text), {
+    text,
+    findings: [],
+    changed: false,
+  });
+});

@@ -132,6 +132,29 @@ test('external gating preserves ordinary imported records without a pipeline con
   assert.match(csv([task]), /Unique fixture prompt/);
 });
 
+test('internal content warnings do not block native delivery but cannot bypass finalization', () => {
+  const f = fixture();
+  f.submission.status = 'needs_review';
+  f.submission.contentScanStatus = 'needs_review';
+  f.submission.reviewRequiredFiles = [
+    {
+      name: 'evaluation.json',
+      reason: 'unsupported-binary-encoding-or-structure',
+    },
+    { name: 'workspace/fixture.sqlite3', reason: 'sensitive-sqlite-content' },
+  ];
+  assert.deepEqual(submissionIssues(f.task, f.turn), []);
+  assert.equal(recordRow(f.task, f.turn, 'ai').eligible, true);
+  f.finalization.sessionId = 'another-session';
+  assert.ok(submissionIssues(f.task, f.turn).length);
+  f.finalization.sessionId = f.turn.sessionId;
+  f.submission.reviewRequiredFiles.push({
+    name: 'trace',
+    reason: 'missing-source',
+  });
+  assert.ok(submissionIssues(f.task, f.turn).length);
+});
+
 test('all container records need submission2 final completion, including old packages and human exports', () => {
   for (const change of [
     (f) => {
