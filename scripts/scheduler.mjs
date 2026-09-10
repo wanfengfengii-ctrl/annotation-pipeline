@@ -2,10 +2,89 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { resourceProfile } from '../lib/container-policy.mjs';
+
+function loadCapacity({ cores, load }, maximum) {
+  return load >= cores * 1.2
+    ? Math.min(1, maximum)
+    : load >= cores * 0.9
+      ? Math.min(2, maximum)
+      : maximum;
+}
+
+// Keep one instance per runner. Only load admission is debounced; physical
+// memory, configured concurrency and Docker budgets still apply every sample.
+export function createLoadAdmission({
+  settleMs = 20000,
+  recoverMs = 10000,
+} = {}) {
+  if (
+    !Number.isFinite(settleMs) ||
+    settleMs < 0 ||
+    !Number.isFinite(recoverMs) ||
+    recoverMs < 0
+  )
+    throw Error('负载稳定窗口无效');
+  let admitted, pending, pendingSince, lastAt;
+  return (metrics, maximum, now = Date.now()) => {
+    if (
+      !Number.isFinite(metrics.cores) ||
+      metrics.cores <= 0 ||
+      !Number.isFinite(metrics.load) ||
+      metrics.load < 0 ||
+      !Number.isInteger(maximum) ||
+      maximum < 0 ||
+      !Number.isFinite(now)
+    )
+      return 0;
+    const target = loadCapacity(metrics, maximum);
+    if (
+      admitted === undefined ||
+      metrics.load >= metrics.cores * 1.5 ||
+      (lastAt !== undefined && now < lastAt)
+    ) {
+      admitted = target;
+      pending = undefined;
+    }
+    // A reduced user or hardware limit must never wait for the load window.
+    admitted = Math.min(admitted, maximum);
+    lastAt = now;
+    if (target === admitted) {
+      pending = undefined;
+      return admitted;
+    }
+    if (
+      pending === undefined ||
+      Math.sign(pending - admitted) !== Math.sign(target - admitted)
+    ) {
+      pending = target;
+      pendingSince = now;
+    } else {
+      // Moving between two overloaded bands must not restart the clock and
+      // postpone throttling forever. Apply only the band sustained throughout
+      // the window, including when load improves by more than one band.
+      pending =
+        target < admitted
+          ? Math.max(pending, target)
+          : Math.min(pending, target);
+    }
+    const window = target < admitted ? settleMs : recoverMs;
+    if (now - pendingSince >= window) {
+      admitted = pending;
+      pending = undefined;
+    }
+    return admitted;
+  };
+}
+
 export function capacityFor(
   { cores, totalGB, availableGB, load },
   requested = 3,
-  { profile = resourceProfile(), occupied = 0 } = {},
+  {
+    profile = resourceProfile(),
+    occupied = 0,
+    loadAdmission,
+    now = Date.now(),
+  } = {},
 ) {
   const recommended = Math.max(
     1,
@@ -21,12 +100,9 @@ export function capacityFor(
   const memorySlots =
     Math.max(0, occupied) +
     Math.max(0, Math.floor((availableGB - 2) / profile.hostSlotGB));
-  const loadSlots =
-    load >= cores * 1.2
-      ? 1
-      : load >= cores * 0.9
-        ? Math.min(2, maximum)
-        : maximum;
+  const loadSlots = loadAdmission
+    ? loadAdmission({ cores, load }, maximum, now)
+    : loadCapacity({ cores, load }, maximum);
   return {
     recommended,
     hardwareLimit,
@@ -99,4 +175,35 @@ export function supplyDecision(context, state, now = Date.now()) {
   if (recent.length === 3 && recent.every((t) => t.failed))
     return '最近 3 个自动任务均失败，请处理失败任务后继续';
   return null;
+}
+
+// Generation fills at most the existing single queued-task buffer. Resident
+// failed/review containers retain their evidence and physical memory budget,
+// but are not work in flight. Claiming the generated job still requires the
+// runner's independent container admission check.
+export function canReplenish(
+  context,
+  state,
+  {
+    capacity,
+    active,
+    recovering = 0,
+    generating = false,
+    readySources = context.repos,
+  },
+  now = Date.now(),
+) {
+  if (
+    !Number.isInteger(capacity) ||
+    capacity <= 0 ||
+    !Number.isInteger(active) ||
+    active < 0 ||
+    !Number.isInteger(recovering) ||
+    recovering < 0 ||
+    generating ||
+    !readySources?.length ||
+    active + recovering >= capacity
+  )
+    return false;
+  return supplyDecision(context, state, now) === null;
 }

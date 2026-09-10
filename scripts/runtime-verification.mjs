@@ -20,6 +20,12 @@ import {
 } from '../lib/runtime-verification.mjs';
 const hash = (b) => createHash('sha256').update(b).digest('hex');
 const environmentProbeVersion = '2026-09-10.env1';
+const diagnosisCheckpointVersion = '2026-09-10.diagnosis-checkpoint1';
+const manifestInventory = (manifest) =>
+  JSON.stringify({
+    files: [...manifest.files].sort((a, b) => a.path.localeCompare(b.path)),
+    omitted: [...manifest.omitted].sort((a, b) => a.localeCompare(b)),
+  });
 const environmentCommands = [
   'bash',
   'node',
@@ -736,6 +742,127 @@ export function writeRuntimeVerificationReport({
   });
   return { ...report, reportSha256: hash(readFileSync(reportPath)) };
 }
+
+// This receipt resumes interpretation of a completed, unchanged execution. It
+// never treats a blocked verdict as permission to reuse an old execution.
+export function reuseRuntimeDiagnosis(receipt, context) {
+  if (!receipt) return null;
+  try {
+    const { dir, workDir, taskId, turnId, imageId } = context;
+    const taskRoot = realpathSync(dir),
+      prefix = taskRoot + path.sep;
+    const inside = (file) =>
+      !lstatSync(file).isSymbolicLink() &&
+      lstatSync(file).isFile() &&
+      realpathSync(file).startsWith(prefix);
+    if (
+      !taskId ||
+      !turnId ||
+      path.basename(taskRoot) !== taskId ||
+      !inside(receipt.checkpointPath) ||
+      hash(readFileSync(receipt.checkpointPath)) !== receipt.checkpointSha256
+    )
+      return null;
+    const saved = JSON.parse(readFileSync(receipt.checkpointPath, 'utf8')),
+      rootPath = path.dirname(receipt.checkpointPath),
+      root = realpathSync(rootPath);
+    if (
+      saved.version !== diagnosisCheckpointVersion ||
+      saved.runtimeVersion !== runtimeVersion ||
+      saved.taskId !== taskId ||
+      saved.turnId !== turnId ||
+      !path.basename(root).startsWith(turnId + '.attempt-') ||
+      saved.imageId !== imageId ||
+      saved.inputDigest !== runtimeInputDigest(context) ||
+      JSON.stringify(saved.regressionContext || null) !==
+        JSON.stringify(context.regressionContext || null) ||
+      saved.reportPath !== path.join(rootPath, 'report.json') ||
+      existsSync(saved.reportPath) ||
+      saved.executionPath !== path.join(rootPath, 'execution.json') ||
+      saved.sourceManifestPath !==
+        path.join(rootPath, 'source-manifest.json') ||
+      !inside(saved.executionPath) ||
+      !inside(saved.sourceManifestPath) ||
+      !inside(saved.plan.tracePath) ||
+      hash(readFileSync(saved.executionPath)) !== saved.executionSha256 ||
+      hash(readFileSync(saved.sourceManifestPath)) !==
+        saved.sourceManifestSha256 ||
+      hash(readFileSync(saved.plan.tracePath)) !== saved.planTraceSha256 ||
+      manifestInventory(copyVerificationSource(workDir)) !==
+        manifestInventory(saved.sourceManifest) ||
+      manifestInventory(
+        JSON.parse(readFileSync(saved.sourceManifestPath, 'utf8')),
+      ) !== manifestInventory(saved.sourceManifest)
+    )
+      return null;
+    validateRuntimePlan(saved.plan.value);
+    assertRegressionPlanCoverage(saved.plan.value, context.regressionContext);
+    verifyRegressionEvidence(context.regressionContext, dir);
+    for (const check of saved.plan.value.checks)
+      if (check.kind !== 'setup') validateCodeRef(check.codeEvidence, workDir);
+    assertExecutionRecord(saved.executionPath, saved.plan, saved.runs);
+    if (
+      saved.runs.length !== saved.plan.value.checks.length ||
+      saved.runs.some((run, index) => {
+        const check = saved.plan.value.checks[index];
+        return (
+          run.id !== check.id ||
+          run.timedOut !== false ||
+          run.limited !== false ||
+          run.sourceChanged !== false ||
+          ![0, 1].includes(run.exitCode) ||
+          (check.kind === 'setup' && run.exitCode !== 0) ||
+          realpathSync(path.dirname(run.logPath)) !== root ||
+          !inside(run.logPath) ||
+          hash(readFileSync(run.logPath)) !== run.logSha256
+        );
+      })
+    )
+      return null;
+    const probe = saved.environmentProbe;
+    if (
+      probe.version !== environmentProbeVersion ||
+      probe.imageId !== imageId ||
+      !inside(probe.logPath) ||
+      hash(readFileSync(probe.logPath)) !== probe.logSha256 ||
+      JSON.stringify(
+        parseEnvironmentCapabilities(readFileSync(probe.logPath, 'utf8')),
+      ) !== JSON.stringify(probe.capabilities)
+    )
+      return null;
+    if (probe.browserCache) {
+      const cache = probe.browserCache;
+      if (cache.imageId !== imageId) return null;
+      for (const [file, sha256] of [
+        [cache.manifestPath, cache.manifestSha256],
+        [cache.buildLogPath, cache.buildLogSha256],
+        [cache.recordPath, cache.recordSha256],
+      ])
+        if (!inside(file) || hash(readFileSync(file)) !== sha256) return null;
+    }
+    return saved;
+  } catch {
+    return null;
+  }
+}
+
+async function diagnoseRuntimeExecution(input, step) {
+  const prepared = prepareRuntimeDiagnosis({
+    ...input,
+    root: path.dirname(input.reportPath),
+  });
+  const diagnosis = await step(
+    'runtime-diagnose',
+    prepared.instruction,
+    input.workDir,
+  );
+  return writeRuntimeVerificationReport({
+    ...input,
+    diagnosis,
+    diagnosisEvidence: prepared.evidence,
+  });
+}
+
 export async function verifyRuntime({
   workDir,
   dir,
@@ -746,6 +873,10 @@ export async function verifyRuntime({
   regressionContext = null,
   step,
   retryContext = null,
+  taskId = path.basename(dir),
+  logicalTurnId = turnId.replace(/\.attempt-\d+$/, ''),
+  diagnosisCheckpoint = null,
+  onDiagnosisCheckpoint = async () => {},
   browserCache,
   onChild = () => {},
   docker = runDocker,
@@ -753,6 +884,22 @@ export async function verifyRuntime({
   if (!/^sha256:[a-f0-9]{64}$/.test(imageId || ''))
     throw Error('独立验收缺少不可变镜像 ID');
   verifyRegressionEvidence(regressionContext, dir);
+  const context = {
+    workDir,
+    dir,
+    imageId,
+    prompt,
+    acceptance,
+    regressionContext,
+  };
+  const resumed = reuseRuntimeDiagnosis(diagnosisCheckpoint, {
+    ...context,
+    taskId,
+    turnId: logicalTurnId,
+  });
+  if (resumed)
+    return diagnoseRuntimeExecution({ ...resumed, ...context }, step);
+  if (diagnosisCheckpoint) await onDiagnosisCheckpoint(null);
   const root = path.join(dir, turnId + '.runtime-' + randomUUID()),
     workspace = path.join(root, 'workspace');
   const manifest = copyVerificationSource(workDir, workspace);
@@ -917,34 +1064,51 @@ export async function verifyRuntime({
       2,
     ),
   );
-  const preparedDiagnosis = prepareRuntimeDiagnosis({
-    root,
+  const diagnosisInput = {
+    ...context,
     executionPath,
     plan,
     runs,
-    prompt,
-    acceptance,
-    regressionContext,
-  });
-  const diagnosis = await step(
-    'runtime-diagnose',
-    preparedDiagnosis.instruction,
-    workDir,
-  );
-  return writeRuntimeVerificationReport({
-    workDir,
-    dir,
-    imageId,
-    prompt,
-    acceptance,
-    regressionContext,
     environmentProbe,
     sourceManifest: manifest,
-    plan,
-    diagnosis,
-    runs,
     reportPath,
+  };
+  const checkpointPath = path.join(root, 'diagnosis-checkpoint.json'),
+    sourceManifestPath = path.join(root, 'source-manifest.json');
+  const checkpoint = {
+    version: diagnosisCheckpointVersion,
+    runtimeVersion,
+    taskId,
+    turnId: logicalTurnId,
+    imageId,
+    inputDigest: runtimeInputDigest(context),
+    regressionContext,
+    sourceManifest: manifest,
+    sourceManifestPath,
+    sourceManifestSha256: hash(readFileSync(sourceManifestPath)),
+    environmentProbe,
+    plan,
+    planTraceSha256: hash(readFileSync(plan.tracePath)),
+    runs: runs.map(({ output: _output, ...run }) => run),
     executionPath,
-    diagnosisEvidence: preparedDiagnosis.evidence,
+    executionSha256: hash(readFileSync(executionPath)),
+    reportPath,
+  };
+  writeFileSync(checkpointPath, JSON.stringify(checkpoint, null, 2), {
+    flag: 'wx',
+    mode: 0o600,
   });
+  const receipt = {
+    checkpointPath,
+    checkpointSha256: hash(readFileSync(checkpointPath)),
+  };
+  if (
+    reuseRuntimeDiagnosis(receipt, {
+      ...context,
+      taskId,
+      turnId: logicalTurnId,
+    })
+  )
+    await onDiagnosisCheckpoint(receipt);
+  return diagnoseRuntimeExecution(diagnosisInput, step);
 }

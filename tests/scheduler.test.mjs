@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   capacityFor,
+  canReplenish,
+  createLoadAdmission,
   fingerprint,
   supplyDecision,
 } from '../scripts/scheduler.mjs';
@@ -15,6 +17,63 @@ test('M1 Pro resource admission reserves memory and reduces new starts under loa
   assert.equal(capacityFor({ ...m, availableGB: 4 }).effective, 0);
   assert.equal(capacityFor({ ...m, availableGB: 1 }).effective, 0);
   assert.equal(capacityFor(m, 1).effective, 1);
+});
+test('load admission ignores short spikes but throttles sustained load and restores stable capacity', () => {
+  const loadAdmission = createLoadAdmission();
+  const m = { cores: 10, totalGB: 32, availableGB: 14, load: 3 };
+  const sample = (load, now) =>
+    capacityFor({ ...m, load }, 3, { loadAdmission, now }).effective;
+  assert.equal(sample(3, 0), 3);
+  assert.equal(sample(10, 1000), 3);
+  assert.equal(sample(3, 5000), 3);
+  assert.equal(sample(10, 10000), 3);
+  assert.equal(sample(10, 29999), 3);
+  assert.equal(sample(10, 30000), 2);
+  assert.equal(sample(13, 31000), 2);
+  assert.equal(sample(13, 51000), 1);
+  assert.equal(sample(3, 52000), 1);
+  assert.equal(sample(3, 61999), 1);
+  assert.equal(sample(3, 62000), 3);
+});
+test('changing overload bands cannot postpone admission throttling indefinitely', () => {
+  const admission = createLoadAdmission();
+  const sample = (load, now) => admission({ cores: 10, load }, 3, now);
+  assert.equal(sample(3, 0), 3);
+  assert.equal(sample(10, 1000), 3);
+  assert.equal(sample(13, 10000), 3);
+  assert.equal(sample(10, 15000), 3);
+  assert.equal(sample(13, 21000), 2);
+  assert.equal(sample(13, 22000), 2);
+  assert.equal(sample(13, 42000), 1);
+  assert.equal(sample(10, 43000), 1);
+  assert.equal(sample(3, 47000), 1);
+  assert.equal(sample(3, 53000), 2);
+});
+test('startup, severe overload, memory and configured limits remain immediate', () => {
+  const loadAdmission = createLoadAdmission();
+  const m = { cores: 10, totalGB: 32, availableGB: 14, load: 13 };
+  assert.equal(capacityFor(m, 3, { loadAdmission, now: 0 }).effective, 1);
+  capacityFor({ ...m, load: 3 }, 3, { loadAdmission, now: 1000 });
+  assert.equal(
+    capacityFor({ ...m, load: 3 }, 3, { loadAdmission, now: 11000 }).effective,
+    3,
+  );
+  assert.equal(
+    capacityFor({ ...m, load: 3, availableGB: 1 }, 3, {
+      loadAdmission,
+      now: 12000,
+    }).effective,
+    0,
+  );
+  assert.equal(
+    capacityFor({ ...m, load: 15 }, 3, { loadAdmission, now: 13000 }).effective,
+    1,
+  );
+  const configuredAdmission = createLoadAdmission();
+  assert.equal(configuredAdmission({ cores: 10, load: 3 }, 3, 0), 3);
+  assert.equal(configuredAdmission({ cores: 10, load: 3 }, 1, 1), 1);
+  assert.equal(configuredAdmission({ cores: 10, load: 3 }, 0, 2), 0);
+  assert.equal(configuredAdmission({ cores: 10, load: NaN }, 3, 3), 0);
 });
 test('supply waits for sources, queue, budget, cooldown and repeated execution failures', () => {
   const c = {
@@ -35,6 +94,41 @@ test('supply waits for sources, queue, budget, cooldown and repeated execution f
     assert.ok(supplyDecision({ ...c, ...changed }, {}));
   assert.ok(supplyDecision(c, { nextAt: 100 }, 50));
   assert.equal(supplyDecision(c, { nextAt: 100 }, 101), null);
+});
+test('failed resident containers do not starve the single task buffer', () => {
+  const context = {
+    config: { enabled: true, dailyLimit: 20 },
+    repos: ['/repo'],
+    queued: false,
+    generatedToday: 0,
+    history: [],
+    containerTasks: Array.from({ length: 3 }, (_, id) => ({
+      id: String(id),
+      turns: [{ status: 'failed' }],
+    })),
+  };
+  const slot = { capacity: 2, active: 1 };
+  assert.equal(canReplenish(context, {}, slot), true);
+  assert.equal(canReplenish({ ...context, queued: true }, {}, slot), false);
+  assert.equal(canReplenish(context, {}, { ...slot, active: 2 }), false);
+  assert.equal(canReplenish(context, {}, { ...slot, recovering: 1 }), false);
+  assert.equal(canReplenish(context, {}, { ...slot, generating: true }), false);
+  assert.equal(canReplenish(context, {}, { ...slot, capacity: 0 }), false);
+  assert.equal(canReplenish(context, {}, { ...slot, readySources: [] }), false);
+  assert.equal(canReplenish(context, { nextAt: 100 }, slot, 50), false);
+  assert.equal(
+    canReplenish(
+      { ...context, config: { ...context.config, enabled: false } },
+      {},
+      slot,
+    ),
+    false,
+  );
+  assert.equal(
+    canReplenish({ ...context, generatedToday: 20 }, {}, slot),
+    false,
+  );
+  assert.equal(canReplenish(context, {}, { ...slot, active: NaN }), false);
 });
 test('task fingerprint survives punctuation and spacing but keeps repository identity', () => {
   assert.equal(

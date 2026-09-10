@@ -1,3 +1,9 @@
+import {
+  checkpointDigest,
+  checkpointVersion,
+  restoreStage,
+  sealStage,
+} from './stage-checkpoint.mjs';
 import { installScaffold } from './project-scaffold.mjs';
 import { createRunnerApi } from './runner-api.mjs';
 import { continuationContext } from '../lib/round-context.mjs';
@@ -44,11 +50,18 @@ import {
 } from '../lib/task-policy.mjs';
 import { githubSnapshot, githubStatus } from './github-snapshot.mjs';
 import { InitialCodePublisher } from './initial-code-snapshot.mjs';
-import { resources, fingerprint, supplyDecision } from './scheduler.mjs';
+import {
+  resources,
+  fingerprint,
+  supplyDecision,
+  createLoadAdmission,
+  canReplenish,
+} from './scheduler.mjs';
 import { codexStage } from './codex-stages.mjs';
 import {
   verifyRuntime,
   reuseRuntimeVerification,
+  copyVerificationSource,
 } from './runtime-verification.mjs';
 import { runtimeRetryContext } from './runtime-retry-context.mjs';
 import { scoreRetryContext } from './score-retry-context.mjs';
@@ -105,6 +118,12 @@ resourceProfile();
 const lock = path.join(workRoot, 'runner.lock');
 acquireLock(lock);
 let stopping = false;
+let draining = false;
+const loadAdmission = createLoadAdmission();
+// Graceful upgrades stop admissions, but finish existing stages and Terminal work.
+process.on('SIGUSR2', () => {
+  draining = true;
+});
 const children = new Set();
 function track(p) {
   if (!p) return;
@@ -226,6 +245,54 @@ async function execute({ task, turn }) {
     if (p) journalChild(journal, p);
   };
   let stage = 'prepare';
+  let policyContext;
+  const stageKeys = {};
+  cached.checkpoints ||= {};
+  const contractDigest = checkpointDigest(
+    [
+      'scripts/codex-stages.mjs',
+      'lib/workflow.mjs',
+      'rules/workflow.json',
+      'lib/writing-style.mjs',
+      'lib/task-policy.mjs',
+      'rules/prohibited-tasks.json',
+      'rules/difficulty.json',
+      'rules/question-writing.json',
+      'lib/question-writing.mjs',
+    ]
+      .filter((f) => existsSync(path.join(root, f)))
+      .map((f) => [f, readFileSync(path.join(root, f), 'utf8')]),
+  );
+  const policyKey = () => checkpointDigest(policyContext());
+  function seal(name, saved) {
+    const refs =
+      name === 'score'
+        ? saved.value.evidenceRefs.flatMap((g) =>
+            g
+              .split(/[;；\n]/)
+              .map((r) =>
+                path.resolve(result.workDir, r.trim().replace(/:\d+$/, '')),
+              ),
+          )
+        : name === 'policy'
+          ? (policyContext().previousEvidence || []).map((e) => e.path)
+          : [];
+    if (name === 'policy') {
+      const context = policyContext();
+      cached.policyOrigin = {
+        history: context.history,
+        source: context.source,
+      };
+    }
+    cached.checkpoints[name] = sealStage(
+      name,
+      saved,
+      name === 'policy' ? policyKey() : stageKeys[name],
+      dir,
+      refs,
+    );
+    persist();
+  }
   let result = {
     action: 'finish',
     taskId: task.id,
@@ -271,8 +338,53 @@ async function execute({ task, turn }) {
     )
       prompt +=
         '\n' + submittedPolicyInstructions(automation.submittedPolicyEvidence);
-    if (cached[name] && name !== 'policy' && name !== 'snapshot')
-      return cached[name];
+    if (['policy', 'score', 'delivery'].includes(name)) {
+      const key =
+        name === 'policy'
+          ? policyKey()
+          : checkpointDigest({
+              contractDigest,
+              taskId: task.id,
+              turnId: turn.id,
+              prompt,
+              source: copyVerificationSource(cwd).files,
+              traceHash: createHash('sha256')
+                .update(readFileSync(result.tracePath))
+                .digest('hex'),
+              sessionId: result.sessionId,
+              promptId: result.promptId,
+              snapshot: result.snapshot,
+              traceExport: result.traceExport?.sha256,
+              runtime: automation.runtimeVerification?.reportSha256,
+              ...(name === 'delivery'
+                ? { scoreCheckpoint: cached.checkpoints.score }
+                : {}),
+            });
+      stageKeys[name] = key;
+      const saved = restoreStage(
+        name,
+        cached[name],
+        cached.checkpoints[name],
+        key,
+        dir,
+      );
+      if (
+        saved &&
+        (name !== 'policy' || saved.accepted === true) &&
+        (name !== 'delivery' || saved.value.passed === true)
+      ) {
+        automation.stageReuse ||= {};
+        automation.stageReuse[name] = {
+          version: checkpointVersion,
+          checkedAt: new Date().toISOString(),
+          tracePath: saved.tracePath,
+          inputsAndEvidenceVerified: true,
+        };
+        return saved;
+      }
+      delete cached[name];
+      delete cached.checkpoints[name];
+    } else if (cached[name] && name !== 'snapshot') return cached[name];
     const value = await codexStage({
       ...extra,
       stage: name,
@@ -576,6 +688,41 @@ async function execute({ task, turn }) {
       const latestRejection = submittedEvidence?.postExecutionPolicy
         .filter((record) => record.disputed === true)
         .at(-1);
+      policyContext = () => ({
+        contractDigest,
+        taskId: task.id,
+        turnId: turn.id,
+        candidate,
+        acceptance: preparation.value.acceptance,
+        requestedPrompt: turn.requestedPrompt || turn.prompt,
+        previousEvidence: [
+          previousTurn?.tracePath,
+          previousTurn?.automation?.runtimeVerification?.reportPath,
+          ...(previousTurn?.automation?.runtimeVerification?.checks || []).map(
+            (c) => c.logPath,
+          ),
+        ]
+          .filter(Boolean)
+          .map((file) => ({
+            path: file,
+            sha256: createHash('sha256')
+              .update(readFileSync(file))
+              .digest('hex'),
+          })),
+        firstTurn,
+        allowFollowupFix,
+        questionStyleApplies,
+        ruleVersion: rules.version,
+        questionRuleVersion: questionRules.version,
+        // After submission, the acceptance describes the original question;
+        // Claude's subsequent edits must not invalidate its pre-run audit.
+        ...(preserveQuestion && cached.policyOrigin
+          ? cached.policyOrigin
+          : {
+              history,
+              source: copyVerificationSource(candidate.repoPath).files,
+            }),
+      });
       const audit = latestRejection
         ? {
             ...structuredClone(latestRejection),
@@ -589,7 +736,7 @@ async function execute({ task, turn }) {
             { questionContext },
           );
       audit.proposedDifficulty = candidate.difficulty;
-      if (!submittedEvidence) {
+      if (!submittedEvidence && !preserveQuestion) {
         candidate.difficulty = audit.value.assessedDifficulty;
         preparation.value.difficulty = audit.value.assessedDifficulty;
       }
@@ -615,6 +762,7 @@ async function execute({ task, turn }) {
           requireQuestionStyle: questionStyleApplies,
         });
         cached.policy = audit;
+        seal('policy', audit);
       }
       persist();
       const container = cached.claude?.container || task.container;
@@ -742,8 +890,12 @@ async function execute({ task, turn }) {
         turnId: turn.id,
         workDir: result.workDir,
       });
-      delete cached.score;
-      delete cached.delivery;
+      if (previousScoreContext) {
+        delete cached.score;
+        delete cached.checkpoints.score;
+        delete cached.delivery;
+        delete cached.checkpoints.delivery;
+      }
       delete cached.next;
       const regressionContext = projectRegressionContext(task, turn, {
         dir,
@@ -785,6 +937,13 @@ async function execute({ task, turn }) {
         (await verifyRuntime({
           ...runtimeContext,
           turnId: turn.id + '.attempt-' + cached.attempt,
+          taskId: task.id,
+          logicalTurnId: turn.id,
+          diagnosisCheckpoint: cached.runtimeDiagnosisCheckpoint,
+          onDiagnosisCheckpoint: (value) => {
+            cached.runtimeDiagnosisCheckpoint = value;
+            persist();
+          },
           retryContext: runtimeRetryContext(cached.runtimeVerification, {
             ...runtimeContext,
             // Valid old failure feedback remains useful after adding regression
@@ -812,6 +971,7 @@ async function execute({ task, turn }) {
         previousScoreContext.runtimeReportSha256 === reused?.reportSha256
       )
         automation.scoreRetryContext = previousScoreContext;
+      delete cached.runtimeDiagnosisCheckpoint;
       cached.runtimeVerification = automation.runtimeVerification;
       persist();
       if (automation.runtimeVerification.status === 'blocked')
@@ -833,8 +993,10 @@ async function execute({ task, turn }) {
         throw e;
       }
       cached.score = score;
+      seal('score', score);
       persist();
       automation.score = score;
+      automation.scoreCheckpoint = structuredClone(cached.checkpoints.score);
       result.review = {
         ...score.value,
         source: 'codex',
@@ -880,6 +1042,7 @@ async function execute({ task, turn }) {
       if (!delivery.value.passed)
         throw new Error('Codex 交付校验未通过：' + delivery.value.summary);
       cached.delivery = delivery;
+      seal('delivery', delivery);
       persist();
       automation.evidenceVersion = 2;
       const bundlePath = path.join(dir, turn.id + '.ai-delivery.json');
@@ -1198,6 +1361,7 @@ try {
       const resource = resources(context.config.concurrency, {
         profile,
         occupied,
+        loadAdmission,
       });
       const docker = containers.resourceStatus();
       const hostCapacity = resource.effective;
@@ -1222,6 +1386,8 @@ try {
       const readySources = docker.ready ? context.repos : [];
       schedulerStatus = {
         ...resource,
+        draining,
+        checkpointVersion,
         resourceProfile: profile,
         active: active.size,
         recovering: orphans.length,
@@ -1258,15 +1424,26 @@ try {
         nextAt: supplyState.nextAt || null,
       };
       await beat();
+      if (draining && active.size === 0 && orphans.length === 0 && !generating)
+        break;
       // Claims are sequential; executions are independent. Generation consumes one slot too.
       while (
         !stopping &&
+        !draining &&
         active.size + orphans.length + Number(!!generating) < resource.effective
       ) {
+        const residents = containers.residents();
+        const reservedResidents =
+          residents.length +
+          [...active.keys()].filter((id) => !residents.includes(id)).length;
+        const residentCapacity = containerCapacity(docker, 4, {
+          profile,
+          occupied: residents.length,
+        });
         const { job } = await api({
           action: 'claim',
-          residentTaskIds: containers.residents(),
-          allowNewContainer: containers.residents().length < resource.effective,
+          residentTaskIds: residents,
+          allowNewContainer: reservedResidents < residentCapacity,
           capacity: resource.effective - Number(!!generating) - orphans.length,
         });
         if (!job) break;
@@ -1277,11 +1454,14 @@ try {
       }
       if (
         !stopping &&
-        !generating &&
-        active.size + orphans.length < resource.effective &&
-        containers.residents().length < resource.effective &&
-        !supplyDecision(context, supplyState) &&
-        readySources.length > 0
+        !draining &&
+        canReplenish(context, supplyState, {
+          capacity: resource.effective,
+          active: active.size,
+          recovering: orphans.length,
+          generating: !!generating,
+          readySources,
+        })
       ) {
         generating = replenish({ ...context, repos: readySources }).finally(
           () => {

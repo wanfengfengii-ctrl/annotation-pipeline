@@ -37,8 +37,15 @@ try {
   );
   t = await waitTask(
     task.id,
-    (t) => t.turns.length === 32 && t.turns.every((r) => r.status === 'review'),
+    (t) =>
+      t.turns.some((r) => r.status === 'failed' || r.automation?.nextError) ||
+      (t.turns.length === 32 && t.turns.every((r) => r.status === 'review')),
     300000,
+  );
+  assert.equal(
+    t.turns.length,
+    32,
+    JSON.stringify(t.turns.at(-1)) + ' ' + f.errors,
   );
   assert.equal(new Set(t.turns.map((r) => r.sessionId)).size, 22);
   assert.equal(new Set(t.turns.map((r) => r.promptId)).size, 32);

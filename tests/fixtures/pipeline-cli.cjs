@@ -192,7 +192,7 @@ if (name === 'git') {
 if (name === 'claude') throw Error('Host Claude must never execute');
 let input = '';
 process.stdin.on('data', (d) => (input += d));
-process.stdin.on('end', () => {
+process.stdin.on('end', async () => {
   if (a.includes('--model') || a.includes('-m'))
     throw Error('Model override forbidden');
   const schema = a[a.indexOf('--output-schema') + 1],
@@ -214,13 +214,15 @@ process.stdin.on('end', () => {
     process.env.FIXTURE_LOG,
     JSON.stringify({ name: stage, time: Date.now() }) + '\n',
   );
-  for (const x of ['score', 'project-next']) {
+  for (const x of ['score', 'project-next', 'delivery']) {
     const flag = path.join(dir, 'fail-' + x + '-once');
     if (stage === x && fs.existsSync(flag)) {
       fs.unlinkSync(flag);
       process.exit(1);
     }
   }
+  if (process.env.FIXTURE_DELAY_STAGE === stage)
+    await new Promise((resolve) => setTimeout(resolve, 1500));
   const count = fs.existsSync('.fixture-count')
       ? Number(fs.readFileSync('.fixture-count', 'utf8'))
       : 0,
@@ -253,6 +255,15 @@ process.stdin.on('end', () => {
           codeEvidence: '.fixture-count:1',
           timeoutSeconds: 5,
         },
+        {
+          id: 'current_acceptance',
+          kind: 'acceptance',
+          command: '__runtime_pass__',
+          expected: '4',
+          requirement: 'current question acceptance',
+          codeEvidence: '.fixture-count:1',
+          timeoutSeconds: 5,
+        },
       ],
     },
     'runtime-diagnose': {
@@ -265,6 +276,12 @@ process.stdin.on('end', () => {
               ? 'reproduced'
               : 'passed',
           observed: 'synthetic runtime result',
+          evidenceLine: 1,
+        },
+        {
+          id: 'current_acceptance',
+          outcome: 'passed',
+          observed: 'current question independently passed',
           evidenceLine: 1,
         },
       ],
@@ -365,7 +382,8 @@ process.stdin.on('end', () => {
       category: cats[count] || 'Feature 迭代',
       difficulty: '中等',
       reason: 'synthetic file evidence',
-      baseComplete: true,
+      baseComplete:
+        !!process.env.FIXTURE_STOP_PROJECT || cats[count] !== 'Bug 修复',
       projectEvidence: 'project engine.ts exists',
     },
   };
@@ -373,4 +391,11 @@ process.stdin.on('end', () => {
   console.log(
     JSON.stringify({ type: 'thread.started', thread_id: 'fixture-' + stage }),
   );
+  console.log(
+    JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text: JSON.stringify(values[stage]) },
+    }),
+  );
+  console.log(JSON.stringify({ type: 'turn.completed' }));
 });

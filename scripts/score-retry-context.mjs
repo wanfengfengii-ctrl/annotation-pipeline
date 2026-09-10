@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { reuseRuntimeVerification } from './runtime-verification.mjs';
 import { verifyScoreEvidence } from './evidence.mjs';
 import { readNativeTurn } from './docker-runtime.mjs';
+import { checkpointDigest, restoreStage } from './stage-checkpoint.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const same = (a, b) => isDeepStrictEqual(a, b);
@@ -147,7 +148,7 @@ export function scoreRetryContext(cached, { dir, taskId, turnId, workDir }) {
     )
       return null;
 
-    const stage = (name, saved, prefix) => {
+    const stage = (name, saved) => {
       if (saved.engine !== 'codex-cli' || !saved.threadId || !saved.finishedAt)
         throw Error('Invalid stage identity');
       const tracePath = saved.tracePath;
@@ -155,12 +156,12 @@ export function scoreRetryContext(cached, { dir, taskId, turnId, workDir }) {
       if (path.dirname(tracePath) !== root || !tracePath.endsWith(suffix))
         throw Error('Invalid stage path');
       const stem = tracePath.slice(0, -suffix.length);
-      if (
-        !new RegExp('^' + turnId + '\\.attempt-[1-9][0-9]*$').test(
-          path.basename(stem),
-        ) ||
-        (prefix && stem !== prefix)
-      )
+      const attempt = path
+        .basename(stem)
+        .match(
+          new RegExp('^' + turnId + '\\.attempt-([1-9][0-9]*)(?:\\.writing)?$'),
+        );
+      if (!attempt || !Number.isSafeInteger(Number(attempt[1])))
         throw Error('Stage belongs to another attempt');
       const jsonPath = stem + '.' + name + '.json';
       const jsonBytes = read(jsonPath),
@@ -189,6 +190,7 @@ export function scoreRetryContext(cached, { dir, taskId, turnId, workDir }) {
       return {
         value,
         prefix: stem,
+        attempt: Number(attempt[1]),
         jsonPath,
         jsonSha256: hash(jsonBytes),
         tracePath,
@@ -227,11 +229,51 @@ export function scoreRetryContext(cached, { dir, taskId, turnId, workDir }) {
     for (const field of scoreFields)
       if (!same(receipt.review?.[field], cached.score.value[field]))
         return null;
-    const delivery = stage(
-      'delivery',
-      receipt.automation.delivery,
-      score.prefix,
-    );
+    const delivery = stage('delivery', receipt.automation.delivery);
+    const scoredAt = Date.parse(cached.score.finishedAt);
+    const deliveredAt = Date.parse(receipt.automation.delivery.finishedAt);
+    if (
+      delivery.attempt < score.attempt ||
+      !Number.isFinite(scoredAt) ||
+      !Number.isFinite(deliveredAt) ||
+      deliveredAt < scoredAt
+    )
+      return null;
+    const scoreCheckpoint = receipt.automation.scoreCheckpoint;
+    const cachedCheckpoint = cached.checkpoints?.score;
+    // A later delivery may review a restored score, but its failed receipt must
+    // bind that exact checkpoint. Legacy same-attempt records need no new seal.
+    if (
+      delivery.attempt !== score.attempt ||
+      scoreCheckpoint ||
+      cachedCheckpoint
+    ) {
+      if (
+        !same(scoreCheckpoint, cachedCheckpoint) ||
+        !/^[a-f0-9]{64}$/.test(scoreCheckpoint?.key || '') ||
+        !restoreStage(
+          'score',
+          cached.score,
+          scoreCheckpoint,
+          scoreCheckpoint.key,
+          root,
+        )
+      )
+        return null;
+      const citedFiles = new Set(
+        cached.score.value.evidenceRefs.flatMap((group) =>
+          group
+            .split(/[;；\n]/)
+            .map((ref) =>
+              path.resolve(workDir, ref.trim().replace(/:\d+$/, '')),
+            ),
+        ),
+      );
+      const sealedFiles = new Set(
+        scoreCheckpoint.references.map((f) => f.path),
+      );
+      if ([...citedFiles].some((file) => !sealedFiles.has(file))) return null;
+    }
     if (
       !same(delivery.value, receipt.automation.delivery.value) ||
       delivery.value.passed !== false ||
@@ -243,7 +285,7 @@ export function scoreRetryContext(cached, { dir, taskId, turnId, workDir }) {
     )
       return null;
     const feedback = {
-      version: '2026-09-10.score-retry1',
+      version: '2026-09-10.score-retry2',
       taskId,
       turnId,
       sessionId: claude.sessionId,
@@ -268,6 +310,9 @@ export function scoreRetryContext(cached, { dir, taskId, turnId, workDir }) {
           jsonSha256: score.jsonSha256,
           tracePath: score.tracePath,
           traceSha256: score.traceSha256,
+          ...(scoreCheckpoint
+            ? { checkpointSha256: checkpointDigest(scoreCheckpoint) }
+            : {}),
         },
         delivery: {
           jsonPath: delivery.jsonPath,

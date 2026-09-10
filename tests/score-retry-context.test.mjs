@@ -19,6 +19,7 @@ import {
   writeRuntimeVerificationReport,
 } from '../scripts/runtime-verification.mjs';
 import { verifyScoreEvidence } from '../scripts/evidence.mjs';
+import { checkpointDigest, sealStage } from '../scripts/stage-checkpoint.mjs';
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
@@ -249,6 +250,150 @@ function fixture(t) {
     write,
   };
 }
+
+function bindScoreCheckpoint(f, references) {
+  const files =
+    references ||
+    f.cached.score.value.evidenceRefs.flatMap((group) =>
+      group
+        .split(/[;；\n]/)
+        .map((ref) =>
+          path.resolve(f.context.workDir, ref.trim().replace(/:\d+$/, '')),
+        ),
+    );
+  const checkpoint = sealStage(
+    'score',
+    f.cached.score,
+    checkpointDigest({
+      input: f.cached.prepare.value,
+      runtime: f.runtime.reportSha256,
+    }),
+    f.context.dir,
+    files,
+  );
+  f.cached.checkpoints = { score: checkpoint };
+  f.receipt.automation.scoreCheckpoint = clone(checkpoint);
+  f.write(f.receiptPath, f.receipt);
+  return checkpoint;
+}
+
+function moveDelivery(f, attempt, finishedAt = '2026-09-10T01:04:00Z') {
+  const delivery = f.receipt.automation.delivery;
+  const previous = delivery.tracePath;
+  delivery.tracePath = previous.replace('.attempt-3.', `.attempt-${attempt}.`);
+  delivery.finishedAt = finishedAt;
+  writeFileSync(delivery.tracePath, readFileSync(previous));
+  writeFileSync(
+    delivery.tracePath.replace('.events.jsonl', '.json'),
+    readFileSync(previous.replace('.events.jsonl', '.json')),
+  );
+  f.write(f.receiptPath, f.receipt);
+}
+
+test('later rejected delivery binds the exact restored score checkpoint without changing the rejection', (t) => {
+  const f = fixture(t);
+  const checkpoint = bindScoreCheckpoint(f);
+  moveDelivery(f, 4);
+  const before = readFileSync(f.receiptPath);
+  const x = scoreRetryContext(f.cached, f.context);
+  assert.ok(x);
+  assert.equal(x.sources.score.checkpointSha256, checkpointDigest(checkpoint));
+  assert.match(x.sources.score.tracePath, /attempt-3\.score/);
+  assert.match(x.sources.delivery.tracePath, /attempt-4\.delivery/);
+  assert.deepEqual(x.priorScore.scores, f.cached.score.value.scores);
+  assert.equal(x.rejection.reason, f.receipt.automation.delivery.value.summary);
+  assert.deepEqual(readFileSync(f.receiptPath), before);
+  assert.equal(f.receipt.automation.delivery.value.passed, false);
+});
+
+test('cross-attempt feedback requires matching checkpoint receipts and every cited file hash', (t) => {
+  const f = fixture(t);
+  moveDelivery(f, 4);
+  assert.equal(
+    scoreRetryContext(f.cached, f.context),
+    null,
+    'no legacy cross-attempt shortcut',
+  );
+  bindScoreCheckpoint(f);
+  const receipt = clone(f.receipt);
+  for (const change of [
+    (r) => {
+      delete r.automation.scoreCheckpoint;
+    },
+    (r) => {
+      r.automation.scoreCheckpoint.key = 'f'.repeat(64);
+    },
+    (r) => {
+      r.automation.scoreCheckpoint.valueHash = 'f'.repeat(64);
+    },
+    (r) => {
+      r.automation.scoreCheckpoint.references[0].sha256 = 'f'.repeat(64);
+    },
+  ]) {
+    const r = clone(receipt);
+    change(r);
+    f.write(f.receiptPath, r);
+    assert.equal(scoreRetryContext(f.cached, f.context), null);
+  }
+  f.write(f.receiptPath, receipt);
+  const withoutCheckpoint = clone(f.cached);
+  delete withoutCheckpoint.checkpoints;
+  assert.equal(scoreRetryContext(withoutCheckpoint, f.context), null);
+  bindScoreCheckpoint(f, []);
+  assert.equal(
+    scoreRetryContext(f.cached, f.context),
+    null,
+    'a seal without citation hashes is insufficient',
+  );
+});
+
+test('cross-attempt score citation changes outside the runtime source invalidate feedback', (t) => {
+  const f = fixture(t);
+  const proof = path.join(f.context.dir, 'score-proof.log');
+  writeFileSync(proof, 'Original evidence\n');
+  const outputPath = f.cached.score.tracePath.replace('.events.jsonl', '.json');
+  const value = JSON.parse(readFileSync(outputPath, 'utf8'));
+  value.evidenceRefs = Array(5).fill('../score-proof.log:1');
+  f.write(outputPath, value);
+  const events = readFileSync(f.cached.score.tracePath, 'utf8')
+    .trim()
+    .split('\n')
+    .map(JSON.parse);
+  events.find((e) => e.item?.type === 'agent_message').item.text =
+    JSON.stringify(value);
+  writeFileSync(
+    f.cached.score.tracePath,
+    events.map(JSON.stringify).join('\n') + '\n',
+  );
+  f.cached.score.value = verifyScoreEvidence(
+    value,
+    f.context.workDir,
+    f.context.dir,
+  );
+  f.receipt.automation.score = clone(f.cached.score);
+  Object.assign(f.receipt.review, clone(f.cached.score.value));
+  bindScoreCheckpoint(f);
+  moveDelivery(f, 4);
+  assert.ok(scoreRetryContext(f.cached, f.context));
+  writeFileSync(proof, 'Changed evidence!\n');
+  assert.equal(scoreRetryContext(f.cached, f.context), null);
+});
+
+test('a score checkpoint does not allow earlier delivery attempts or completion times', (t) => {
+  const f = fixture(t);
+  bindScoreCheckpoint(f);
+  moveDelivery(f, 2);
+  assert.equal(scoreRetryContext(f.cached, f.context), null);
+  // Restore the known attempt-3 path before selecting each independent case.
+  for (const finishedAt of ['2026-09-10T01:02:59Z', 'invalid']) {
+    f.receipt.automation.delivery.tracePath = path.join(
+      f.context.dir,
+      'turn.attempt-3.delivery.events.jsonl',
+    );
+    moveDelivery(f, 4, finishedAt);
+    assert.equal(scoreRetryContext(f.cached, f.context), null, finishedAt);
+  }
+});
 
 test('verified delivery rejection supplies evidence and independent rescoring instructions without changing records', (t) => {
   const f = fixture(t),

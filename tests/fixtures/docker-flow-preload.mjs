@@ -184,6 +184,7 @@ DockerRuntime.prototype.execute = async function (task, turn, reserve) {
       traceSha256: 'a'.repeat(64),
     },
     success: true,
+    finishedAt: new Date().toISOString(),
     workDir: s.workDir,
     sessionId: s.sessionId,
     promptId: 'fixture-prompt-' + turn.id,
