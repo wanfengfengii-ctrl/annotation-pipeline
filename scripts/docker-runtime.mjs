@@ -33,6 +33,7 @@ import {
 import { questionRoot, priorQuestionTurn } from '../lib/question-session.mjs';
 import { terminalConfirmation } from '../lib/terminal-confirmation.mjs';
 import { NativeProgressWatch } from './native-progress.mjs';
+import { isNativeUserMessage } from '../lib/native-user-message.mjs';
 import {
   containerImage,
   containerPolicyVersion,
@@ -234,20 +235,14 @@ export function readNativeTurn(files, prompt, previousIds = []) {
     const events = parseNativeJSONL(file.content);
     const start = events.findIndex(
       (e) =>
-        e.type === 'user' &&
-        !e.isSidechain &&
+        isNativeUserMessage(e) &&
         !previousIds.includes(e.uuid) &&
         e.message?.content === prompt,
     );
     if (start < 0) continue;
     const user = events[start];
     // Tool results also have type=user. Only a new plain-text user prompt ends a round.
-    let end = events.findIndex(
-      (e, i) =>
-        i > start &&
-        e.type === 'user' &&
-        typeof e.message?.content === 'string',
-    );
+    let end = events.findIndex((e, i) => i > start && isNativeUserMessage(e));
     if (end < 0) end = events.length;
     const round = events.slice(start, end);
     const complete = round.some(
@@ -290,12 +285,7 @@ export function assertNativeSessionIdle(state, files, { failedTurnId } = {}) {
       }
     }
     const events = parseNativeJSONL(file.content);
-    const userIndex = events.findLastIndex(
-      (e) =>
-        !e.isSidechain &&
-        e.type === 'user' &&
-        typeof e.message?.content === 'string',
-    );
+    const userIndex = events.findLastIndex(isNativeUserMessage);
     if (userIndex < 0) {
       if (events.some((e) => e.type === 'assistant' || e.type === 'user'))
         throw Error('原生会话有无法归属的活动，保留容器');
@@ -311,7 +301,11 @@ export function assertNativeSessionIdle(state, files, { failedTurnId } = {}) {
       duration < 0 ||
       after
         .slice(duration + 1)
-        .some((e) => e.type === 'assistant' || e.type === 'user')
+        .some(
+          (e) =>
+            e.type === 'assistant' ||
+            (e.type === 'user' && !e.isMeta && !e.turnCompanion),
+        )
     )
       throw Error('最后实际用户轮尚未确认完成，保留容器');
     const [turnId, result] =

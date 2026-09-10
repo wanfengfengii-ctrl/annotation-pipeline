@@ -17,3 +17,5 @@ node scripts/finalize-failed-session.mjs --task TASK_UUID --turn TURN_UUID
 验证：`node --test tests/failed-session-finalization.test.mjs tests/terminal-final-export.test.mjs tests/final-submissions.test.mjs tests/container.test.mjs`。
 
 工程包中的 SQLite 文件通过独立只读扫描处理：仅支持有界的 UTF-8 普通表，检查完整性、列与行值、配置键值及原始页中的常见敏感内容；原文件字节不变。虚拟表、生成列、未知二进制、超限或敏感命中继续待审。生成包和验包均重新扫描，不靠文件扩展名放行。旧待审包保留，新核验包使用独立文件和回执后再回填元数据。
+
+原生轨迹里标记 `isMeta` 或 `turnCompanion` 的图片尺寸说明不算用户新题，也不截断当前轮次；原始文件仍完整保留这些记录。观察器恢复已经发送的任务时沿用原 Prompt 和调用额度，只读取现有结束标记，不重新发送。
