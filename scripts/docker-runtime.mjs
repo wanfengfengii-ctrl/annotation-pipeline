@@ -278,7 +278,7 @@ export function readNativeTurn(files, prompt, previousIds = []) {
   return null;
 }
 
-export function assertNativeSessionIdle(state, files) {
+export function assertNativeSessionIdle(state, files, { failedTurnId } = {}) {
   if (state.pending) throw Error('题目仍有待确认或执行中的输入，保留容器');
   const completed = [];
   for (const file of files) {
@@ -314,11 +314,29 @@ export function assertNativeSessionIdle(state, files) {
         .some((e) => e.type === 'assistant' || e.type === 'user')
     )
       throw Error('最后实际用户轮尚未确认完成，保留容器');
-    const result = Object.values(state.results || {}).find(
-      (r) => r.promptId === user.uuid && r.sessionId === user.sessionId,
-    );
+    const [turnId, result] =
+      Object.entries(state.results || {}).find(
+        ([, r]) => r.promptId === user.uuid && r.sessionId === user.sessionId,
+      ) || [];
+    // Explicit recovery may archive a completed provider error without turning
+    // it into a successful result. Normal scheduling never opts into this path.
+    const confirmedFailure =
+      failedTurnId === turnId &&
+      typeof failedTurnId === 'string' &&
+      result?.success === false &&
+      result.executionOutcome === 'error' &&
+      after.some(
+        (e) => e.isApiErrorMessage === true && e.error === 'server_error',
+      ) &&
+      !after.some((e) =>
+        Array.isArray(e.message?.content)
+          ? e.message.content.some((c) =>
+              ['tool_use', 'tool_result'].includes(c.type),
+            )
+          : false,
+      );
     if (
-      !result?.success ||
+      (!result?.success && !confirmedFailure) ||
       !result.traceExport?.verified ||
       user.sessionId !== state.sessionId
     )
@@ -1157,26 +1175,46 @@ export class DockerRuntime {
     this.save(s);
     await this.onFinalized(s);
   }
-  async close(taskId) {
+  async close(taskId, { failedTurnId, beforeExit } = {}) {
     const s = this.load(taskId);
     if (!s) return;
+    if (failedTurnId && !s.results?.[failedTurnId])
+      throw Error('指定失败轮次不在当前容器中，保留容器');
     if (s.status === 'removed') {
       await this.finalizeTerminal(s);
       return;
     }
     try {
       if (this.owned(s).State.Running) {
-        const assertIdle = () => {
+        const assertIdle = async () => {
           const current = this.load(taskId);
           if (
             current?.containerId !== s.containerId ||
             current?.questionId !== s.questionId
           )
             throw Error('题目容器已变化，保留原容器');
-          return assertNativeSessionIdle(current, this.native(current));
+          if (
+            failedTurnId &&
+            (current.sessionId !== s.sessionId ||
+              current.terminal?.runId !== s.terminal?.runId ||
+              JSON.stringify(current.results) !== JSON.stringify(s.results))
+          )
+            throw Error('指定失败会话的回执已变化，保留容器');
+          const idle = assertNativeSessionIdle(current, this.native(current), {
+            failedTurnId,
+          });
+          if (
+            failedTurnId &&
+            !idle.completedPromptIds.includes(
+              current.results[failedTurnId].promptId,
+            )
+          )
+            throw Error('指定失败轮已不是原生末轮，保留容器');
+          if (beforeExit) await beforeExit();
+          return idle;
         };
         try {
-          assertIdle();
+          await assertIdle();
           await this.attach(s);
           const child = this.live.get(taskId).child;
           s.terminalExit = await exitCompletedTerminal({
@@ -1211,6 +1249,17 @@ export class DockerRuntime {
       this.live.get(taskId)?.child.kill('SIGTERM');
       this.live.delete(taskId);
     } catch (e) {
+      if (failedTurnId) {
+        const latest = this.load(taskId);
+        if (
+          latest?.containerId !== s.containerId ||
+          latest?.questionId !== s.questionId ||
+          latest?.sessionId !== s.sessionId ||
+          latest?.terminal?.runId !== s.terminal?.runId ||
+          JSON.stringify(latest?.results) !== JSON.stringify(s.results)
+        )
+          throw e;
+      }
       // A successful removal followed by a lost API acknowledgement must remain recoverable.
       if (
         s.status === 'exported' &&
