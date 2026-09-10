@@ -20,9 +20,23 @@ import {
   validateRuntimeVerdict,
 } from '../lib/runtime-verification.mjs';
 const hash = (b) => createHash('sha256').update(b).digest('hex');
-const runtimeImplementationDigest = hash(readFileSync(fileURLToPath(import.meta.url)));
+const runtimeImplementationDigest = hash(
+  readFileSync(fileURLToPath(import.meta.url)),
+);
 const environmentProbeVersion = '2026-09-10.env1';
 const diagnosisCheckpointVersion = '2026-09-10.diagnosis-checkpoint1';
+// Used verbatim in plan guidance and exercised under the actual Bash launcher.
+// A setup ERR trap must not turn an expected business failure (1) into blocked (2).
+export const runtimeExitStatusExample = `if python3 /tmp/check.py; then
+  annotation_check_rc=0
+else
+  annotation_check_rc=$?
+fi
+case "$annotation_check_rc" in
+  0|1|2) exit "$annotation_check_rc" ;;
+  *) printf 'BLOCKED unexpected check exit=%s\\n' "$annotation_check_rc"; exit 2 ;;
+esac`;
+const runtimeExitStatusInstructions = `\n准备脚本的 ERR trap 不能覆盖业务检查返回值。set +e 只关闭 errexit，不会取消已注册的 ERR trap；测试合法返回 1 时仍会触发 trap 并错误改为 2。准备失败的 trap 可保留，但运行独立 Python/Node/测试子进程时用 if/else 捕获退出码，随后保留真实 0/1/2；不要用 ! 命令后再取 $?，也不要用 || true 或管道末端成功掩盖结果。调用示例（替换为本步骤真实子进程）：\n${runtimeExitStatusExample}\n临时检查程序自身须根据真实断言返回 0/1/2，先完成有界清理再退出。准备、清理或交互失败仍为 2，不把它们统一改成业务缺陷 1；实际结果已被旧包装改写时重新执行检查，不修改旧日志或事后替换退出码。\n`;
 const nativeTestAttributionInstructions =
   '\n区分执行器临时编写的验收脚本与模型交付的原测试。临时验收脚本的方法或假设错误属于 blocked。原题明确要求提供可运行验证或测试时，原测试也是交付范围：测试环境已实际验证、原套件完整执行且日志和源码证实失败源于原测试自身的选区、定位或断言实现时，记录为交付测试缺陷，不能笼统归为环境 blocked，也不能据此声称对应网页业务功能失败。必须保留原测试、实际失败数量和具体函数证据，并用独立真实交互另行核对业务。检查该项原有测试交付要求的真实断言失败用退出码 1，诊断可判 reproduced；缺依赖、未完整执行、来源不明或执行器包装错误仍退出 2 并 blocked。不得改原测试、跳过失败、改变断言等待、强制点击或假造通过。若原题没有测试交付要求，不新增这项修复义务。\n';
 const manifestInventory = (manifest) =>
@@ -997,6 +1011,7 @@ export async function verifyRuntime({
       manifestTestDependencyInstructions +
       nativeTestResultInstructions +
       nativeTestAttributionInstructions +
+      runtimeExitStatusInstructions +
       '\n独立浏览器验收中的文本框选必须使用真实鼠标拖选或键盘选择。DOM Range 只用于读取文本边界和可见坐标，不用 Selection.addRange、修改 selection 或 dispatchEvent 合成 mouseup 来代替用户动作，也不能用强制点击绕过不可见控件。拖选前先滚动目标文字到可见位置，检查实际选中文字与预期完全一致，再操作页面出现的按钮；先按真实 DOM、鼠标起止点和事件目标排查验收脚本，真实操作仍不符合原题要求时才单独复现业务缺陷。自带测试中的原有实现保持不变，其结果与独立真实交互的证据分开记录。\n' +
       '\n执行 pytest 等自带套件时开启逐用例结果和失败原因输出，保留最终结构化统计；不能只留下 F 标记就被过短的内部计时器终止。按已发现的用例和框架等待上限安排内外层预算，给结果写盘与清理留出余量，仍遵守每步 300 秒、合计 900 秒。需要分批时以原始收集结果划分互不遗漏的用例集合，核对完整覆盖，不使用 fail-fast、跳过失败用例、修改原测试或缩短原断言等待来凑预算；预算确实不足仍写 blocked。\n' +
       '\n日志预算每步 2 MiB，断言输出只写检查名、预期与实际的必要标量、计数或 SHA-256。取消操作前后比较含图片的编辑状态时在内存中完整比较或逐字段比较，打印比较结果及差异字段，不打印 data URL、base64、完整 HTML、整份 localStorage、图片字节或超大对象；需要保留大附件时写到临时文件并输出路径和摘要。不要截断测试执行或丢弃失败原因来控制日志。颜色和像素断言先按当前源码的透明度、叠层及抗锯齿推导合理预期，不凭任意色差阈值断言缺少标记；必须实际检查目标区域和图层内容。\n' +

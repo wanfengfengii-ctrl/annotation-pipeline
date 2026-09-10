@@ -26,6 +26,7 @@ import {
   runtimeInputDigest,
   reuseRuntimeVerification,
   runtimeCommandArgs,
+  runtimeExitStatusExample,
   probeRuntimeEnvironment,
   verifyRuntime,
 } from '../scripts/runtime-verification.mjs';
@@ -104,6 +105,27 @@ printf 'unreachable\\n'`);
   assert.equal(result.stdout, 'setup failed: status=1\n');
   assert.equal(result.stderr, '');
 });
+test('plan exit-status example keeps business failures distinct from setup and environment failures', () => {
+  const setupTrap = `set -euo pipefail\ntrap 'echo BLOCKED_setup; exit 2' ERR\n`;
+  // Reproduce the production failure: set +e alone leaves ERR active.
+  const broken = runVerificationShell(
+    setupTrap + `set +e\nbash -c 'exit 1'\nrc=$?\nexit "$rc"`,
+  );
+  assert.equal(broken.status, 2);
+  assert.match(broken.stdout, /BLOCKED_setup/);
+  for (const status of [0, 1, 2, 7]) {
+    const script = runtimeExitStatusExample.replace(
+      'python3 /tmp/check.py',
+      `bash -c 'exit ${status}'`,
+    );
+    const result = runVerificationShell(setupTrap + script);
+    assert.equal(result.status, status <= 2 ? status : 2);
+    assert.doesNotMatch(result.stdout, /BLOCKED_setup/);
+    const setupFailure = runVerificationShell(setupTrap + 'false\n' + script);
+    assert.equal(setupFailure.status, 2);
+    assert.match(setupFailure.stdout, /BLOCKED_setup/);
+  }
+});
 test('Verification preserves multiline commands and literal quoting as one argument', () => {
   const payload =
       'quotes "double" \'single\' $HOME $(printf substituted) `printf substituted`',
@@ -173,6 +195,7 @@ test('Runtime planning receives measured capabilities and Bash contract after is
       },
       step: async (stage, instruction, cwd) => {
         assert.equal(stage, 'runtime-plan');
+        assert.ok(instruction.includes(runtimeExitStatusExample));
         assert.equal(cwd, workDir);
         assert.match(instruction, /\/bin\/bash --noprofile --norc -c/);
         assert.match(instruction, /BASH_ENV 和 ENV 清空/);
