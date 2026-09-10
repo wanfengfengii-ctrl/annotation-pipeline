@@ -3,9 +3,10 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { roundNumber, type RecordMetadata } from '@/lib/record-metadata';
 import type { Task, Turn } from '@/lib/pipeline';
+import { businessRecord } from '@/lib/business-record.mjs';
 export function RecordMetadataPanel({
   task,
-  turn,
+  turn: input,
   run,
   busy,
 }: {
@@ -14,6 +15,13 @@ export function RecordMetadataPanel({
   run: (body: object) => Promise<boolean>;
   busy: boolean;
 }) {
+  let projection;
+  try {
+    projection = businessRecord(task, input);
+  } catch {
+    /* Keep invalid records visible and locked. */
+  }
+  const turn: Turn = projection?.origin || input;
   const [value, setValue] = useState<RecordMetadata>(
     turn.recordMetadata || {
       parentRecord: '',
@@ -22,9 +30,12 @@ export function RecordMetadataPanel({
     },
   );
   const locked =
+    !projection ||
     !['review', 'failed'].includes(turn.status) ||
     !!turn.receipt ||
-    !!turn.humanReview?.receipt;
+    !!turn.humanReview?.receipt ||
+    !!projection?.result.receipt ||
+    !!projection?.result.humanReview?.receipt;
   return (
     <details className="section">
       <summary>审核与关联字段 · 第 {roundNumber(task, turn)} 轮</summary>

@@ -51,6 +51,19 @@ export const digest = (value) =>
         : JSON.stringify(value),
     )
     .digest('hex');
+// Preserve old receipt digests for ordinary records. Recovery records bind the
+// actual result and native coverage even when the visible text stays identical.
+export const recordSourceDigest = (row, value = row.values) =>
+  digest(
+    row.recovery
+      ? {
+          value,
+          resultTurnId: row.resultTurnId,
+          recovery: row.recovery,
+          recoveryCoverage: row.recoveryCoverage,
+        }
+      : value,
+  );
 export const attachmentField = (field) =>
   ['attachment', 'file'].includes(field.field_type);
 
@@ -129,6 +142,37 @@ export function parseRound(value) {
   return /^\d+$/.test(m[1])
     ? Number(m[1])
     : '一二三四五六七八九十'.indexOf(m[1]) + 1;
+}
+
+export function coveredRecordRounds(row, headers) {
+  const round = parseRound(row.values[headers.indexOf('当前对话轮次排序')]);
+  if (!row.recovery) return [round];
+  const proof = row.recoveryCoverage;
+  if (
+    !proof ||
+    proof.version !== row.recovery.version ||
+    proof.originTurnId !== row.turnId ||
+    proof.resultTurnId !== row.resultTurnId ||
+    proof.sessionId !== row.values[headers.indexOf('SessionID')] ||
+    proof.projectionSha256 !== digest(row.recovery) ||
+    proof.traceSha256 !== row.recovery.finalTraceSha256 ||
+    proof.steps?.length !== row.recovery.steps.length ||
+    proof.steps.length < 2 ||
+    proof.steps.length > 10 ||
+    proof.steps[0].promptId !== row.values[headers.indexOf('TurnID/PromptID')]
+  )
+    throw Error('缺少与当前业务题绑定的完整原生恢复轮次证明');
+  return proof.steps.map((step, i) => {
+    const expected = row.recovery.steps[i];
+    if (
+      step.round !== round + i ||
+      step.round > 10 ||
+      !step.promptId ||
+      Object.keys(expected).some((key) => expected[key] !== step[key])
+    )
+      throw Error('原生恢复轮次证明与业务题不一致');
+    return step.round;
+  });
 }
 
 // A remote receipt is recognized by native identities and exact submitted data,

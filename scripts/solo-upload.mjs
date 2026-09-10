@@ -25,6 +25,8 @@ import { verifyTerminalFinalization } from './terminal-finalization.mjs';
 import { applyUploadHolds, assertUploadNotHeld } from './solo-upload-holds.mjs';
 import { createSoloNativeAttachment } from './solo-native-attachment.mjs';
 import { resolveSoloNativeIdentity } from './solo-native-identity.mjs';
+import { assertRecordSource } from '../lib/business-record.mjs';
+import { verifyBusinessRecordNative } from './solo-business-record.mjs';
 import { uploadTimes } from './solo-schedule.mjs';
 import {
   applyManualAdmissions,
@@ -123,21 +125,61 @@ export async function records(projectId = '') {
           return row;
         try {
           if (promptIndex < 0) throw Error('缺少原生 PromptID 导出字段');
-          const nativeIdentity = resolveSoloNativeIdentity({
-            dir: path.join(root, row.taskId),
-            traceExport: turn.traceExport,
-            containerId: turn.container.containerId,
-            sessionId: turn.sessionId,
-            messageUuid: turn.promptId,
-          });
+          let nativeIdentity, recoveryCoverage;
+          if (row.recovery) {
+            for (const name of ['ui-state.json', 'state.json']) {
+              const filename = path.join(stateDir, name);
+              const entries = existsSync(filename)
+                ? JSON.parse(readFileSync(filename, 'utf8')).entries || {}
+                : {};
+              if (
+                row.recovery.steps.some(
+                  (s) =>
+                    s.turnId !== row.turnId &&
+                    (entries[row.taskId + ':' + s.turnId]?.remoteId ||
+                      ['submitting', 'uncertain'].includes(
+                        entries[row.taskId + ':' + s.turnId]?.state,
+                      )),
+                )
+              )
+                throw Error(
+                  '继续轮已有独立上传记录或待核对回执，不能再次合并提交',
+                );
+            }
+            const { result } = assertRecordSource(task, row);
+            ({ nativeIdentity, recoveryCoverage } = verifyBusinessRecordNative({
+              task,
+              row,
+              dir: path.join(root, row.taskId),
+              traceExport:
+                result.automation?.submission?.finalization?.traceExport,
+            }));
+          } else
+            nativeIdentity = resolveSoloNativeIdentity({
+              dir: path.join(root, row.taskId),
+              traceExport: turn.traceExport,
+              containerId: turn.container.containerId,
+              sessionId: turn.sessionId,
+              messageUuid: turn.promptId,
+            });
           const values = [...row.values];
           values[promptIndex] = nativeIdentity.promptId;
-          return { ...row, values, nativeIdentity };
+          return {
+            ...row,
+            values,
+            nativeIdentity,
+            ...(recoveryCoverage ? { recoveryCoverage } : {}),
+          };
         } catch (error) {
           return { ...row, eligible: false, nativeIdIssue: error.message };
         }
       });
-      return { rows: applyManualAdmissions(mapped), headers };
+      return {
+        rows: mapped.map((row) =>
+          row.recovery ? row : applyManualAdmissions([row])[0],
+        ),
+        headers,
+      };
     }
   }
   throw Error('本地数据量超过单次分页范围');
@@ -229,8 +271,8 @@ export async function attachment(row, schema = {}) {
   assertUploadNotHeld(row);
   const knownSecrets = submissionSecrets();
   const tasks = await readLocal('/api/tasks');
-  const t = tasks.tasks.find((t) => t.id === row.taskId),
-    turn = t?.turns.find((q) => q.id === row.turnId);
+  const t = tasks.tasks.find((t) => t.id === row.taskId);
+  const { result: turn } = assertRecordSource(t, row);
   if (
     !turn?.automation?.delivery?.value?.passed ||
     turn.permissionAudit?.passed !== true
@@ -256,14 +298,28 @@ export async function attachment(row, schema = {}) {
     sessionId: turn.sessionId,
   });
   const traceExport = finalization.traceExport;
+  if (row.recovery) {
+    const verified = verifyBusinessRecordNative({
+      task: t,
+      row,
+      dir,
+      traceExport,
+    });
+    if (
+      JSON.stringify(verified.recoveryCoverage) !==
+        JSON.stringify(row.recoveryCoverage) ||
+      verified.nativeIdentity.promptId !== row.nativeIdentity?.promptId
+    )
+      throw Error('提交前恢复链或原题原生标识发生变化');
+  }
   let sourceArchive = turn.automation.archive;
   if (!sourceArchive) {
     const result = JSON.parse(
-      readFileSync(path.join(dir, row.turnId + '.result.json'), 'utf8'),
+      readFileSync(path.join(dir, turn.id + '.result.json'), 'utf8'),
     );
     if (
       result.taskId !== row.taskId ||
-      result.turnId !== row.turnId ||
+      result.turnId !== turn.id ||
       result.success !== true
     )
       throw Error('归档回执与当前记录不一致');
@@ -272,7 +328,7 @@ export async function attachment(row, schema = {}) {
   const packageCache = path.join(
     stateDir,
     'packages',
-    row.taskId + '_' + row.turnId + '.json',
+    row.taskId + '_' + turn.id + '.json',
   );
   const previous = existsSync(packageCache)
     ? JSON.parse(readFileSync(packageCache, 'utf8'))
@@ -288,7 +344,7 @@ export async function attachment(row, schema = {}) {
       throw Error('完整轨迹包构建接口尚未就绪');
     submission = await api.createSubmissionPackage({
       dir,
-      turnId: row.turnId,
+      turnId: turn.id,
       archive: sourceArchive,
       traceExport,
       knownSecrets,

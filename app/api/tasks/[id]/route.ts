@@ -1,6 +1,7 @@
 import { repairDecision, canRepair } from '@/lib/project-series.mjs';
 import { isContinuation } from '@/lib/round-context.mjs';
 import { updateRecordMetadata } from '@/lib/record-metadata';
+import { businessRecord } from '@/lib/business-record.mjs';
 import { canAddTurn } from '@/lib/project-series.mjs';
 import { submissionIssues } from '@/lib/submission-policy.mjs';
 import {
@@ -37,7 +38,10 @@ export async function PATCH(
     if (b.action === 'record-metadata') {
       const r = t.turns.find((r) => r.id === b.turnId);
       if (!r) throw Error('轮次不存在');
-      updateRecordMetadata(t, r, b.metadata);
+      const { origin, result } = businessRecord(t, r);
+      if (result.receipt || result.humanReview?.receipt)
+        throw Error('业务题已登记交付，审核字段已锁定');
+      updateRecordMetadata(t, origin, b.metadata);
     } else if (b.action === 'enqueue') {
       if (!t.container && t.sessionId)
         throw Error('旧版宿主机会话仅保留记录，请创建新的容器任务');

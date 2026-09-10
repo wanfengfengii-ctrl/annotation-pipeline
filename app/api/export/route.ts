@@ -18,6 +18,7 @@ import {
   exportSafetyHeaders,
 } from '@/lib/export-safety.mjs';
 import { env } from 'cloudflare:workers';
+import { assertRecordSource } from '@/lib/business-record.mjs';
 const downloadOptions = () => ({
   knownSecrets: Object.entries(env)
     .filter(
@@ -147,9 +148,9 @@ export async function POST(req: Request) {
       current.results.map((t) => [t.id, JSON.parse(t.data) as Task]),
     );
     for (const row of rows) {
-      const task = tasks.get(row.taskId),
-        turn = task?.turns.find((r) => r.id === row.turnId);
-      if (!task || !turn) throw Error('该批次的原始轮次已缺失，不能重新导出');
+      const task = tasks.get(row.taskId);
+      if (!task) throw Error('该批次的原始任务已缺失，不能重新导出');
+      const { result: turn } = assertRecordSource(task, row);
       if (purpose === 'review') {
         if (turn.excluded) throw Error('该轮已排除，不能重新导出复核副本');
         continue;

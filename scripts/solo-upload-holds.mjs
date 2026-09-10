@@ -3,7 +3,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withSoloLock } from './solo-lock.mjs';
 import { savePrivateJSON } from './solo-client.mjs';
-import { recordKey } from './solo-records.mjs';
 
 const defaultRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -29,14 +28,22 @@ export function uploadHolds(root = defaultRoot) {
 }
 
 export function assertUploadNotHeld(row, root = defaultRoot) {
-  const hold = uploadHolds(root).entries[recordKey(row)];
+  const entries = uploadHolds(root).entries;
+  const hold = [row.turnId, ...(row.recovery?.steps || []).map((s) => s.turnId)]
+    .map((id) => entries[row.taskId + ':' + id])
+    .find(Boolean);
   if (hold) throw Error('用户已标记禁止上传 SOLO：' + hold.reason);
 }
 
 export function applyUploadHolds(rows, root = defaultRoot) {
   const { entries } = uploadHolds(root);
   return rows.map((row) => {
-    const hold = entries[recordKey(row)];
+    const hold = [
+      row.turnId,
+      ...(row.recovery?.steps || []).map((s) => s.turnId),
+    ]
+      .map((id) => entries[row.taskId + ':' + id])
+      .find(Boolean);
     return hold ? { ...row, eligible: false, uploadHold: hold } : row;
   });
 }

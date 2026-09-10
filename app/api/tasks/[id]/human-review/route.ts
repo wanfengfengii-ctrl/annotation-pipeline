@@ -9,6 +9,10 @@ import {
 } from '@/lib/human-review';
 import type { HumanReview } from '@/lib/human-review';
 import { submissionIssues } from '@/lib/submission-policy.mjs';
+import {
+  businessRecord,
+  businessRecordOrigins,
+} from '@/lib/business-record.mjs';
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -17,24 +21,26 @@ export async function GET(
     const { id } = await params;
     const turnId = text(new URL(req.url).searchParams.get('turnId'), '轮次');
     const item = await get(id),
-      turn = item?.task.turns.find((r) => r.id === turnId);
-    if (!item || !turn) throw Error('轮次不存在');
+      input = item?.task.turns.find((r) => r.id === turnId);
+    if (!item || !input) throw Error('轮次不存在');
+    const { origin, result: turn } = businessRecord(item.task, input);
     const rows = await db()
       .prepare(
         'SELECT id,action,data,created_at FROM review_history WHERE task_id=? AND turn_id=? ORDER BY created_at DESC',
       )
-      .bind(id, turnId)
+      .bind(id, turn.id)
       .all<{ id: string; action: string; data: string; created_at: string }>();
     return Response.json(
       {
         taskId: id,
-        turnId,
+        turnId: origin.id,
+        resultTurnId: turn.id,
         originalAI: turn.review,
         confirmation: turn.humanReview,
         snapshot: item.task.snapshot,
         sessionId: turn.sessionId,
-        promptId: turn.promptId,
-        prompt: turn.prompt,
+        promptId: origin.promptId,
+        prompt: origin.prompt,
         tracePath: turn.tracePath,
         archive: turn.automation?.archive,
         history: rows.results.map((r) => ({ ...r, data: JSON.parse(r.data) })),
@@ -67,7 +73,8 @@ export async function POST(
     const b = (await req.json()) as Record<string, unknown>;
     if (b.revision !== item.revision)
       throw Error('数据已更新，请刷新后重试；未保存草稿仍留在页面');
-    const r = item.task.turns.find((r) => r.id === b.turnId);
+    const input = item.task.turns.find((r) => r.id === b.turnId);
+    const r = input && businessRecord(item.task, input).result;
     if (
       !r ||
       r.review?.source !== 'codex' ||
@@ -116,9 +123,10 @@ export async function POST(
       if (errors.length) throw Error(errors.join('；'));
       if (b.allRoundsChecked !== true)
         throw Error('请核对全部有效轮次后登记交付');
-      const missing = item.task.turns.filter(
-        (x) => !x.excluded && humanIssues(item.task, x).length,
-      );
+      const missing = businessRecordOrigins(item.task)
+        .filter((x) => !x.excluded)
+        .map((x) => businessRecord(item.task, x).result)
+        .filter((x) => !x.excluded && humanIssues(item.task, x).length);
       if (missing.length)
         throw Error(`还有 ${missing.length} 个有效轮次未完成人工质检`);
       actor = text(b.actor, '登记人', 100);

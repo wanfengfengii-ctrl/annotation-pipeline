@@ -4,7 +4,11 @@ import {
   recordKey,
   findRemote,
   sameRemote,
+  recordSourceDigest,
+  coveredRecordRounds,
+  parseRound,
 } from './solo-records.mjs';
+import { sequenceIssues } from './solo-record-sequence.mjs';
 import { soloNativeAttachmentVersion } from './solo-native-attachment.mjs';
 
 // Every remote mutation has a durable pre-write state. An ambiguous create is
@@ -27,6 +31,38 @@ export async function syncRecords({
     refreshed: 0,
   };
   ledger.entries ||= {};
+  const hasRecovery = rows.some((r) => r.recovery);
+  const sequence = hasRecovery ? sequenceIssues(rows, headers) : new Map();
+  const assertPredecessors = async (row, round) => {
+    if (!hasRecovery) return;
+    if (sequence.has(recordKey(row))) throw Error(sequence.get(recordKey(row)));
+    for (let n = 1; n < round; n++) {
+      const previous = rows.find(
+        (r) =>
+          r.values[headers.indexOf('SessionID')] ===
+            row.values[headers.indexOf('SessionID')] &&
+          coveredRecordRounds(r, headers).includes(n),
+      );
+      const receipt = previous && ledger.entries[recordKey(previous)];
+      if (
+        !previous ||
+        !receipt?.remoteId ||
+        !receipt.receiptVerified ||
+        receipt.remoteStatus === 'DISCARDED'
+      )
+        throw Error('前序业务题尚未确认上传');
+      const current = await currentRow(previous);
+      const fields = Object.fromEntries(
+        Object.entries(
+          mapRecord(current, headers, schema, [
+            { name: 'pending.zip', path: 'pending', size: 1 },
+          ]).data,
+        ).filter(([, v]) => !Array.isArray(v)),
+      );
+      if (receipt.sourceDigest !== recordSourceDigest(current, fields))
+        throw Error('前序业务题的结果来源已变化');
+    }
+  };
   for (const row of rows) {
     const key = recordKey(row);
     let entry = ledger.entries[key];
@@ -48,7 +84,7 @@ export async function syncRecords({
       const textData = Object.fromEntries(
         Object.entries(initial.data).filter(([, v]) => !Array.isArray(v)),
       );
-      const sourceDigest = digest(textData);
+      const sourceDigest = recordSourceDigest(row, textData);
       if (entry?.remoteId) {
         const detail = await client.detail(entry.remoteId);
         if (
@@ -117,9 +153,11 @@ export async function syncRecords({
         counts.blocked++;
         continue;
       }
+      await assertPredecessors(row, parseRound(initial.data.round_no));
       const fresh = await currentRow(row);
       if (
-        digest(
+        recordSourceDigest(
+          fresh,
           Object.fromEntries(
             Object.entries(
               mapRecord(fresh, headers, schema, [
@@ -177,8 +215,10 @@ export async function syncRecords({
       }
       const latest = await currentRow(row);
       const payload = mapRecord(latest, headers, schema, [entry.attachment]);
+      await assertPredecessors(latest, parseRound(payload.data.round_no));
       if (
-        digest(
+        recordSourceDigest(
+          latest,
           Object.fromEntries(
             Object.entries(payload.data).filter(([, v]) => !Array.isArray(v)),
           ),

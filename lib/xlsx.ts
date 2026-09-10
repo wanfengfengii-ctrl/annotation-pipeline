@@ -104,6 +104,8 @@ export function xlsx(
       '初始代码快照说明',
       '导出用途',
       '正式交付待处理项',
+      '评分结果来源',
+      '原生恢复轮次',
     ],
     ...rows.map((r) => [
       batchId,
@@ -122,6 +124,10 @@ export function xlsx(
       r.originalFields?.initialCodeNote || '',
       r.exportPurpose === 'review' ? '复核副本（非正式交付）' : '正式交付',
       (r.exportIssues || []).join('；'),
+      r.resultTurnId || r.turnId,
+      r.recovery
+        ? r.recovery.steps.map((s) => `${s.round}:${s.messageUuid}`).join('；')
+        : '',
     ]),
   ];
   const files: Record<string, Uint8Array> = {};

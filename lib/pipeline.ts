@@ -11,6 +11,7 @@ import { permissionIssues } from './permission-audit.mjs';
 import { formatQuestionText } from './question-text.mjs';
 import { blocksProject } from './disputed-continuation.mjs';
 import { submissionIssues } from './submission-policy.mjs';
+import { businessRecord, businessRecordOrigins } from './business-record.mjs';
 export type PermissionAudit = {
   version: string;
   passed: boolean;
@@ -409,15 +410,22 @@ export function csv(
     '提交截止时间',
   ];
   const rows = tasks.flatMap((t) =>
-    t.turns
+    businessRecordOrigins(t)
+      .flatMap((origin) => {
+        try {
+          return [businessRecord(t, origin)];
+        } catch {
+          return [];
+        }
+      })
       .filter(
-        (r) =>
+        ({ result: r }) =>
           !r.excluded &&
           !submissionIssues(t, r).length &&
           (!day || businessDate(r.finishedAt || r.createdAt) === day) &&
           !(source === 'human' ? humanIssues(t, r) : issues(t, r)).length,
       )
-      .map((original) => {
+      .map(({ origin, result: original, recovery }) => {
         const manual = source === 'human';
         const r = manual
           ? { ...original, review: humanAsReview(original.humanReview!) }
@@ -432,10 +440,12 @@ export function csv(
           r.os || t.os,
           r.reproducibility || t.reproducibility,
           t.snapshot,
-          formatQuestionText(r.prompt),
-          r.sessionId,
-          r.promptId,
-          r.tracePath,
+          formatQuestionText(origin.prompt),
+          origin.sessionId,
+          origin.promptId,
+          (recovery &&
+            r.automation?.submission?.finalization?.traceExport?.path) ||
+            r.tracePath,
           ...dimensions.flatMap((_, i) => [
             r.review!.scores[i],
             r.review!.descriptions[i],

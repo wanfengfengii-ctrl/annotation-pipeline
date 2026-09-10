@@ -1,3 +1,5 @@
+import { sequenceIssues } from './solo-record-sequence.mjs';
+export { sequenceIssues } from './solo-record-sequence.mjs';
 // Browser transport uses the user's existing SOLO sign-in. It does not extract
 // browser cookies or require storing the account password for scheduled runs.
 import fs from 'node:fs';
@@ -5,7 +7,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { publishSoloStatus } from './solo-status-publish.mjs';
 import { records, attachment } from './solo-upload.mjs';
-import { digest, recordKey, parseRound } from './solo-records.mjs';
+import {
+  digest,
+  recordKey,
+  parseRound,
+  recordSourceDigest,
+  coveredRecordRounds,
+} from './solo-records.mjs';
 import { savePrivateJSON, SOLO_ORIGIN } from './solo-client.mjs';
 import { withSoloLock } from './solo-lock.mjs';
 import { assertPreparedNativeAttachment } from './solo-native-attachment.mjs';
@@ -64,66 +72,6 @@ export function validateReceipt(packet, receipt) {
     throw Error('远端回执必须经页面核对账号、记录编号、原生标识和全部提交字段');
 }
 
-export function sequenceIssues(rows, headers) {
-  const field = (row, label) => row.values[headers.indexOf(label)];
-  const issues = new Map(),
-    sessions = new Map();
-  for (const row of rows.filter((r) => r.eligible)) {
-    const id = field(row, 'SessionID');
-    if (!sessions.has(id)) sessions.set(id, []);
-    sessions.get(id).push(row);
-  }
-  for (const group of sessions.values()) {
-    const roundRows = new Map();
-    for (const row of group) {
-      let round;
-      try {
-        round = parseRound(field(row, '当前对话轮次排序'));
-      } catch {
-        issues.set(recordKey(row), '对话轮次无效');
-        continue;
-      }
-      if (roundRows.has(round)) {
-        issues.set(recordKey(row), '同一会话出现重复轮次');
-        issues.set(recordKey(roundRows.get(round)), '同一会话出现重复轮次');
-      }
-      roundRows.set(round, row);
-    }
-    const first = roundRows.get(1);
-    const consistency = [
-      '初始环境快照',
-      'Harness',
-      'Harness 版本',
-      '操作系统',
-      '环境可复现等级',
-    ];
-    for (const [round, row] of roundRows) {
-      if (!first || field(first, '任务难度') === '简单') {
-        issues.set(recordKey(row), '会话缺少可提交的中等及以上难度首轮');
-        continue;
-      }
-      if (
-        consistency.some(
-          (label) =>
-            headers.includes(label) &&
-            field(first, label) !== field(row, label),
-        )
-      )
-        issues.set(recordKey(row), '同一会话的初始快照或运行环境字段不一致');
-      for (let previous = 1; previous < round; previous++)
-        if (
-          !roundRows.has(previous) ||
-          issues.has(recordKey(roundRows.get(previous)))
-        )
-          issues.set(
-            recordKey(row),
-            '前序轮次缺失或不符合提交条件，保留原轮次待核对',
-          );
-    }
-  }
-  return issues;
-}
-
 export const prepareUI = () => locked(prepareUnlocked);
 export const markSending = (key) => locked(() => markSendingUnlocked(key));
 export const recordReceipt = (key, receipt) =>
@@ -164,7 +112,7 @@ async function prepareUnlocked() {
     }
     const key = recordKey(row),
       old = ledger.entries[key],
-      sourceDigest = digest(row.values);
+      sourceDigest = recordSourceDigest(row);
     if (old?.remoteId) {
       if (old.sourceDigest !== sourceDigest)
         blocked.push({
@@ -211,6 +159,13 @@ async function prepareUnlocked() {
         source: 'ai',
         provenance: row.provenance,
         nativeIdentity: row.nativeIdentity,
+        ...(row.recovery
+          ? {
+              resultTurnId: row.resultTurnId,
+              recovery: row.recovery,
+              recoveryCoverage: row.recoveryCoverage,
+            }
+          : {}),
         expectedAccount,
         sourceDigest,
         fields,
@@ -288,23 +243,30 @@ async function markSendingUnlocked(key) {
     throw Error('提交包字段被更改');
   const current = await records(p.taskId);
   const row = current.rows.find((r) => r.turnId === p.turnId);
-  if (!row?.eligible || digest(row.values) !== p.sourceDigest)
+  if (!row?.eligible || recordSourceDigest(row) !== p.sourceDigest)
     throw Error('记录在提交前变化或已不符合交付条件');
+  if (
+    row.recovery &&
+    ['resultTurnId', 'recovery', 'recoveryCoverage'].some(
+      (key) => JSON.stringify(p[key]) !== JSON.stringify(row[key]),
+    )
+  )
+    throw Error('提交包恢复来源证明被更改');
   const sequence = sequenceIssues(current.rows, current.headers);
   if (sequence.has(key)) throw Error(sequence.get(key));
   const round = parseRound(p.fields['当前对话轮次排序']);
   const sessionColumn = current.headers.indexOf('SessionID');
-  const roundColumn = current.headers.indexOf('当前对话轮次排序');
   for (let previous = 1; previous < round; previous++) {
     const predecessor = current.rows.find(
       (r) =>
         r.values[sessionColumn] === p.fields.SessionID &&
-        parseRound(r.values[roundColumn]) === previous,
+        coveredRecordRounds(r, current.headers).includes(previous),
     );
     const receipt = predecessor && ledger.entries[recordKey(predecessor)];
     if (
       !receipt?.remoteId ||
       !receipt.receiptVerified ||
+      receipt.sourceDigest !== recordSourceDigest(predecessor) ||
       receipt.remoteStatus === 'DISCARDED'
     )
       throw Error('前序轮次尚未确认上传，先完成前序记录');

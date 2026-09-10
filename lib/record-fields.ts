@@ -5,6 +5,7 @@ import { formatStack } from './stack-field.mjs';
 import { formatQuestionText } from './question-text.mjs';
 import { submissionIssues } from './submission-policy.mjs';
 import { soloStatusCodes } from './solo-upload-status.mjs';
+import { businessRecord } from './business-record.mjs';
 export const recordHeaders = [
   'User Prompt',
   'SessionID',
@@ -41,6 +42,8 @@ export type RecordSource = 'ai' | 'human';
 export type RecordRow = {
   taskId: string;
   turnId: string;
+  resultTurnId?: string;
+  recovery?: ReturnType<typeof businessRecord>['recovery'];
   title: string;
   values: (string | number)[];
   source: RecordSource;
@@ -118,11 +121,20 @@ export function shanghaiDate(v?: string) {
 }
 export function recordRow(
   t: Task,
-  r: Turn,
+  input: Turn,
   source: RecordSource,
   exportCount = 0,
   lastExportAt: string | null = null,
 ): RecordRow {
+  let projection,
+    projectionError = '';
+  try {
+    projection = businessRecord(t, input);
+  } catch (error) {
+    projectionError = (error as Error).message;
+  }
+  const origin: Turn = projection?.origin || input;
+  const r: Turn = projection?.result || input;
   const h = r.humanReview,
     review: Review | undefined =
       source === 'human' && h ? humanAsReview(h) : r.review;
@@ -131,6 +143,7 @@ export function recordRow(
   const initialCode = t.initialCodeSnapshots?.[r.questionRootId || r.id];
   const initialURL = initialCodeURL(t, r);
   const exportIssues = [
+    ...(projectionError ? [projectionError] : []),
     ...(!snapshotLink(initialURL)
       ? ['缺少本题初始代码的 GitHub Commit 快照']
       : []),
@@ -139,6 +152,7 @@ export function recordRow(
     ...issues(t, human && h ? { ...r, review: humanAsReview(h) } : r),
   ];
   const reviewIssues = [
+    ...(projectionError ? [projectionError] : []),
     ...(r.excluded ? ['该轮已排除'] : []),
     ...(!['review', 'submitted', 'failed'].includes(r.status)
       ? ['该轮仍在执行中']
@@ -156,15 +170,17 @@ export function recordRow(
       : []),
     ...(human && !h ? ['尚无人工复核记录'] : []),
   ];
-  const quality = human
-    ? h?.state === 'approved'
-      ? '人工复核通过（已有 AI 评分）'
-      : h?.state === 'needs_revision'
-        ? '待返工'
-        : '待人工复核'
-    : !issues(t, r).length && r.automation?.delivery?.value?.passed
-      ? 'AI 校验通过（待人工确认）'
-      : '待 AI 校验';
+  const quality = projectionError
+    ? '原题恢复关联待核对'
+    : human
+      ? h?.state === 'approved'
+        ? '人工复核通过（已有 AI 评分）'
+        : h?.state === 'needs_revision'
+          ? '待返工'
+          : '待人工复核'
+      : !issues(t, r).length && r.automation?.delivery?.value?.passed
+        ? 'AI 校验通过（待人工确认）'
+        : '待 AI 校验';
   const originalFields = {
     snapshot: r.container?.sourceSnapshot
       ? r.container.snapshot +
@@ -179,7 +195,11 @@ export function recordRow(
           '#sha256:' +
           r.container.scaffoldSnapshot.sha256
         : r.container?.snapshot || t.snapshot || '',
-    tracePath: r.tracePath || '',
+    tracePath:
+      (projection?.recovery &&
+        r.automation?.submission?.finalization?.traceExport?.path) ||
+      r.tracePath ||
+      '',
     os: r.os || t.os || '',
     stack: r.stack || t.stack || '',
     initialCodeNote:
@@ -188,18 +208,18 @@ export function recordRow(
         : '',
   };
   const base = [
-    formatQuestionText(r.prompt),
-    r.sessionId || '',
-    r.promptId || '',
-    recordRound(roundNumber(t, r)),
+    formatQuestionText(origin.prompt),
+    origin.sessionId || '',
+    origin.promptId || '',
+    recordRound(roundNumber(t, origin)),
     initialURL,
     originalFields.tracePath.split(/[\\/]/).at(-1) || '',
     r.reproducibility || t.reproducibility || '',
     r.harness || t.harness || 'Claude Code',
     r.harnessVersion || t.harnessVersion || '',
     recordOS(originalFields.os),
-    recordCategory(r.category),
-    r.difficulty,
+    recordCategory(origin.category),
+    origin.difficulty,
     recordStack(originalFields.stack),
   ];
   const values: (string | number)[] = [
@@ -216,13 +236,16 @@ export function recordRow(
       : '',
     submitted ? shanghaiDate(human ? h?.deliveredAt : r.submittedAt) : '',
     quality,
-    r.recordMetadata?.parentRecord || '',
-    r.recordMetadata?.auditNote || '',
-    r.recordMetadata?.parentRecord2 || '',
+    origin.recordMetadata?.parentRecord || '',
+    origin.recordMetadata?.auditNote || '',
+    origin.recordMetadata?.parentRecord2 || '',
   ];
   return {
     taskId: t.id,
-    turnId: r.id,
+    turnId: origin.id,
+    ...(projection?.recovery
+      ? { resultTurnId: r.id, recovery: projection.recovery }
+      : {}),
     title: t.projectName ? `${t.projectName} · ${t.title}` : t.title,
     values,
     source,
