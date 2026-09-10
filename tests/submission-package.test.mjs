@@ -260,6 +260,43 @@ function retain(f, archive) {
   ].map((file) => [file, readFileSync(file)]);
 }
 
+test('SQLite engineering files stay byte-identical and are rescanned when verifying the package', (t) => {
+  const f = fixture(t),
+    file = path.join(f.workDir, 'fixture.sqlite3');
+  execFileSync('python3', [
+    '-c',
+    "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('CREATE TABLE notes(value TEXT)'); c.execute('INSERT INTO notes VALUES(?)',('fixture-public-note-917',)); c.commit(); c.close()",
+    file,
+  ]);
+  const original = readFileSync(file),
+    archive = f.makeArchive();
+  const submission = f.makeSubmission(archive);
+  assert.equal(submission.status, 'passed');
+  verifySubmissionPackage(submission, {
+    dir: f.dir,
+    sourceArchive: archive,
+    knownSecrets: [f.secret],
+  });
+  const manifest = JSON.parse(readFileSync(submission.manifestPath));
+  const row = manifest.files.find((r) => r.textFormat === 'sqlite');
+  assert(row);
+  assert.equal(row.originalSha256, row.submissionSha256);
+  assert.deepEqual(
+    readFileSync(path.join(path.dirname(submission.manifestPath), row.name)),
+    original,
+  );
+  assert.deepEqual(readFileSync(file), original);
+  assert.throws(
+    () =>
+      verifySubmissionPackage(submission, {
+        dir: f.dir,
+        sourceArchive: archive,
+        knownSecrets: [f.secret, 'fixture-public-note-917'],
+      }),
+    /数据库内容/,
+  );
+});
+
 test('internal archive captures full native directory and immutable retries retain the earlier archive', (t) => {
   const f = fixture(t),
     archive = f.makeArchive();

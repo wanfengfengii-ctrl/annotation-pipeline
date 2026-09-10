@@ -15,6 +15,7 @@ import {
   sensitiveContentVersion,
 } from '../lib/sensitive-content.mjs';
 import { verifyTerminalFinalization } from './terminal-finalization.mjs';
+import { isSqlite, scanSqliteContent } from './sqlite-content-scan.mjs';
 
 export const submissionPackageVersion = '2026-09-10.submission2';
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -454,22 +455,29 @@ export function createSubmissionPackage({
     let bytes = input.bytes,
       findings = [],
       scanStatus = 'passed',
+      sqliteScan,
       reason;
     try {
-      if (binaryExtension.test(originalName)) throw Error('unsupported');
-      const text = decode.decode(input.bytes);
-      if (text.includes('\u0000')) throw Error('unsupported');
-      validStructuredText(originalName, text);
-      const sanitized = sanitizePackageText(originalName, text, knownSecrets);
-      validStructuredText(originalName, sanitized.text);
-      findings = sanitized.findings;
-      bytes = Buffer.from(sanitized.text, 'utf8');
-      if (
-        sanitizePackageText(originalName, sanitized.text, knownSecrets).findings
-          .length
-      ) {
-        scanStatus = 'needs_review';
-        reason = 'residual-sensitive-content';
+      if (isSqlite(input.bytes)) {
+        sqliteScan = scanSqliteContent(input.bytes, { knownSecrets });
+        scanStatus = sqliteScan.status;
+        reason = sqliteScan.reason;
+      } else {
+        if (binaryExtension.test(originalName)) throw Error('unsupported');
+        const text = decode.decode(input.bytes);
+        if (text.includes('\u0000')) throw Error('unsupported');
+        validStructuredText(originalName, text);
+        const sanitized = sanitizePackageText(originalName, text, knownSecrets);
+        validStructuredText(originalName, sanitized.text);
+        findings = sanitized.findings;
+        bytes = Buffer.from(sanitized.text, 'utf8');
+        if (
+          sanitizePackageText(originalName, sanitized.text, knownSecrets)
+            .findings.length
+        ) {
+          scanStatus = 'needs_review';
+          reason = 'residual-sensitive-content';
+        }
       }
     } catch {
       scanStatus = 'needs_review';
@@ -496,11 +504,14 @@ export function createSubmissionPackage({
       originalBytes: input.bytes.length,
       submissionSha256: hash(bytes),
       submissionBytes: bytes.length,
-      textFormat: /\.jsonl$/i.test(originalName)
-        ? 'jsonl'
-        : /\.json$/i.test(originalName)
-          ? 'json'
-          : 'text',
+      ...(sqliteScan ? { sqliteScan } : {}),
+      textFormat: sqliteScan
+        ? 'sqlite'
+        : /\.jsonl$/i.test(originalName)
+          ? 'jsonl'
+          : /\.json$/i.test(originalName)
+            ? 'json'
+            : 'text',
       changed: !bytes.equals(input.bytes) || name !== originalName,
       redactions: redactionCounts([...findings, ...nameFindings]),
       scanStatus,
@@ -807,6 +818,18 @@ export function verifySubmissionPackage(
     );
     if (hash(readFileSync(staged)) !== file.submissionSha256)
       throw Error('提交副本文件已变化');
+    if (file.textFormat === 'sqlite') {
+      const scan = scanSqliteContent(bytes, { knownSecrets });
+      if (
+        scan.status !== 'passed' ||
+        !isDeepStrictEqual(scan, file.sqliteScan) ||
+        file.originalSha256 !== file.submissionSha256 ||
+        file.originalBytes !== file.submissionBytes ||
+        sanitizeSensitiveText(file.name, { knownSecrets }).findings.length
+      )
+        throw Error('提交 ZIP 数据库内容尚未验清');
+      continue;
+    }
     const text = decode.decode(bytes),
       formatName = 'content.' + file.textFormat;
     if (!['json', 'jsonl', 'text'].includes(file.textFormat))

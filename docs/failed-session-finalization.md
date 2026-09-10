@@ -15,3 +15,5 @@ node scripts/finalize-failed-session.mjs --task TASK_UUID --turn TURN_UUID
 收尾证据写入 `.runner/failed-session-finalization/`，随后由已有最终提交队列生成已评分题目的提交元数据。无评分归档的失败轮不会伪造归档或进入合格数据。正在执行、结束状态不明、权限异常、有工具调用或身份不一致时继续保留容器。
 
 验证：`node --test tests/failed-session-finalization.test.mjs tests/terminal-final-export.test.mjs tests/final-submissions.test.mjs tests/container.test.mjs`。
+
+工程包中的 SQLite 文件通过独立只读扫描处理：仅支持有界的 UTF-8 普通表，检查完整性、列与行值、配置键值及原始页中的常见敏感内容；原文件字节不变。虚拟表、生成列、未知二进制、超限或敏感命中继续待审。生成包和验包均重新扫描，不靠文件扩展名放行。旧待审包保留，新核验包使用独立文件和回执后再回填元数据。
