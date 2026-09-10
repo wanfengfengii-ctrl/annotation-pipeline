@@ -28,13 +28,10 @@ export class FinalizationQueue {
       )
         continue;
       const state = this.runtime.load(task.id);
-      if (
-        !state ||
-        state.pending ||
-        (state.status !== 'removed' &&
-          state.terminal?.terminalProtocolVersion !== terminalProtocolVersion)
-      )
-        continue;
+      const legacy =
+        state?.status !== 'removed' &&
+        state?.terminal?.terminalProtocolVersion !== terminalProtocolVersion;
+      if (!state || state.pending || (legacy && !plan.failedTurnId)) continue;
       // Defer execution to the next microtask so the task lock is visible first.
       const promise = Promise.resolve()
         .then(async () => {
@@ -46,7 +43,8 @@ export class FinalizationQueue {
               throw Error('会话收尾条件已变化，保留容器');
           };
           await assertCurrent();
-          await this.runtime.close(task.id, {
+          const operation = legacy ? 'parkCompleted' : 'close';
+          await this.runtime[operation](task.id, {
             failedTurnId: plan.failedTurnId,
             beforeExit: assertCurrent,
           });

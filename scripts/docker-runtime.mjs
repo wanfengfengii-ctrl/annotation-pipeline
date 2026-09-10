@@ -312,23 +312,31 @@ export function assertNativeSessionIdle(state, files, { failedTurnId } = {}) {
       Object.entries(state.results || {}).find(
         ([, r]) => r.promptId === user.uuid && r.sessionId === user.sessionId,
       ) || [];
-    // Explicit recovery may archive a completed provider error without turning
-    // it into a successful result. Normal scheduling never opts into this path.
+    // A completed provider error can retain earlier resolved tools. It must
+    // remain failed, with no outstanding tool or input, before terminal exit.
     const blocks = after.flatMap((e) =>
       Array.isArray(e.message?.content) ? e.message.content : [],
     );
+    const toolsReturned = blocks
+      .filter((b) => b.type === 'tool_use')
+      .every(
+        (b, index, tools) =>
+          typeof b.id === 'string' &&
+          b.id.length > 0 &&
+          tools.findIndex((other) => other.id === b.id) === index &&
+          blocks.some(
+            (r, position) =>
+              position > blocks.indexOf(b) &&
+              r.type === 'tool_result' &&
+              r.tool_use_id === b.id,
+          ),
+      );
     const completedQualityFailure =
       failedTurnId === turnId &&
       typeof failedTurnId === 'string' &&
       result?.success === false &&
       result.permissionAudit?.passed === false &&
-      blocks
-        .filter((b) => b.type === 'tool_use')
-        .every((b) =>
-          blocks.some(
-            (r) => r.type === 'tool_result' && r.tool_use_id === b.id,
-          ),
-        );
+      toolsReturned;
     const confirmedFailure =
       completedQualityFailure ||
       (failedTurnId === turnId &&
@@ -338,13 +346,12 @@ export function assertNativeSessionIdle(state, files, { failedTurnId } = {}) {
         after.some(
           (e) => e.isApiErrorMessage === true && e.error === 'server_error',
         ) &&
-        !after.some((e) =>
-          Array.isArray(e.message?.content)
-            ? e.message.content.some((c) =>
-                ['tool_use', 'tool_result'].includes(c.type),
-              )
-            : false,
-        ));
+        toolsReturned &&
+        blocks
+          .filter((b) => b.type === 'tool_result')
+          .every((b) =>
+            blocks.some((u) => u.type === 'tool_use' && u.id === b.tool_use_id),
+          ));
     if (
       (!result?.success && !confirmedFailure) ||
       !result.traceExport?.verified ||
@@ -478,7 +485,15 @@ export class DockerRuntime {
   }
   residents() {
     return this.records()
-      .filter((s) => s.status !== 'removed')
+      .filter((s) => {
+        if (s.status === 'removed') return false;
+        if (!['stopped', 'exported'].includes(s.status)) return true;
+        try {
+          return this.owned(s).State.Running;
+        } catch {
+          return true;
+        } // Unknown ownership still reserves capacity.
+      })
       .map((s) => s.taskId);
   }
   owned(s) {
@@ -1201,6 +1216,59 @@ export class DockerRuntime {
     };
     this.save(s);
     await this.onFinalized(s);
+  }
+  // A legacy bridge cannot acquire new export capabilities in place. Release
+  // memory through its original Terminal while retaining the entire container
+  // on disk; this is never a final export or permission to upload.
+  async parkCompleted(taskId, { failedTurnId, beforeExit } = {}) {
+    const s = this.load(taskId);
+    if (
+      !s ||
+      s.terminal?.terminalProtocolVersion === terminalProtocolVersion ||
+      !failedTurnId ||
+      !s.results?.[failedTurnId]
+    )
+      throw Error('仅允许保留已确认结束的旧协议失败会话');
+    const assertIdle = async () => {
+      const current = this.load(taskId);
+      if (
+        current?.containerId !== s.containerId ||
+        current?.questionId !== s.questionId ||
+        current?.sessionId !== s.sessionId ||
+        current?.terminal?.runId !== s.terminal?.runId ||
+        JSON.stringify(current?.results) !== JSON.stringify(s.results)
+      )
+        throw Error('旧会话身份或结果已变化，保留原交互');
+      const idle = assertNativeSessionIdle(current, this.native(current), {
+        failedTurnId,
+      });
+      if (!idle.completedPromptIds.includes(s.results[failedTurnId].promptId))
+        throw Error('失败轮已不是原生末轮');
+      if (beforeExit) await beforeExit();
+    };
+    if (this.owned(s).State.Running) {
+      await assertIdle();
+      await this.attach(s);
+      s.terminalExit = await exitCompletedTerminal({
+        readOutput: (cursor) => terminalOutput(s.terminal, cursor),
+        write: (data) => this.live.get(taskId).child.stdin.write(data),
+        isRunning: () => this.owned(s).State.Running,
+        assertIdle,
+      });
+    }
+    if (this.owned(s).State.Running)
+      throw Error('旧容器仍在运行，不能释放资源记账');
+    s.status = 'stopped';
+    s.retention = {
+      reason: 'completed-legacy-failure',
+      parkedAt: new Date().toISOString(),
+      containerPreserved: true,
+      finalExport: false,
+    };
+    delete s.error;
+    await this.publish(s);
+    this.live.get(taskId)?.child.kill('SIGTERM');
+    this.live.delete(taskId);
   }
   async close(taskId, { failedTurnId, beforeExit } = {}) {
     const s = this.load(taskId);

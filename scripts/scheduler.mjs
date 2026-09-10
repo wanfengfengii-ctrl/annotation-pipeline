@@ -238,12 +238,12 @@ export function heavyMemoryBudget(engine, profile = resourceProfile()) {
         (256 * 2 ** 20),
     ) *
     (256 * 2 ** 20);
-  return bytes >= 2 ** 30 ? bytes : 0;
+  return bytes >= 768 * 2 ** 20 ? bytes : 0;
 }
 export function canStartHeavy(engine, profile = resourceProfile()) {
   return heavyMemoryBudget(engine, profile) > 0;
 }
-// Reserve at least 1 GiB for one verifier before admitting new project containers.
+// Reserve 768 MiB for one verifier in addition to the profile's VM reserve.
 export function projectCapacityWithVerifier(
   engine,
   profile = resourceProfile(),
@@ -261,7 +261,7 @@ export function projectCapacityWithVerifier(
       (engine.memoryBytes -
         sample.externalWorkingSetBytes -
         profile.dockerReserveBytes -
-        2 ** 30) /
+        768 * 2 ** 20) /
         profile.memoryBytes,
     ),
   );

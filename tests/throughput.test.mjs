@@ -108,6 +108,34 @@ test('stage errors release leases and stop cancels queued work', async () => {
   b.update(1);
   await assert.rejects(pending, /停止/);
 });
+test('existing-container environment preparation runs without reserving a new verifier container', async () => {
+  const b = new StageBudget({ capacity: 3 });
+  b.update(3, { heavyAllowed: false });
+  let verified = false;
+  const waiting = b.run('heavy', 'verify', 'runtime-running', async () => {
+    verified = true;
+  });
+  await b.run('heavy', 'prepare', 'environment-ready', async () => {});
+  assert.equal(verified, false);
+  b.update(3, { heavyAllowed: true });
+  await waiting;
+  assert.equal(verified, true);
+});
+test('legacy failed sessions park without claiming final export and stopped containers consume no resident slot', async () => {
+  const task = { id: 'legacy', finalization: { failedTurnId: 'turn' } },
+    called = [];
+  const q = new FinalizationQueue({
+    runtime: {
+      load: () => ({ status: 'running', terminal: {} }),
+      parkCompleted: async () => called.push('park'),
+      close: async () => called.push('close'),
+    },
+    refresh: async () => [task],
+  });
+  q.enqueue([task], new Set());
+  await Promise.all(q.active.values());
+  assert.deepEqual(called, ['park']);
+});
 test('attempt timing preserves previous attempts and clock corrections never produce negative duration', async (t) => {
   const dir = temp(t);
   let now = 200;
@@ -250,6 +278,29 @@ test('lightweight admission reserves verifier memory and never grants it under p
   engine.resourceSample.memAvailableBytes = 4 * GiB;
   engine.resourceSample.pressure = { someAvg10: 11 };
   assert.equal(heavyMemoryBudget(engine, profile), 0);
+});
+test('actual Docker VM budget can admit three light projects and a 768 MiB verifier without overcommit', () => {
+  const profile = resourceProfile('lightweight');
+  const e = {
+    ready: true,
+    memoryBytes: 8217059328,
+    resourceSample: {
+      ok: true,
+      externalWorkingSetBytes: 1267780812.8,
+      ownedContainers: Array.from({ length: 3 }, () => ({
+        memoryLimitBytes: profile.memoryBytes,
+      })),
+    },
+  };
+  assert.equal(projectCapacityWithVerifier(e, profile), 3);
+  assert.equal(heavyMemoryBudget(e, profile), 768 * 2 ** 20);
+  assert.ok(
+    3 * profile.memoryBytes +
+      e.resourceSample.externalWorkingSetBytes +
+      profile.dockerReserveBytes +
+      heavyMemoryBudget(e, profile) <=
+      e.memoryBytes,
+  );
 });
 test('pilot opens only after a real successful chain with original terminal and clean permissions', (t) => {
   const gate = new PilotGate(temp(t));

@@ -39,7 +39,9 @@ export class StageBudget {
         (r) => r.kind === item.kind,
       ).length;
       if (
-        (item.kind === 'heavy' && !this.heavyAllowed) ||
+        (item.kind === 'heavy' &&
+          item.stage !== 'environment-ready' &&
+          !this.heavyAllowed) ||
         this.running.size >= this.capacity ||
         same >= (item.kind === 'claude' ? 3 : 1)
       )

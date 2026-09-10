@@ -78,6 +78,45 @@ test('explicit completed error may finalize; default still holds and failure rem
   assert.deepEqual(f.state, before);
   assert.equal(f.result.success, false);
 });
+test('completed server error with resolved tool calls is safe to end but unreturned or future results are held', () => {
+  const f = fixture();
+  f.events[1].message.content = [
+    { type: 'tool_use', id: 'tool', name: 'Read' },
+  ];
+  f.events.splice(2, 0, {
+    type: 'user',
+    message: {
+      content: [
+        { type: 'tool_result', tool_use_id: 'tool', content: 'actual file' },
+      ],
+    },
+  });
+  const before = JSON.stringify(f.state);
+  assert.equal(
+    assertNativeSessionIdle(f.state, f.files(), { failedTurnId: 'failed' })
+      .completedPromptIds[0],
+    'prompt',
+  );
+  assert.equal(JSON.stringify(f.state), before);
+  f.events[2].message.content[0].tool_use_id = 'unknown';
+  assert.throws(() =>
+    assertNativeSessionIdle(f.state, f.files(), { failedTurnId: 'failed' }),
+  );
+});
+test('stopped retained containers are excluded only when Docker confirms they are stopped', () => {
+  const runtime = Object.create(DockerRuntime.prototype);
+  runtime.records = () => [
+    { taskId: 'live', status: 'running' },
+    { taskId: 'stopped', status: 'stopped' },
+    { taskId: 'unknown', status: 'stopped' },
+    { taskId: 'gone', status: 'removed' },
+  ];
+  runtime.owned = (s) => {
+    if (s.taskId === 'unknown') throw Error('unavailable');
+    return { State: { Running: false } };
+  };
+  assert.deepEqual(runtime.residents(), ['live', 'unknown']);
+});
 
 test('completed permission failure can archive unchanged only after every tool has returned', () => {
   const f = fixture();
