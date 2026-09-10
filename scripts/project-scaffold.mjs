@@ -8,7 +8,45 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 const hash = (x) => createHash('sha256').update(x).digest('hex');
+
+// Compile in memory without importing or executing generated project code.
+// Invalid fixtures must never become the frozen initial environment.
+export function validateScaffoldSyntax(files, { containerId } = {}) {
+  const python = files.filter((file) => file.path.endsWith('.py'));
+  if (!python.length) return;
+  if (containerId && !/^[a-f0-9]{64}$/.test(containerId))
+    throw Error('骨架语法检查的容器标识无效');
+  let issues;
+  try {
+    issues = JSON.parse(
+      execFileSync(
+        containerId ? 'docker' : 'python3',
+        [
+          ...(containerId ? ['exec', '-i', containerId, 'python3'] : []),
+          '-I',
+          '-c',
+          'import json,sys\nissues=[]\nfor f in json.load(sys.stdin):\n try: compile(f["content"], f["path"], "exec", dont_inherit=True)\n except (SyntaxError, ValueError) as e: issues.append({"path":f["path"],"line":getattr(e,"lineno",None),"message":str(getattr(e,"msg",e))})\nprint(json.dumps(issues))',
+        ],
+        {
+          input: JSON.stringify(python),
+          encoding: 'utf8',
+          timeout: 5000,
+          maxBuffer: 256 * 1024,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        },
+      ),
+    );
+  } catch {
+    throw Error('无法完成 Python 骨架语法检查，请确认目标环境 python3 可用');
+  }
+  if (issues.length)
+    throw Error(
+      '骨架 Python 语法错误：' +
+        issues.map((e) => `${e.path}:${e.line || '?'} ${e.message}`).join('；'),
+    );
+}
 export function validateScaffold(value) {
   if (
     ['stack', 'summary', 'startup'].some(
@@ -61,8 +99,10 @@ export function installScaffold({
   directory,
   evidenceDir,
   tracePath,
+  pythonContainerId,
 }) {
   validateScaffold(value);
+  validateScaffoldSyntax(value.files, { containerId: pythonContainerId });
   if (!/^projects\/p-[a-f0-9-]{36}$/.test(directory))
     throw Error('骨架项目目录无效');
   const root = path.join(workDir, directory);

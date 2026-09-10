@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -8,6 +14,7 @@ import { execFileSync } from 'node:child_process';
 import { createEvidenceArchive } from '../scripts/evidence.mjs';
 import {
   validateScaffold,
+  validateScaffoldSyntax,
   installScaffold,
 } from '../scripts/project-scaffold.mjs';
 import { terminalIssues } from '../lib/terminal-policy.mjs';
@@ -122,4 +129,41 @@ test('Delivery requires a real Mac Terminal identity, not a background PTY label
       },
     }).length,
   );
+});
+
+test('Reject malformed Python fixtures before freezing or writing a scaffold', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'scaffold-invalid-python-'));
+  const args = {
+    value: {
+      stack: 'Python',
+      summary: '测试骨架',
+      startup: 'pytest',
+      files: [
+        {
+          path: 'tests/conftest.py',
+          content: 'import pytest\n@pytest.fixture\n def_placeholder = None\n',
+          executable: false,
+        },
+      ],
+    },
+    workDir: path.join(root, 'workspace'),
+    directory: 'projects/p-' + randomUUID(),
+    evidenceDir: path.join(root, 'snapshot'),
+    tracePath: '/fixture/scaffold.jsonl',
+  };
+  assert.throws(() => installScaffold(args), /tests\/conftest.py:3/);
+  assert.equal(existsSync(args.workDir), false);
+  assert.equal(existsSync(path.join(args.evidenceDir, 'manifest.json')), false);
+});
+
+test('Python syntax validation never executes generated code or imports dependencies', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'scaffold-compile-only-'));
+  const sentinel = path.join(root, 'must-not-exist');
+  validateScaffoldSyntax([
+    {
+      path: 'app.py',
+      content: `open(${JSON.stringify(sentinel)}, 'w').write('executed')\nimport dependency_that_is_not_installed\ndef app():\n    return None\n`,
+    },
+  ]);
+  assert.equal(existsSync(sentinel), false);
 });

@@ -601,6 +601,7 @@ async function execute({ task, turn }) {
           directory: task.projectSeries.directory,
           evidenceDir: path.join(dir, 'scaffold'),
           tracePath: scaffold.tracePath,
+          pythonContainerId: s.containerId,
         });
         await containers.publish(s);
         task.container = containers.public(s);
