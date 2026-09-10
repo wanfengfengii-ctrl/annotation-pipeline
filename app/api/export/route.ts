@@ -1,7 +1,12 @@
 import { selectRecords } from '@/db/records';
 import { recordFilter, type RecordRow } from '@/lib/record-fields';
 import { xlsx, recordsCsv } from '@/lib/xlsx';
-import { exportScope, recordSelection } from '@/lib/record-selection';
+import {
+  exportScope,
+  recordSelection,
+  exportPurpose,
+  canExportRecord,
+} from '@/lib/record-selection';
 import { terminalIssues } from '@/lib/terminal-policy.mjs';
 import { permissionIssues } from '@/lib/permission-audit.mjs';
 import { submissionIssues } from '@/lib/submission-policy.mjs';
@@ -57,12 +62,14 @@ export async function POST(req: Request) {
     if (!/^[a-f0-9-]{36}$/.test(id)) throw Error('导出请求标识无效');
     const filter = recordFilter((b.filter || {}) as Record<string, unknown>),
       format = b.format === 'csv' ? 'csv' : 'xlsx',
+      purpose = exportPurpose(b.purpose),
       scope = exportScope(b.scope),
       selected = scope === 'selected' ? recordSelection(b.selected) : undefined;
     const signature = JSON.stringify({
       filter,
       format,
       scope,
+      ...(purpose === 'review' ? { purpose } : {}),
       ...(selected ? { selected } : {}),
     });
     const existing = await db()
@@ -72,14 +79,19 @@ export async function POST(req: Request) {
     if (existing && existing.filter !== signature)
       throw Error('同一导出请求不能更改筛选条件');
     if (!existing) {
-      const rows = (await selectRecords(filter, scope, selected)).rows.filter(
-        (r) => r.eligible,
-      );
+      const rows = (await selectRecords(filter, scope, selected)).rows
+        .filter((r) => canExportRecord(r, purpose))
+        .map((r) => ({ ...r, exportPurpose: purpose }));
       if (selected && rows.length !== selected.length)
         throw Error(
-          '勾选记录已变化、未通过校验或不在当前筛选范围内，请刷新后重新勾选；本次未导出',
+          '勾选记录已变化、不满足当前导出用途或不在筛选范围内，请刷新后重新勾选；本次未导出',
         );
-      if (!rows.length) throw Error('当前范围没有通过校验的可导出轮次');
+      if (!rows.length)
+        throw Error(
+          purpose === 'review'
+            ? '当前范围没有评分完整的复核记录'
+            : '当前范围没有通过校验的可导出轮次',
+        );
       // Build before recording: an invalid Excel field never increments the count.
       const safe = sanitizeExportRows(rows, downloadOptions());
       if (format === 'xlsx') xlsx(safe.rows, id, safe.safety);
@@ -138,6 +150,10 @@ export async function POST(req: Request) {
       const task = tasks.get(row.taskId),
         turn = task?.turns.find((r) => r.id === row.turnId);
       if (!task || !turn) throw Error('该批次的原始轮次已缺失，不能重新导出');
+      if (purpose === 'review') {
+        if (turn.excluded) throw Error('该轮已排除，不能重新导出复核副本');
+        continue;
+      }
       const submissionErrors = submissionIssues(task, turn);
       if (submissionErrors.length) throw Error(submissionErrors.join('；'));
       if (
@@ -164,10 +180,11 @@ export async function POST(req: Request) {
             format === 'xlsx'
               ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
               : 'text/csv; charset=utf-8',
-          'Content-Disposition': `attachment; filename="annotation-${id}.safe.${format}"`,
+          'Content-Disposition': `attachment; filename="annotation-${purpose === 'review' ? 'review-' : ''}${id}.safe.${format}"`,
           'Cache-Control': 'no-store',
           'X-Export-Count': String(rows.length),
           'X-Export-Batch': id,
+          'X-Export-Purpose': purpose,
           ...exportSafetyHeaders(safe.safety),
         },
       },

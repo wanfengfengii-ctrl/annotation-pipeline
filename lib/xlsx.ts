@@ -31,8 +31,16 @@ function headersFor(rows: RecordRow[]) {
     throw Error('导出字段结构不一致，请重新生成批次');
   return numbered ? ['序号', ...recordHeaders] : recordHeaders;
 }
-const exportValues = (r: RecordRow, i: number) =>
-  r.formatVersion === 2 ? [i + 1, ...r.values] : r.values;
+const exportValues = (r: RecordRow, i: number) => {
+  const values = [...r.values];
+  if (r.exportPurpose === 'review') {
+    const headers = values.length === 26 ? oldHeaders : recordHeaders;
+    const quality = headers.indexOf('质检结果');
+    values[quality] =
+      `复核副本（非正式交付） · ${values[quality] || '待核验'}${r.exportIssues?.length ? '；正式交付待处理：' + r.exportIssues.join('；') : ''}`;
+  }
+  return r.formatVersion === 2 ? [i + 1, ...values] : values;
+};
 function excelDate(value: unknown) {
   if (
     typeof value !== 'string' ||
@@ -94,6 +102,8 @@ export function xlsx(
       '原始操作系统',
       '原始语言/框架',
       '初始代码快照说明',
+      '导出用途',
+      '正式交付待处理项',
     ],
     ...rows.map((r) => [
       batchId,
@@ -110,6 +120,8 @@ export function xlsx(
       r.originalFields?.os || '',
       r.originalFields?.stack || '',
       r.originalFields?.initialCodeNote || '',
+      r.exportPurpose === 'review' ? '复核副本（非正式交付）' : '正式交付',
+      (r.exportIssues || []).join('；'),
     ]),
   ];
   const files: Record<string, Uint8Array> = {};
@@ -124,7 +136,7 @@ export function xlsx(
   );
   add(
     'xl/workbook.xml',
-    '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="标注数据" sheetId="1" r:id="rId1"/><sheet name="来源与导出记录" sheetId="2" r:id="rId2"/></sheets></workbook>',
+    `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${rows.some((r) => r.exportPurpose === 'review') ? '标注数据（复核副本）' : '标注数据'}" sheetId="1" r:id="rId1"/><sheet name="来源与导出记录" sheetId="2" r:id="rId2"/></sheets></workbook>`,
   );
   add(
     'xl/_rels/workbook.xml.rels',

@@ -1,5 +1,18 @@
 export type RecordIdentity = { taskId: string; turnId: string };
 export type ExportScope = 'page' | 'filtered' | 'selected';
+export type ExportPurpose = 'review' | 'delivery';
+export function exportPurpose(value: unknown): ExportPurpose {
+  // Existing API callers retain the strict delivery gate unless they opt in.
+  if (value === undefined || value === 'delivery') return 'delivery';
+  if (value === 'review') return 'review';
+  throw Error('导出用途无效');
+}
+export function canExportRecord(
+  row: { eligible: boolean; reviewEligible?: boolean },
+  purpose: ExportPurpose,
+) {
+  return purpose === 'review' ? row.reviewEligible === true : row.eligible;
+}
 export const recordKey = (r: RecordIdentity) => `${r.taskId}:${r.turnId}`;
 export function exportScope(value: unknown): ExportScope {
   if (value === undefined) return 'filtered';

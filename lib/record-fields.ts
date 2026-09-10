@@ -47,6 +47,10 @@ export type RecordRow = {
   exportCount: number;
   lastExportAt: string | null;
   eligible: boolean;
+  reviewEligible?: boolean;
+  exportIssues?: string[];
+  reviewIssues?: string[];
+  exportPurpose?: 'review' | 'delivery';
   provenance: string;
   formatVersion?: 2;
   soloUpload?: {
@@ -126,6 +130,32 @@ export function recordRow(
     submitted = human ? h?.receipt : r.receipt;
   const initialCode = t.initialCodeSnapshots?.[r.questionRootId || r.id];
   const initialURL = initialCodeURL(t, r);
+  const exportIssues = [
+    ...(!snapshotLink(initialURL)
+      ? ['缺少本题初始代码的 GitHub Commit 快照']
+      : []),
+    ...submissionIssues(t, r),
+    ...(human && h?.state !== 'approved' ? ['人工二次确认尚未通过'] : []),
+    ...issues(t, human && h ? { ...r, review: humanAsReview(h) } : r),
+  ];
+  const reviewIssues = [
+    ...(r.excluded ? ['该轮已排除'] : []),
+    ...(!['review', 'submitted', 'failed'].includes(r.status)
+      ? ['该轮仍在执行中']
+      : []),
+    ...(!review ||
+    !Array.from(
+      { length: 5 },
+      (_, i) =>
+        Number.isInteger(review.scores?.[i]) &&
+        review.scores[i] >= 1 &&
+        review.scores[i] <= 5 &&
+        review.descriptions?.[i]?.trim(),
+    ).every(Boolean)
+      ? ['五维评分和评价尚未完整生成']
+      : []),
+    ...(human && !h ? ['尚无人工复核记录'] : []),
+  ];
   const quality = human
     ? h?.state === 'approved'
       ? '人工复核通过（已有 AI 评分）'
@@ -200,14 +230,10 @@ export function recordRow(
     lastExportAt,
     formatVersion: 2,
     originalFields,
-    eligible:
-      snapshotLink(initialURL) &&
-      !r.excluded &&
-      !submissionIssues(t, r).length &&
-      (human
-        ? h?.state === 'approved' &&
-          !issues(t, { ...r, review: humanAsReview(h) }).length
-        : !issues(t, r).length),
+    eligible: !exportIssues.length,
+    reviewEligible: !reviewIssues.length,
+    exportIssues: [...new Set(exportIssues)],
+    reviewIssues,
     provenance: human
       ? 'AI 评分 / 人工二次确认，非纯人工标注'
       : 'AI / Codex CLI，未经人工确认',

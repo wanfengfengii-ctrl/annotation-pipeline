@@ -5,8 +5,10 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { RecordLongText } from './record-long-text';
 import {
   recordKey,
+  canExportRecord,
   type RecordIdentity,
   type ExportScope,
+  type ExportPurpose,
 } from '@/lib/record-selection';
 import { categories } from '@/lib/pipeline';
 import { soloStatusLabels } from '@/lib/solo-upload-status.mjs';
@@ -53,8 +55,9 @@ export function RecordsTable({
     [refresh, setRefresh] = useState(0),
     [format, setFormat] = useState('xlsx');
   const [selected, setSelected] = useState<Record<string, RecordIdentity>>({});
+  const [purpose, setPurpose] = useState<ExportPurpose>('review');
   const selectedCount = Object.keys(selected).length;
-  const pageRows = data?.rows.filter((r) => r.eligible) || [];
+  const pageRows = data?.rows.filter((r) => canExportRecord(r, purpose)) || [];
   const checkedOnPage = pageRows.filter((r) => selected[recordKey(r)]).length;
   const pending = useRef<{ signature: string; id: string } | null>(null);
   useEffect(() => {
@@ -79,7 +82,8 @@ export function RecordsTable({
         setData(d);
         setSelected((current) => {
           const next = { ...current };
-          for (const r of d.rows) if (!r.eligible) delete next[recordKey(r)];
+          for (const r of d.rows)
+            if (!canExportRecord(r, purpose)) delete next[recordKey(r)];
           return next;
         });
       })
@@ -93,7 +97,7 @@ export function RecordsTable({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [filter, refresh]);
+  }, [filter, refresh, purpose]);
   const update = (patch: Partial<RecordFilter>, resetSelection = true) => {
     setLoading(true);
     if (resetSelection) setSelected({});
@@ -119,6 +123,7 @@ export function RecordsTable({
         filter,
         scope,
         format,
+        purpose,
         ...(scope === 'selected' ? { selected: Object.values(selected) } : {}),
       },
       signature = JSON.stringify(selection);
@@ -138,13 +143,13 @@ export function RecordsTable({
         url = URL.createObjectURL(blob),
         a = document.createElement('a');
       a.href = url;
-      a.download = `annotation-${r.headers.get('X-Export-Batch')}.${format}`;
+      a.download = `annotation-${purpose === 'review' ? 'review-' : ''}${r.headers.get('X-Export-Batch')}.${format}`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
       pending.current = null;
       setSelected({});
       setMessage(
-        `已生成 ${r.headers.get('X-Export-Count')} 条记录的 ${format.toUpperCase()}，导出次数已记录。`,
+        `已生成 ${r.headers.get('X-Export-Count')} 条记录的 ${format.toUpperCase()}${purpose === 'review' ? ' 复核副本' : ''}，导出次数已记录。`,
       );
       setRefresh((x) => x + 1);
     } catch (e) {
@@ -263,6 +268,20 @@ export function RecordsTable({
       </fieldset>
       <div className="record-toolbar">
         <label className="field">
+          导出用途
+          <select
+            value={purpose}
+            disabled={busy}
+            onChange={(e) => {
+              setSelected({});
+              setPurpose(e.target.value as ExportPurpose);
+            }}
+          >
+            <option value="review">复核副本</option>
+            <option value="delivery">正式交付</option>
+          </select>
+        </label>
+        <label className="field">
           导出格式
           <select
             value={format}
@@ -288,7 +307,7 @@ export function RecordsTable({
         </Button>
         <Button
           variant="outline"
-          disabled={busy || loading || !data?.rows.some((r) => r.eligible)}
+          disabled={busy || loading || !pageRows.length}
           onClick={() => download('page')}
         >
           导出本页
@@ -301,8 +320,10 @@ export function RecordsTable({
           导出筛选结果
         </Button>
         <span className="sub">
-          仅导出通过校验的轮次；每批最多 1000
-          条。次数按每条轮次成功生成的表格累计。
+          {purpose === 'review'
+            ? '评分完整即可导出复核副本，文件保留未通过的交付检查；不改变正式上传资格。'
+            : '正式交付须完成最终轨迹归档和全部校验。'}
+          每批最多 1000 条，次数按成功生成的表格累计。
         </span>
       </div>
       {error && (
@@ -317,7 +338,9 @@ export function RecordsTable({
         </p>
       )}
       <p className="record-status sub">
-        表头复选框选择本页可导出记录，翻页保留勾选，修改筛选条件会清空勾选。左右滚动可查看全部字段。
+        本页可{purpose === 'review' ? '导出复核副本' : '正式交付'}{' '}
+        {pageRows.length} / {data?.rows.length || 0} 条。
+        表头选择本页记录，翻页保留勾选，修改筛选或导出用途会清空勾选。
       </p>
       <div
         className="record-scroll"
@@ -364,7 +387,7 @@ export function RecordsTable({
                     <Checkbox
                       aria-label={`选择第 ${(data.page - 1) * data.pageSize + index + 1} 条记录`}
                       checked={!!selected[recordKey(row)]}
-                      disabled={busy || !row.eligible}
+                      disabled={busy || !canExportRecord(row, purpose)}
                       onCheckedChange={(checked) => toggle([row], checked)}
                     />
                   </td>
@@ -391,13 +414,40 @@ export function RecordsTable({
                         ) : (
                           '—'
                         )}
+                        {i === 0 && !row.eligible && (
+                          <details className="sub" style={{ marginTop: 8 }}>
+                            <summary>正式交付待校验 · 查看原因</summary>
+                            <ul>
+                              {(row.exportIssues?.length
+                                ? row.exportIssues
+                                : ['尚未完成交付校验']
+                              ).map((issue) => (
+                                <li key={issue}>{issue}</li>
+                              ))}
+                            </ul>
+                          </details>
+                        )}
+                        {i === 0 && !canExportRecord(row, purpose) && (
+                          <p className="sub">
+                            {purpose === 'review'
+                              ? row.reviewIssues?.join('；') ||
+                                '评分尚未完整生成'
+                              : '完成交付校验后可选择'}
+                          </p>
+                        )}
                       </td>
                       {i === 0 && <SoloUploadCell row={row} />}
                     </Fragment>
                   ))}
                   <td>
                     <span className="tag">{row.exportCount} 次</span>
-                    <p className="sub">{row.eligible ? '可导出' : '待校验'}</p>
+                    <p className="sub">
+                      {row.eligible
+                        ? '可正式交付'
+                        : row.reviewEligible
+                          ? '可导出复核副本'
+                          : '评分待补全'}
+                    </p>
                   </td>
                   <td>
                     <Button variant="ghost" onClick={() => onOpen(row.taskId)}>
