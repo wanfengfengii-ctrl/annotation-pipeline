@@ -149,9 +149,23 @@ if (name === 'docker') {
             {
               Id: 'sha256:' + 'a'.repeat(64),
               Architecture: 'arm64',
-              RepoDigests: [
-                'adminfather/benzhi-claude-code@sha256:' + 'a'.repeat(64),
-              ],
+              RepoDigests: [],
+              Config: {
+                User: 'node',
+                WorkingDir: '/workspace',
+                Entrypoint: ['/usr/local/bin/entrypoint.sh'],
+                Cmd: ['interactive'],
+                Labels: {
+                  'annotation.pipeline.base-image':
+                    'adminfather/benzhi-claude-code:20260909-isolated-git',
+                  'annotation.pipeline.base-digest':
+                    'sha256:f77014d9e56cd3db2ac96627a286814cb1aa9f0b4bb807bea98a01383c9bc4d8',
+                  'annotation.pipeline.claude-version': '2.1.266',
+                  'annotation.pipeline.node-version': '22.22.1',
+                  'annotation.pipeline.image-policy':
+                    '2026-09-10.claude-upgrade1',
+                },
+              },
             },
           ],
     ),
