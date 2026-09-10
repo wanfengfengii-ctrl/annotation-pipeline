@@ -178,7 +178,8 @@ if (name === 'docker') {
                     'sha256:f77014d9e56cd3db2ac96627a286814cb1aa9f0b4bb807bea98a01383c9bc4d8',
                   'annotation.pipeline.claude-version': '2.1.266',
                   'annotation.pipeline.node-version': '22.22.1',
-                  'annotation.pipeline.image-policy': '2026-09-10.webdeps1',
+                  'annotation.pipeline.image-policy':
+                    '2026-09-10.webdeps-cache2',
                 },
               },
             },

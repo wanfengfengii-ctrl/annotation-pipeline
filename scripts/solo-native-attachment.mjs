@@ -6,6 +6,7 @@ import { verifyNativeExport, evidenceRelativeName } from './evidence.mjs';
 import { digest } from './solo-records.mjs';
 import { savePrivateJSON } from './solo-client.mjs';
 import { auditPermissionTraces } from '../lib/permission-audit.mjs';
+import { permissionAdmission } from './solo-permission-admission.mjs';
 
 export const soloNativeAttachmentVersion = '2026-09-10.native-verbatim1';
 
@@ -21,6 +22,7 @@ export function createSoloNativeAttachment({
   sessionId,
   promptId,
   maxBytes = 20 * 1024 * 1024,
+  admissionRoot = path.join(path.dirname(dir), 'solo-upload'),
 }) {
   if (!/^[\w-]+$/.test(turnId || '') || !sessionId || !promptId)
     throw Error('原生轨迹附件缺少记录标识');
@@ -79,7 +81,6 @@ export function createSoloNativeAttachment({
   if (!foundPrompt)
     throw Error('完整原生轨迹中找不到本轮 SessionID 和 PromptID');
   const permission = auditPermissionTraces(rawTraces);
-  if (!permission.passed) throw Error('最终完整原生轨迹权限核验未通过');
   // Fixed metadata makes repeated preparation byte-identical for send-time checks.
   const bytes = Buffer.from(
     zipSync(entries, { level: 6, mtime: new Date('1980-01-01T00:00:00Z') }),
@@ -95,6 +96,23 @@ export function createSoloNativeAttachment({
   )
     throw Error('原生轨迹 ZIP 内容校验失败');
   const sha256 = digest(bytes);
+  const admission = !permission.passed
+    ? permissionAdmission(
+        {
+          taskId: path.basename(dir),
+          turnId,
+          sessionId,
+          promptId,
+          permission,
+          traceExportSha256: native.sha256,
+          nativeManifestSha256: native.manifestSha256,
+          attachmentSha256: sha256,
+        },
+        admissionRoot,
+      )
+    : null;
+  if (!permission.passed && !admission)
+    throw Error('最终完整原生轨迹权限核验未通过');
   const file = path.join(
     dir,
     `${turnId}.solo-native-${sha256.slice(0, 20)}.zip`,
@@ -119,8 +137,10 @@ export function createSoloNativeAttachment({
     sha256,
     files: mapping,
     directories: Object.keys(entries).filter((n) => n.endsWith('/')),
-    permissionPassed: true,
-    denialCount: 0,
+    permissionPassed: permission.passed,
+    denialCount: permission.denialCount,
+    permission,
+    userAuthorizedPermissionException: admission,
   });
   return {
     name: path.basename(file),
@@ -130,6 +150,8 @@ export function createSoloNativeAttachment({
     status: 'passed',
     policyVersion: soloNativeAttachmentVersion,
     byteIdentical: true,
+    permissionPassed: permission.passed,
+    userAuthorizedPermissionException: admission,
   };
 }
 

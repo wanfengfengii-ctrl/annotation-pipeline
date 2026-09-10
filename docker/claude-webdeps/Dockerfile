@@ -41,3 +41,18 @@ USER node
 WORKDIR /workspace
 RUN python3 -c "import flask,fastapi,pytest,httpx,playwright; import tempfile,venv; p=tempfile.mkdtemp(); venv.create(p,with_pip=True)" \
     && python3 -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True,args=['--no-sandbox']); page=b.new_page(); page.set_content('<button>ready</button>'); page.get_by_role('button').click(); b.close(); p.stop()"
+
+# Debian's docker-clean hook hard-codes /var/cache/apt even when callers choose
+# a writable apt cache. Keep its original config as build evidence, outside apt's
+# config directory; runtime jobs never need to clean system package caches.
+USER root
+RUN if [ -f /etc/apt/apt.conf.d/docker-clean ]; then mv /etc/apt/apt.conf.d/docker-clean /opt/annotation/apt-docker-clean.build-only; fi \
+    && install -d -m 0700 -o node -g node /home/node/.cache/annotation /home/node/.cache/annotation/npm /home/node/.cache/annotation/pip /home/node/.cache/annotation/xdg
+ENV npm_config_cache=/home/node/.cache/annotation/npm
+ENV PIP_CACHE_DIR=/home/node/.cache/annotation/pip
+ENV XDG_CACHE_HOME=/home/node/.cache/annotation/xdg
+LABEL annotation.pipeline.image-policy="2026-09-10.webdeps-cache2"
+USER node
+RUN python3 -c "import os,tempfile; [tempfile.TemporaryFile(dir=os.environ[k]).close() for k in ('npm_config_cache','PIP_CACHE_DIR','XDG_CACHE_HOME')]" \
+    && npm cache verify \
+    && python3 -m pip cache info

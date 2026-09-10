@@ -221,6 +221,9 @@ async function prepareUnlocked() {
           bytes: archive.bytes.length,
           policyVersion: archive.policyVersion,
           byteIdentical: archive.byteIdentical,
+          permissionPassed: archive.permissionPassed,
+          userAuthorizedPermissionException:
+            archive.userAuthorizedPermissionException,
         },
         preparedAt: new Date().toISOString(),
       };

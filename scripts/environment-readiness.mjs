@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-export const environmentReadinessVersion = '2026-09-10.environment-ready2';
+export const environmentReadinessVersion = '2026-09-10.environment-ready3';
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 export const readinessProgram = String.raw`# ANNOTATION_ENV_READY
 import os,sys,json,tempfile,subprocess,time,venv,urllib.request,signal,hashlib
@@ -14,19 +14,25 @@ env=dict(os.environ)
 for key in list(env):
  if key.lower()=='apikey' or any(x in key.upper() for x in ['TOKEN','SECRET','API_KEY']): env.pop(key,None)
 env['PYTHONDONTWRITEBYTECODE']='1'
-cache=Path('/tmp/annotation-npm-cache')
-if cache.is_symlink(): raise RuntimeError('Npm cache must not be a symlink')
-cache.mkdir(mode=0o700,exist_ok=True)
-if cache.stat().st_uid!=os.getuid(): raise RuntimeError('Npm cache owner mismatch')
-env['npm_config_cache']=str(cache)
+caches={}
+for key,folder in [('npm_config_cache','npm'),('PIP_CACHE_DIR','pip'),('XDG_CACHE_HOME','xdg')]:
+ expected='/home/node/.cache/annotation/'+folder
+ if env.get(key)!=expected: raise RuntimeError('Image cache configuration mismatch: '+key)
+ cache=Path(expected)
+ if cache.resolve()!=cache or not cache.is_dir() or cache.stat().st_uid!=os.getuid(): raise RuntimeError('Cache path/owner mismatch: '+key)
+ with tempfile.TemporaryFile(dir=cache) as probe: probe.write(b'cache-ready');probe.flush()
+ caches[key]=expected
+if Path('/etc/apt/apt.conf.d/docker-clean').exists(): raise RuntimeError('Runtime apt system-cache cleanup hook still enabled')
 def run(args,cwd=None,timeout=180):
  p=subprocess.run(args,cwd=cwd,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=timeout)
  print(p.stdout,flush=True)
  if p.returncode: raise RuntimeError('Readiness command failed: '+str(args[0])+' exit '+str(p.returncode))
  return p.stdout
 import flask,fastapi,pytest,httpx,playwright
-run(['npm','config','set','cache',str(cache),'--location=user'])
+if run(['npm','config','get','cache']).strip()!=caches['npm_config_cache']: raise RuntimeError('Npm cache override mismatch')
+if run(['python3','-m','pip','cache','dir']).strip()!=caches['PIP_CACHE_DIR']: raise RuntimeError('Pip cache override mismatch')
 run(['npm','cache','verify'])
+run(['ffmpeg','-version'],timeout=10)
 with tempfile.TemporaryDirectory() as d:
  venv.create(d,with_pip=True)
  run([d+'/bin/python','-m','pip','--version'])
@@ -69,7 +75,7 @@ if ready:
    except subprocess.TimeoutExpired: os.killpg(server.pid,signal.SIGKILL);server.wait(timeout=3)
 for name,sha in before.items():
  if hashlib.sha256((project/name).read_bytes()).hexdigest()!=sha: raise RuntimeError('Dependency setup changed source: '+name)
-print('ANNOTATION_READINESS='+json.dumps({'passed':True,'uid':os.getuid(),'browser':True,'venv':True,'scaffold':bool(ready),'dependencies':run(['python3','-m','pip','freeze','--all']).splitlines()}))
+print('ANNOTATION_READINESS='+json.dumps({'passed':True,'uid':os.getuid(),'browser':True,'venv':True,'caches':caches,'writableCaches':True,'systemAptCleanupDisabled':True,'scaffold':bool(ready),'dependencies':run(['python3','-m','pip','freeze','--all']).splitlines()}))
 `;
 
 export function validateReadiness(value) {
@@ -147,6 +153,9 @@ export async function prepareEnvironment({
       !result?.passed ||
       !result.browser ||
       !result.venv ||
+      result.uid !== 1000 ||
+      !result.writableCaches ||
+      !result.systemAptCleanupDisabled ||
       (readiness && !result.scaffold)
     )
       throw Error('开题环境检查回执不完整');

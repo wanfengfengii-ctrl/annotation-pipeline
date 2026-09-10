@@ -20,7 +20,7 @@ npm ci
 npm run setup:mac
 ```
 
-安装脚本检查依赖和登录，生成仅当前用户可读写的 `.dev.vars`，应用所有数据库迁移，构建 `annotation-pipeline/claude-code:2.1.266-webdeps-20260910`，最后构建页面。Dockerfile 固定基础摘要、Node 22.22.1 和 Claude 2.1.266，保留现有镜像的入口、模型、网关和上下文；构建不会发送模型题目。
+安装脚本检查依赖和登录，生成仅当前用户可读写的 `.dev.vars`，应用所有数据库迁移，构建 `annotation-pipeline/claude-code:2.1.266-webdeps-cache2-20260910`，最后构建页面。Dockerfile 固定基础摘要、Node 22.22.1 和 Claude 2.1.266，保留现有镜像的入口、模型、网关和上下文；构建不会发送模型题目。
 
 需要访问 npm 和基础镜像仓库，首次下载耗时取决于网络。失败修正后可重跑，已有密钥保留，成功迁移不会重复执行。单独检查安装环境可运行 `npm run check:mac`；它不会启动作业或发送模型请求。模型连通性及实际 Terminal 权限仍需通过首道作业预检确认。
 

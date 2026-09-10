@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { unzipSync, zipSync } from 'fflate';
-import { evidenceInventory } from '../scripts/evidence.mjs';
+import { evidenceInventory, verifyNativeExport } from '../scripts/evidence.mjs';
+import { auditPermissionTraces } from '../lib/permission-audit.mjs';
 import { digest } from '../scripts/solo-records.mjs';
 import {
   createSoloNativeAttachment,
@@ -327,4 +328,81 @@ test('permission denials and unsupported native files are not silently omitted',
       createSoloNativeAttachment({ ...f.options, traceExport: f.refresh() }),
     /非 JSON/,
   );
+});
+
+test('finite user exception preserves failed audit and exact bytes; changed identity, source or findings are rejected', (t) => {
+  const f = fixture(t, { denied: true });
+  const native = verifyNativeExport(f.options.traceExport, f.options);
+  const entries = Object.create(null);
+  for (const dir of native.directories)
+    entries['projects/' + dir + '/'] = new Uint8Array();
+  for (const file of native.files)
+    entries['projects/' + file.name] = fs.readFileSync(
+      path.join(native.root, file.name),
+    );
+  const bytes = Buffer.from(
+    zipSync(entries, { level: 6, mtime: new Date('1980-01-01T00:00:00Z') }),
+  );
+  const permission = auditPermissionTraces(
+    native.files
+      .filter((f) => f.name.endsWith('.jsonl'))
+      .map((file) => ({
+        name: file.name,
+        content: fs.readFileSync(path.join(native.root, file.name), 'utf8'),
+      })),
+  );
+  const taskId = path.basename(f.dir),
+    key = taskId + ':turn';
+  const approval = {
+    taskId,
+    turnId: 'turn',
+    sessionId: 'session',
+    promptId: 'prompt',
+    traceExportSha256: native.sha256,
+    nativeManifestSha256: native.manifestSha256,
+    attachmentSha256: digest(bytes),
+    authorizedByUser: true,
+    authorizedAt: new Date().toISOString(),
+    userInstruction:
+      'Upload this unchanged historical record with its known permission error.',
+    permissionChecksVersion: permission.checksVersion,
+    findingsSha256: digest(permission.findings),
+  };
+  f.options.admissionRoot = f.dir;
+  const save = (entry) =>
+    fs.writeFileSync(
+      path.join(f.dir, 'permission-admissions.json'),
+      JSON.stringify({ version: 1, entries: { [key]: entry } }),
+    );
+  save(approval);
+  const archive = createSoloNativeAttachment(f.options);
+  assert.deepEqual(archive.bytes, bytes);
+  assert.equal(archive.permissionPassed, false);
+  const audit = JSON.parse(fs.readFileSync(archive.path + '.audit.json'));
+  assert.equal(audit.permissionPassed, false);
+  assert.equal(audit.denialCount, 1);
+  assert.equal(audit.permission.passed, false);
+  assert.equal(audit.userAuthorizedPermissionException.key, key);
+  assert.throws(
+    () => createSoloNativeAttachment({ ...f.options, turnId: 'another-turn' }),
+    /权限核验/,
+  );
+  for (const field of [
+    'sessionId',
+    'promptId',
+    'traceExportSha256',
+    'nativeManifestSha256',
+    'attachmentSha256',
+    'permissionChecksVersion',
+    'findingsSha256',
+  ]) {
+    save({ ...approval, [field]: 'changed' });
+    assert.throws(() => createSoloNativeAttachment(f.options), /权限例外/);
+  }
+  save({ ...approval, authorizedByUser: false });
+  assert.throws(() => createSoloNativeAttachment(f.options), /权限例外/);
+  save(approval);
+  fs.appendFileSync(f.main, '\n');
+  f.options.traceExport = f.refresh();
+  assert.throws(() => createSoloNativeAttachment(f.options), /权限例外/);
 });
