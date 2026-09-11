@@ -1,14 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
-import { zipSync, unzipSync } from 'fflate';
 import { verifyNativeExport, evidenceRelativeName } from './evidence.mjs';
 import { digest } from './solo-records.mjs';
 import { savePrivateJSON } from './solo-client.mjs';
 import { auditPermissionTraces } from '../lib/permission-audit.mjs';
 import { permissionAdmission } from './solo-permission-admission.mjs';
 
-export const soloNativeAttachmentVersion = '2026-09-10.native-verbatim1';
+export const soloNativeAttachmentVersion = '2026-09-11.native-verbatim-jsonl2';
 
 // SOLO's attachment classifier expects native CLI traces. Internal evaluation,
 // runtime, workspace and manifest files stay in the separately verified archive.
@@ -45,7 +44,7 @@ export function createSoloNativeAttachment({
     const original = fs.readFileSync(path.join(native.root, file.name));
     if (original.length !== file.bytes || digest(original) !== file.sha256)
       throw Error('原生轨迹在打包时发生变化');
-    // Decode only for read-only identity/permission checks. The ZIP receives
+    // Decode only for read-only identity/permission checks. The attachment keeps
     // the original buffer: no redaction, reserialization or newline conversion.
     const text = decoder.decode(original);
     if (text.includes('\0') || !/\.(jsonl|json)$/i.test(file.name))
@@ -81,20 +80,17 @@ export function createSoloNativeAttachment({
   if (!foundPrompt)
     throw Error('完整原生轨迹中找不到本轮 SessionID 和 PromptID');
   const permission = auditPermissionTraces(rawTraces);
-  // Fixed metadata makes repeated preparation byte-identical for send-time checks.
-  const bytes = Buffer.from(
-    zipSync(entries, { level: 6, mtime: new Date('1980-01-01T00:00:00Z') }),
-  );
-  if (bytes.length > maxBytes) throw Error('原生轨迹 ZIP 超过平台附件大小上限');
-  const unzipped = unzipSync(bytes);
-  if (
-    Object.keys(unzipped).length !== Object.keys(entries).length ||
-    Object.entries(entries).some(
-      ([name, value]) =>
-        !unzipped[name] || !Buffer.from(unzipped[name]).equals(value),
-    )
-  )
-    throw Error('原生轨迹 ZIP 内容校验失败');
+  // The current SOLO form accepts one .jsonl only. A single file is complete
+  // only when the verified export contains no other files. Never discard
+  // subagents/metadata, merge JSONL files, or rename ZIP bytes to bypass it.
+  if (native.files.length !== 1 || !/\.jsonl$/i.test(native.files[0].name))
+    throw Error(
+      '平台仅接收单个 JSONL，完整原生导出包含其他文件，暂缓上传；不能省略子会话或合并轨迹',
+    );
+  const source = native.files[0];
+  const bytes = entries[nameFor(source.name)];
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0 || bytes.length > maxBytes)
+    throw Error('原生轨迹 JSONL 超过平台附件大小上限');
   const sha256 = digest(bytes);
   const admission = !permission.passed
     ? permissionAdmission(
@@ -113,20 +109,26 @@ export function createSoloNativeAttachment({
     : null;
   if (!permission.passed && !admission)
     throw Error('最终完整原生轨迹权限核验未通过');
-  const file = path.join(
+  const attachmentDir = path.join(
     dir,
-    `${turnId}.solo-native-${sha256.slice(0, 20)}.zip`,
+    `${turnId}.solo-native-${sha256.slice(0, 20)}`,
   );
+  fs.mkdirSync(attachmentDir, { recursive: true, mode: 0o700 });
+  const file = path.join(attachmentDir, path.basename(source.name));
   if (fs.existsSync(file)) {
     if (digest(fs.readFileSync(file)) !== sha256)
-      throw Error('已有原生轨迹 ZIP 摘要不符');
+      throw Error('已有原生轨迹 JSONL 摘要不符');
   } else fs.writeFileSync(file, bytes, { flag: 'wx', mode: 0o600 });
-  // The audit stays local: inserting this JSON in the ZIP would confuse SOLO's
-  // native-trace classifier in the same way as the old internal evidence bundle.
+  if (!fs.readFileSync(file).equals(bytes))
+    throw Error('原生轨迹 JSONL 写入后与原件不一致');
+  // The audit stays outside the attachment and never changes the native file.
   savePrivateJSON(file + '.audit.json', {
     version: 2,
     policyVersion: soloNativeAttachmentVersion,
     kind: 'solo-native-only',
+    format: 'jsonl',
+    completeNativeFileSet: true,
+    sourceName: source.name,
     sessionId,
     promptId,
     originalsPreserved: true,
@@ -148,6 +150,7 @@ export function createSoloNativeAttachment({
     bytes,
     sha256,
     status: 'passed',
+    format: 'jsonl',
     policyVersion: soloNativeAttachmentVersion,
     byteIdentical: true,
     permissionPassed: permission.passed,
@@ -160,6 +163,8 @@ export function createSoloNativeAttachment({
 export function assertPreparedNativeAttachment(archive, prepared) {
   if (
     archive.policyVersion !== soloNativeAttachmentVersion ||
+    archive.format !== 'jsonl' ||
+    !/\.jsonl$/i.test(archive.name) ||
     archive.byteIdentical !== true ||
     digest(archive.bytes) !== archive.sha256 ||
     prepared?.sha256 !== archive.sha256 ||

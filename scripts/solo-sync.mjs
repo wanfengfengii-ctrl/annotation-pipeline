@@ -55,7 +55,7 @@ export async function syncRecords({
       const fields = Object.fromEntries(
         Object.entries(
           mapRecord(current, headers, schema, [
-            { name: 'pending.zip', path: 'pending', size: 1 },
+            { name: 'pending.jsonl', path: 'pending', size: 1 },
           ]).data,
         ).filter(([, v]) => !Array.isArray(v)),
       );
@@ -79,7 +79,7 @@ export async function syncRecords({
     try {
       if (!row.eligible || row.source !== 'ai') continue;
       const initial = mapRecord(row, headers, schema, [
-        { name: 'pending.zip', path: 'pending', size: 1 },
+        { name: 'pending.jsonl', path: 'pending', size: 1 },
       ]);
       const textData = Object.fromEntries(
         Object.entries(initial.data).filter(([, v]) => !Array.isArray(v)),
@@ -161,7 +161,7 @@ export async function syncRecords({
           Object.fromEntries(
             Object.entries(
               mapRecord(fresh, headers, schema, [
-                { name: 'pending.zip', path: 'pending', size: 1 },
+                { name: 'pending.jsonl', path: 'pending', size: 1 },
               ]).data,
             ).filter(([, v]) => !Array.isArray(v)),
           ),
@@ -171,7 +171,8 @@ export async function syncRecords({
       const file = await prepareAttachment(row, schema);
       if (
         !file?.bytes ||
-        !file.name.endsWith('.zip') ||
+        !/\.jsonl$/i.test(file.name) ||
+        file.format !== 'jsonl' ||
         file.status !== 'passed' ||
         file.policyVersion !== soloNativeAttachmentVersion ||
         file.byteIdentical !== true ||

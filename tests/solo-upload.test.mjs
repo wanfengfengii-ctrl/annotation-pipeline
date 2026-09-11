@@ -70,15 +70,16 @@ const schema = {
   ],
 };
 const bytes = Buffer.from(
-  'synthetic zip supplied by injected verified package builder',
+  'synthetic JSONL supplied by injected verified package builder',
 );
 const file = {
   bytes,
-  name: 'native.zip',
+  name: 'native.jsonl',
   sha256: digest(bytes),
   status: 'passed',
   policyVersion: soloNativeAttachmentVersion,
   byteIdentical: true,
+  format: 'jsonl',
 };
 function fixture() {
   const remote = [],
@@ -93,7 +94,11 @@ function fixture() {
     detail: async (id) => structuredClone(remote.find((x) => x.id === id)),
     upload: async (f) => {
       requests.push('upload');
-      return { name: f.name, path: 'uploads/native.zip', size: f.bytes.length };
+      return {
+        name: f.name,
+        path: 'uploads/native.jsonl',
+        size: f.bytes.length,
+      };
     },
     create: async (p) => {
       requests.push('create');
@@ -117,7 +122,7 @@ function fixture() {
 
 test('maps actual record columns, preserves native IDs, and never invents required values', () => {
   const p = mapRecord(row, headers, schema, [
-    { name: 'native.zip', path: 'x', size: 1 },
+    { name: 'native.jsonl', path: 'x', size: 1 },
   ]);
   assert.equal(p.data.session_id, 'native-session');
   assert.equal(p.data.round_no, '第一轮');
@@ -229,6 +234,9 @@ test('archive bytes, review status and size all gate uploading', async () => {
     { sha256: 'wrong' },
     { status: 'needs_review' },
     { name: 'internal.tar.gz' },
+    { name: 'native.zip' },
+    { format: 'zip' },
+    { format: undefined },
     { policyVersion: undefined },
     { byteIdentical: false },
   ]) {

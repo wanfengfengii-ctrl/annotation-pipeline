@@ -179,6 +179,7 @@ async function prepareUnlocked() {
           sha256: archive.sha256,
           bytes: archive.bytes.length,
           policyVersion: archive.policyVersion,
+          format: archive.format,
           byteIdentical: archive.byteIdentical,
           permissionPassed: archive.permissionPassed,
           userAuthorizedPermissionException:

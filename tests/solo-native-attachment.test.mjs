@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { unzipSync, zipSync } from 'fflate';
+import { zipSync } from 'fflate';
 import { evidenceInventory, verifyNativeExport } from '../scripts/evidence.mjs';
 import { auditPermissionTraces } from '../lib/permission-audit.mjs';
 import { digest } from '../scripts/solo-records.mjs';
@@ -14,7 +14,7 @@ import {
 } from '../scripts/solo-native-attachment.mjs';
 import { resolveSoloNativeIdentity } from '../scripts/solo-native-identity.mjs';
 
-function fixture(t, { denied = false } = {}) {
+function fixture(t, { denied = false, subagent = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'solo-native-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const root = path.join(dir, 'final', 'projects');
@@ -68,16 +68,17 @@ function fixture(t, { denied = false } = {}) {
     main,
     events.map((e) => JSON.stringify(e)).join('\n') + '\n',
   );
-  fs.writeFileSync(
-    path.join(root, '-workspace', 'session', 'subagents', 'agent.jsonl'),
-    JSON.stringify({
-      type: 'assistant',
-      sessionId: 'session',
-      uuid: 'subagent',
-      message: { content: 'done' },
-    }) + '\n',
-  );
-  // None of these internal files may enter the external trace ZIP.
+  if (subagent)
+    fs.writeFileSync(
+      path.join(root, '-workspace', 'session', 'subagents', 'agent.jsonl'),
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 'session',
+        uuid: 'subagent',
+        message: { content: 'done' },
+      }) + '\n',
+    );
+  // None of these internal files may enter the external trace attachment.
   fs.writeFileSync(path.join(dir, 'evaluation.json'), '{"score":5}');
   fs.writeFileSync(path.join(dir, 'pipeline.jsonl'), '{"stage":"score"}\n');
   const manifestPath = path.join(dir, 'final', 'manifest.json');
@@ -112,31 +113,15 @@ function fixture(t, { denied = false } = {}) {
   };
 }
 
-test('SOLO ZIP only contains complete native directories; audit remains local and original bytes stay intact', (t) => {
+test('single JSONL is the complete original file with its native filename; audit remains local', (t) => {
   const f = fixture(t),
     original = fs.readFileSync(f.main);
   const attachment = createSoloNativeAttachment(f.options);
-  const zip = unzipSync(attachment.bytes);
-  assert.deepEqual(
-    Object.keys(zip).sort(),
-    [
-      'projects/-workspace/',
-      'projects/-workspace/empty/',
-      'projects/-workspace/session/',
-      'projects/-workspace/session/subagents/',
-      'projects/-workspace/session/subagents/agent.jsonl',
-      'projects/-workspace/session.jsonl',
-    ].sort(),
-  );
-  assert.deepEqual(
-    Buffer.from(zip['projects/-workspace/session.jsonl']),
-    original,
-  );
-  const events = Buffer.from(zip['projects/-workspace/session.jsonl'])
-    .toString()
-    .trim()
-    .split('\n')
-    .map((l) => JSON.parse(l));
+  assert.deepEqual(attachment.bytes, original);
+  assert.deepEqual(fs.readFileSync(attachment.path), original);
+  assert.equal(attachment.name, 'session.jsonl');
+  assert.equal(attachment.format, 'jsonl');
+  const events = attachment.bytes.toString().trim().split('\n').map(JSON.parse);
   assert.equal(events.length, 4);
   assert.equal(events[1].uuid, 'message-uuid');
   assert.equal(events[1].promptId, 'prompt');
@@ -203,23 +188,15 @@ test('native bytes and names preserve normal Basic text, credential-like fixture
     }) +
     '\r\n\r\n';
   fs.writeFileSync(f.main, original);
-  const nativeName = 'test@fictional-company.dev.json';
-  const json =
-    '\uFEFF{ "password": "fixture123", "note": "保持原文和空格" }\r\n';
-  fs.writeFileSync(path.join(f.root, nativeName), json);
+  const nativeName = 'test@fictional-company.dev.jsonl';
+  fs.renameSync(f.main, path.join(path.dirname(f.main), nativeName));
+  f.main = path.join(path.dirname(f.main), nativeName);
   const archive = createSoloNativeAttachment({
     ...f.options,
     traceExport: f.refresh(),
   });
-  const zip = unzipSync(archive.bytes);
-  assert.deepEqual(
-    Buffer.from(zip['projects/-workspace/session.jsonl']),
-    Buffer.from(original),
-  );
-  assert.deepEqual(
-    Buffer.from(zip['projects/' + nativeName]),
-    Buffer.from(json),
-  );
+  assert.equal(archive.name, nativeName);
+  assert.deepEqual(archive.bytes, Buffer.from(original));
   assert.deepEqual(fs.readFileSync(f.main), Buffer.from(original));
 });
 
@@ -233,13 +210,15 @@ test('send check rejects legacy redaction ZIPs, replaced files and unverified bu
     bytes: archive.bytes.length,
   };
   assert.doesNotThrow(() => assertPreparedNativeAttachment(archive, prepared));
-  const zip = unzipSync(archive.bytes);
-  zip['projects/-workspace/session.jsonl'] = Buffer.from(
-    Buffer.from(zip['projects/-workspace/session.jsonl'])
-      .toString()
-      .replace(f.options.knownSecrets[0], '[REDACTED_SECRET]'),
+  const legacyBytes = Buffer.from(
+    zipSync({
+      'projects/-workspace/session.jsonl': Buffer.from(
+        archive.bytes
+          .toString()
+          .replace(f.options.knownSecrets[0], '[REDACTED_SECRET]'),
+      ),
+    }),
   );
-  const legacyBytes = Buffer.from(zipSync(zip));
   const legacyPath = path.join(f.dir, 'legacy.zip');
   fs.writeFileSync(legacyPath, legacyBytes);
   assert.throws(
@@ -267,7 +246,7 @@ test('send check rejects legacy redaction ZIPs, replaced files and unverified bu
   );
 });
 
-test('native attachment rejects changed originals, wrong identity and oversized ZIP', (t) => {
+test('native attachment rejects changed originals, wrong identity and oversized raw JSONL', (t) => {
   const f = fixture(t);
   assert.throws(
     () => createSoloNativeAttachment({ ...f.options, promptId: 'wrong' }),
@@ -340,9 +319,10 @@ test('finite user exception preserves failed audit and exact bytes; changed iden
     entries['projects/' + file.name] = fs.readFileSync(
       path.join(native.root, file.name),
     );
-  const bytes = Buffer.from(
+  const oldZip = Buffer.from(
     zipSync(entries, { level: 6, mtime: new Date('1980-01-01T00:00:00Z') }),
   );
+  const bytes = fs.readFileSync(f.main);
   const permission = auditPermissionTraces(
     native.files
       .filter((f) => f.name.endsWith('.jsonl'))
@@ -374,6 +354,8 @@ test('finite user exception preserves failed audit and exact bytes; changed iden
       path.join(f.dir, 'permission-admissions.json'),
       JSON.stringify({ version: 1, entries: { [key]: entry } }),
     );
+  save({ ...approval, attachmentSha256: digest(oldZip) });
+  assert.throws(() => createSoloNativeAttachment(f.options), /权限例外/);
   save(approval);
   const archive = createSoloNativeAttachment(f.options);
   assert.deepEqual(archive.bytes, bytes);
@@ -405,4 +387,45 @@ test('finite user exception preserves failed audit and exact bytes; changed iden
   fs.appendFileSync(f.main, '\n');
   f.options.traceExport = f.refresh();
   assert.throws(() => createSoloNativeAttachment(f.options), /权限例外/);
+});
+
+test('single-file restriction never drops subagent or metadata files, even when main alone would fit', (t) => {
+  const f = fixture(t, { subagent: true });
+  const before = fs.readFileSync(f.main);
+  assert.throws(() => createSoloNativeAttachment(f.options), /不能省略子会话/);
+  assert.deepEqual(fs.readFileSync(f.main), before);
+  const g = fixture(t);
+  fs.writeFileSync(path.join(g.root, 'metadata.json'), '{}');
+  assert.throws(
+    () =>
+      createSoloNativeAttachment({ ...g.options, traceExport: g.refresh() }),
+    /不能省略子会话/,
+  );
+});
+
+test('send-time check rejects an old native ZIP even with internally consistent bytes', (t) => {
+  const f = fixture(t);
+  const archive = createSoloNativeAttachment(f.options);
+  const oldBytes = Buffer.from(
+    zipSync({ 'projects/session.jsonl': archive.bytes }),
+  );
+  const old = {
+    ...archive,
+    bytes: oldBytes,
+    format: 'zip',
+    name: 'native.zip',
+    path: path.join(f.dir, 'native.zip'),
+    sha256: digest(oldBytes),
+  };
+  fs.writeFileSync(old.path, oldBytes);
+  const prepared = {
+    path: old.path,
+    name: old.name,
+    sha256: old.sha256,
+    bytes: oldBytes.length,
+  };
+  assert.throws(
+    () => assertPreparedNativeAttachment(old, prepared),
+    /禁止上传替换版/,
+  );
 });

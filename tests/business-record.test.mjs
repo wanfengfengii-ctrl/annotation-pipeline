@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { unzipSync } from 'fflate';
 import { gatewayRecordFixture } from './fixtures/gateway-record.mjs';
 import {
   businessRecordOrigins,
@@ -65,11 +64,7 @@ test('原题身份、最终评分、完整原件归为一条，内部三次调�
     sessionId: 'session',
     promptId: row.nativeIdentity.promptId,
   });
-  assert.ok(
-    Buffer.from(unzipSync(attachment.bytes)['projects/session.jsonl']).equals(
-      bytes,
-    ),
-  );
+  assert.deepEqual(attachment.bytes, bytes);
   const exported = csv([f.task]);
   assert.match(exported, /增加完整的记录管理功能/);
   assert.ok(!exported.includes('"继续"'));
@@ -206,7 +201,7 @@ test('API 上传同样校验恢复覆盖和业务前序回执，重复执行不�
       requests.push('upload');
       return {
         name: file.name,
-        path: 'fixture/native.zip',
+        path: 'fixture/native.jsonl',
         size: file.bytes.length,
       };
     },
@@ -221,7 +216,7 @@ test('API 上传同样校验恢复覆盖和业务前序回执，重复执行不�
       return row;
     },
   };
-  const bytes = Buffer.from('synthetic verified zip');
+  const bytes = Buffer.from('synthetic verified raw JSONL');
   const args = {
     client,
     ledger,
@@ -232,11 +227,12 @@ test('API 上传同样校验恢复覆盖和业务前序回执，重复执行不�
     currentRow: async (row) => args.rows.find((r) => r.turnId === row.turnId),
     prepareAttachment: async () => ({
       bytes,
-      name: 'native.zip',
+      name: 'native.jsonl',
       sha256: digest(bytes),
       status: 'passed',
       policyVersion: soloNativeAttachmentVersion,
       byteIdentical: true,
+      format: 'jsonl',
     }),
   };
   await syncRecords(args);
