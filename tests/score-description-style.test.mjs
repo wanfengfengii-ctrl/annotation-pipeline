@@ -87,7 +87,7 @@ test('public prose stays understandable while internal citations and business nu
     '准备示例数据时写出了语法错误，数据生成中断；修正后重新生成了数据。',
     '导入表格第145行为空时没有提示，用户找不到遗漏项。',
     '统计页把95条历史记录算成有效免疫，实际只有23个有效组合。',
-    '运行 npm test 后发现页面标签没有匹配上，调整选择方式后通过。',
+    '运行测试命令后发现页面标签没有匹配上，调整选择方式后通过。',
     '评分方案算出总分38、命中24次，结果和逐项计算一致。',
     '修改集中在 src/data.ts，保留原有排序和导入。',
   ])
@@ -119,6 +119,83 @@ test('public prose stays understandable while internal citations and business nu
   }
 });
 
+test('five descriptions reject assistant identities and tool names without hiding provenance or business concepts', () => {
+  for (const text of [
+    'AI 判断保存流程正常。',
+    'Codex完成了检查。',
+    'ＧＰＴ-５ 检查了页面。',
+    'GPT5检查了页面。',
+    'Claude CLI 已完成修改。',
+    'ClaudeCode已完成修改。',
+    '由 AI Agent 验证保存结果。',
+    'AI模型认为列表会更新。',
+    '模型认为保存已经完成。',
+    '模型完成了列表更新。',
+    '本轮模型先检查了接口返回。',
+    '模型只检查了接口响应，页面跳转后的空白没有在交付前发现。',
+    '模型的判断与实际结果一致。',
+    '编程助手修改后未检查页面。',
+    '使用 Bash 执行后准备数据失败。',
+    '用 Read 查看了页面入口。',
+    '用 Edit 修改了保存逻辑。',
+    'Playwright 检查发现点击后页面空白。',
+    '运行 pytest 后发现保存用例失败。',
+    '使用 `Codex` 完成了核对。',
+  ]) {
+    for (let i = 0; i < 5; i++) {
+      const review = structuredClone(plain);
+      Object.assign(review, {
+        source: 'codex',
+        harness: 'Claude Code',
+        model: 'configured-model',
+        processFindings: text,
+        artifactFindings: text,
+      });
+      review.descriptions[i] = text;
+      const original = structuredClone(review);
+      const checked = checkWriting('score', review);
+      assert.ok(
+        checked.issues.some(
+          (issue) =>
+            issue.startsWith(`descriptions[${i}]`) &&
+            issue.includes('不出现 AI 身份'),
+        ),
+        text,
+      );
+      assert.ok(
+        checked.issues.every((issue) => issue.startsWith(`descriptions[${i}]`)),
+        text,
+      );
+      assert.deepEqual(checked.value, original);
+      assert.deepEqual(review, original);
+    }
+  }
+  for (const text of [
+    '浏览器实测显示，点击保存后列表同步更新。',
+    '本轮先检查保存请求，随后修改列表更新逻辑，复核确认保存后新内容正常显示。',
+    '点击按钮后页面空白，后续登记无法继续。',
+    '执行该命令后返回语法错误，示例数据没有生成；修正后重新运行成功。',
+    '交付说明称页面检查通过，但当时只有接口请求记录；后续复核发现详情页空白。',
+    '保存后的页面显示尚未验证，现有记录只能证明构建通过。',
+    '数据模型已补充记录状态，业务模型的判断规则保持原样。',
+    '接口返回 API 请求错误，草稿列表没有更新。',
+    '修改集中在 src/data.ts，保留原有排序和导入。',
+  ])
+    assert.deepEqual(scoreDescriptionStyleIssues(text), [], text);
+  assert.match(
+    scoreInstructions(),
+    /五维 descriptions 不出现 AI 身份、工具或模型名称/,
+  );
+  assert.match(
+    writingInstructions('score'),
+    /五维 descriptions 不出现 AI 身份、工具或模型名称/,
+  );
+  assert.doesNotMatch(
+    writingInstructions('prepare'),
+    /五维 descriptions 不出现 AI 身份、工具或模型名称/,
+  );
+});
+
 test('one wording retry simplifies public feedback, preserves scores and evidence, and retains original output', async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'score-prose-'));
   const oldPath = process.env.PATH;
@@ -137,7 +214,7 @@ process.stdin.on('end', () => {
   const revised = out.includes('.writing.');
   fs.appendFileSync(path.join(__dirname, 'calls'), JSON.stringify({ revised, out }) + '\\n');
   if (out.includes('.consistency.')) throw Error('Style must not trigger rescoring');
-  if (revised && !input.includes('点评用具体操作、现象及影响')) throw Error('Missing prose issue');
+  if (revised && !input.includes(mode === 'identity' ? '五维描述不出现 AI 身份' : '点评用具体操作、现象及影响')) throw Error('Missing prose issue');
   const value = ${JSON.stringify(plain)};
   if (mode === 'internal') {
     value.processFindings += '\\n原工具输出："通过"，证据 app.js:1。';
@@ -145,6 +222,8 @@ process.stdin.on('end', () => {
   }
   if (!['plain', 'internal'].includes(mode) && (!revised || mode === 'still'))
     value.descriptions[0] = '在 app.js:1 保存后列表仍显示旧内容，重新打开详情才能看到修改，核对记录时需要来回切换，因此评3分。';
+  if (mode === 'identity' && !revised)
+    value.descriptions[0] = 'Codex 复核发现保存后列表仍显示旧内容，重新打开详情才能看到修改，核对记录时需要来回切换。';
   if (revised && mode === 'score-change') value.scores[0] = 4;
   if (revised && mode === 'evidence-change') value.evidenceRefs[0] = 'app.js:2';
   fs.writeFileSync(out, JSON.stringify(value));
@@ -191,12 +270,20 @@ process.stdin.on('end', () => {
     assert.match(original.descriptions[0], /app.js:1.*因此评3分/);
     assert.deepEqual(original.scores, revised.value.scores);
     assert.deepEqual(original.evidenceRefs, revised.value.evidenceRefs);
+    const identity = await run('identity');
+    assert.deepEqual(identity.value, plain);
+    assert.equal(identity.consistencyRevision, undefined);
+    assert.match(
+      JSON.parse(readFileSync(path.join(dir, 'identity.score.json'), 'utf8'))
+        .descriptions[0],
+      /^Codex/,
+    );
     await assert.rejects(run('score-change'), /不得改动 score.scores/);
     await assert.rejects(run('evidence-change'), /不得改动 score.evidenceRefs/);
     await assert.rejects(run('still'), /表达修订后仍不符合要求/);
     assert.equal(
       readFileSync(path.join(dir, 'calls'), 'utf8').trim().split('\n').length,
-      10,
+      12,
     );
     assert.equal(
       readFileSync(path.join(dir, 'app.js'), 'utf8'),
