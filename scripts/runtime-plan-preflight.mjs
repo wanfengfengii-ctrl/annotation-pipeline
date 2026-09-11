@@ -3,7 +3,12 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { validateRuntimePlan } from '../lib/runtime-verification.mjs';
 
-export const runtimePreflightVersion = '2026-09-11.runtime-preflight1';
+export const runtimePreflightVersion = '2026-09-11.runtime-preflight2';
+export function knownRuntimeRequirements(history) {
+  return (history?.checks || [])
+    .filter((check) => check.outcome === 'reproduced')
+    .map(({ id, requirement, expected }) => ({ id, requirement, expected }));
+}
 export function assertKnownRuntimeChecks(plan, history) {
   for (const old of history?.checks || []) {
     if (old.outcome !== 'reproduced') continue;
@@ -76,6 +81,7 @@ export async function prepareRuntimePlan({
   withHeavy,
   imageId,
   root,
+  knownChecks = [],
 }) {
   const attempts = [];
   for (let revision = 0; revision < 2; revision++) {
@@ -93,8 +99,20 @@ export async function prepareRuntimePlan({
         validateRuntimePlan(plan.value);
         if (revision && Array.isArray(attempts[0].plan.value?.checks)) {
           const original = attempts[0].plan.value.checks;
+          const required = new Map(
+            knownChecks.map((check) => [check.id, check]),
+          );
           if (
-            original.length !== plan.value.checks.length ||
+            plan.value.checks.length < original.length ||
+            plan.value.checks.slice(original.length).some((c) => {
+              const known = required.get(c.id);
+              return (
+                !known ||
+                c.kind === 'setup' ||
+                c.requirement !== known.requirement ||
+                c.expected !== known.expected
+              );
+            }) ||
             original.some((c, i) =>
               [
                 'requirement',
@@ -103,7 +121,19 @@ export async function prepareRuntimePlan({
                   ? ['kind']
                   : []),
                 ...(/^[a-z][a-z0-9_-]{0,127}$/.test(c.id) ? ['id'] : []),
-              ].some((k) => c[k] !== plan.value.checks[i]?.[k]),
+              ].some((k) => {
+                const next = plan.value.checks[i];
+                if (c[k] === next?.[k]) return false;
+                // A rejected first draft may have paraphrased a frozen check.
+                // Only restore its verified requirement/expected verbatim.
+                const known = required.get(c.id);
+                return !(
+                  ['requirement', 'expected'].includes(k) &&
+                  known &&
+                  next?.id === c.id &&
+                  next?.[k] === known[k]
+                );
+              }),
             )
           )
             throw Error('执行前修订不能删除、替换或改变原业务检查及其预期');

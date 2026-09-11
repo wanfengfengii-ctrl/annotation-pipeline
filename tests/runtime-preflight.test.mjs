@@ -17,6 +17,7 @@ import {
   syntaxProbeProgram,
   runtimePathInstructions,
   assertKnownRuntimeChecks,
+  knownRuntimeRequirements,
 } from '../scripts/runtime-plan-preflight.mjs';
 import { validateCodeRef } from '../scripts/runtime-verification.mjs';
 import diagnostics from '../scripts/runtime-browser-diagnostics.cjs';
@@ -220,6 +221,86 @@ test('schema budget errors can be repaired without spending an execution attempt
   const plan = await prepareRuntimePlan(f.options);
   assert.equal(plan.value.checks.length, 4);
   assert.equal(f.calls.length, 1);
+});
+
+test('preflight repair restores exact verified history after a draft paraphrases it', async (t) => {
+  const root = fixture(t);
+  const history = { checks: [{ ...check, outcome: 'reproduced' }] };
+  const f = setup(root, async (revision) => ({
+    value: {
+      summary: 'verify',
+      checks: [
+        { ...check, expected: revision ? check.expected : '改写过的预期' },
+      ],
+    },
+  }));
+  f.options.knownChecks = knownRuntimeRequirements(history);
+  f.options.validateReferences = (plan) =>
+    assertKnownRuntimeChecks(plan, history);
+  const plan = await prepareRuntimePlan(f.options);
+  assert.equal(plan.preflight.revisions, 1);
+  assert.equal(plan.value.checks[0].expected, check.expected);
+  assert.equal(f.calls.length, 1);
+  const audit = JSON.parse(readFileSync(plan.preflight.reportPath));
+  assert.equal(audit.attempts[0].plan.value.checks[0].expected, '改写过的预期');
+});
+
+test('preflight may append a missing verified check but cannot substitute an unrelated check', async (t) => {
+  for (const unrelated of [false, true]) {
+    const root = fixture(t);
+    const historical = { ...check, id: 'old_failure', outcome: 'reproduced' };
+    const history = { checks: [historical] };
+    const f = setup(root, async (revision) => ({
+      value: {
+        summary: 'verify',
+        checks: [
+          check,
+          ...(revision
+            ? [{ ...historical, id: unrelated ? 'different' : historical.id }]
+            : []),
+        ],
+      },
+    }));
+    f.options.knownChecks = knownRuntimeRequirements(history);
+    f.options.validateReferences = (plan) =>
+      assertKnownRuntimeChecks(plan, history);
+    if (unrelated)
+      await assert.rejects(prepareRuntimePlan(f.options), /改变原业务检查/);
+    else {
+      const plan = await prepareRuntimePlan(f.options);
+      assert.deepEqual(
+        plan.value.checks.map((c) => c.id),
+        ['business', 'old_failure'],
+      );
+    }
+  }
+});
+
+test('verified history cannot authorize weakening an existing obligation or promoting blocked checks', async (t) => {
+  const root = fixture(t);
+  const history = {
+    checks: [
+      { ...check, outcome: 'reproduced' },
+      { ...check, id: 'blocked', outcome: 'blocked' },
+    ],
+  };
+  assert.deepEqual(knownRuntimeRequirements(history), [
+    { id: check.id, requirement: check.requirement, expected: check.expected },
+  ]);
+  const f = setup(root, async (revision) => ({
+    value: {
+      summary: 'verify',
+      checks: [
+        {
+          ...check,
+          command: revision ? 'true' : 'if true; then',
+          expected: revision ? '不再检查' : check.expected,
+        },
+      ],
+    },
+  }));
+  f.options.knownChecks = knownRuntimeRequirements(history);
+  await assert.rejects(prepareRuntimePlan(f.options), /改变原业务检查/);
 });
 
 test('browser diagnostics retain the original error and never select a duplicate control', async () => {

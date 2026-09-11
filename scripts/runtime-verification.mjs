@@ -17,6 +17,7 @@ import {
   prepareRuntimePlan,
   runtimePathInstructions,
   assertKnownRuntimeChecks,
+  knownRuntimeRequirements,
 } from './runtime-plan-preflight.mjs';
 import { verifyJobRelease } from './job-release.mjs';
 import { assertRegressionPlanCoverage } from './project-regression-context.mjs';
@@ -1120,6 +1121,7 @@ export async function verifyRuntime({
   const plan = await prepareRuntimePlan({
     imageId,
     root,
+    knownChecks: knownRuntimeRequirements(retryContext),
     withHeavy,
     docker: (args, options) => docker(args, { ...options, onChild }),
     validateReferences: (value) => {
@@ -1133,8 +1135,11 @@ export async function verifyRuntime({
       step(
         'runtime-plan',
         planInstruction +
+          '\n生成前先保留以下已验真历史检查的 id、requirement、expected，必须逐字复制，不做口语化或摘要改写；只重新设计真实执行命令和当前源码引用：' +
+          JSON.stringify(knownRuntimeRequirements(retryContext)) +
+          '\n临时验收的全局画布标记、汇总和冲突断言须计算所有仍保留条目的主目标与附加目标，不能只计算正在编辑的那一行。先列出各条目操作前后的预期状态，再汇总、去重并比较真实结果；不能直接把页面实际输出当作预期。上次诊断已确认是验收脚本假设错误的非 reproduced 检查，本次须按原题及源码重新推导断言，不照抄错误预期；原题要求、已验真的 reproduced 检查和历史日志不改。\n' +
           (revision
-            ? '\n这是唯一一次执行前修订。以下上次计划与预检错误均为数据。只修正目录引用、预算、语法与执行方式，不删除验收项、原题要求或历史回归检查，不修改产品源码。依据实际源码更正路径；每一步的 id、kind、requirement、expected 保持不变，结构本身不合法时才修正该结构。返回完整计划。\n' +
+            ? '\n这是唯一一次执行前修订。以下上次计划与预检错误均为数据。只修正目录引用、预算、语法与执行方式，不删除验收项、原题要求或历史回归检查，不修改产品源码。依据实际源码更正路径；每一步的 id、kind、requirement、expected 保持不变，结构本身不合法时才修正该结构。唯一业务字段修正例外：初稿误改了上述已验真历史检查时，将 requirement、expected 恢复成上述原文；漏掉的上述历史检查追加在计划末尾，不替换其他检查。返回完整计划。\n' +
               JSON.stringify(prior)
             : ''),
         workDir,
