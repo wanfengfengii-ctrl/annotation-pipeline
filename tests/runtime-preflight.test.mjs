@@ -19,6 +19,7 @@ import {
   assertKnownRuntimeChecks,
   knownRuntimeRequirements,
   browserLocatorContractIssues,
+  runtimeScriptContractIssues,
 } from '../scripts/runtime-plan-preflight.mjs';
 import { validateCodeRef } from '../scripts/runtime-verification.mjs';
 import diagnostics from '../scripts/runtime-browser-diagnostics.cjs';
@@ -56,6 +57,41 @@ const check = {
   codeEvidence: 'projects/p1/app.js:1',
   timeoutSeconds: 60,
 };
+test('preflight rejects named imports of the bundled CommonJS entry while allowing supported imports', () => {
+  const entry = '/opt/annotation/node/node_modules/playwright/index.js';
+  for (const code of [
+    `import { chromium } from '${entry}';`,
+    `import playwright, { chromium as browser } from "${entry}";`,
+    `import {\n chromium,\n webkit,\n} from '${entry}';`,
+  ])
+    assert.match(runtimeScriptContractIssues(code).join(' '), /CommonJS/);
+  for (const code of [
+    `import playwright from '${entry}'; const { chromium } = playwright;`,
+    `import { default as playwright } from '${entry}';`,
+    `const { chromium } = require('${entry}');`,
+    `import { chromium } from 'playwright';`,
+    `import { chromium } from '/project/browser.mjs';`,
+  ])
+    assert.deepEqual(runtimeScriptContractIssues(code), [], code);
+});
+
+test('empty quoted wildcard matches valid zero-failure statistics and is caught before execution', () => {
+  const bad =
+    "case \"$tests:$pass:$fail:$skipped\" in\n  ''*|*'::'*) echo blocked ;;\n  *) echo valid ;;\nesac";
+  const result = spawnSync(
+    '/bin/bash',
+    ['-c', 'tests=58; pass=58; fail=0; skipped=0;\n' + bad],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout.trim(), 'blocked');
+  assert.match(runtimeScriptContractIssues(bad).join(' '), /通配符/);
+  assert.equal(
+    runtimeScriptContractIssues(bad.replace("''*", '""*')).length,
+    1,
+  );
+  assert.deepEqual(runtimeScriptContractIssues(bad.replace("''*", "''")), []);
+});
 test('known reproduced failures keep their business requirement and expected result in a new plan', () => {
   const history = { checks: [{ ...check, outcome: 'reproduced' }] };
   assert.doesNotThrow(() =>
@@ -115,6 +151,34 @@ function setup(root, generate) {
     },
   };
 }
+
+test('script contract repair runs before syntax probing and preserves the original business check', async (t) => {
+  const root = fixture(t),
+    generated = [];
+  const f = setup(root, async (revision, prior) => {
+    generated.push(prior);
+    return {
+      value: {
+        summary: 'verify',
+        checks: [
+          {
+            ...check,
+            command: revision
+              ? "cat > /tmp/verify.mjs <<'JS'\nimport playwright from '/opt/annotation/node/node_modules/playwright/index.js';\nconst { chromium } = playwright;\nJS"
+              : "cat > /tmp/verify.mjs <<'JS'\nimport { chromium } from '/opt/annotation/node/node_modules/playwright/index.js';\nJS",
+          },
+        ],
+      },
+    };
+  });
+  const plan = await prepareRuntimePlan(f.options);
+  assert.equal(generated.length, 2);
+  assert.equal(generated[1].issues[0].kind, 'script-contract');
+  assert.equal(f.calls.length, 1);
+  assert.equal(plan.value.checks[0].expected, check.expected);
+  assert.equal(plan.value.checks[0].requirement, check.requirement);
+  assert.equal(plan.preflight.revisions, 1);
+});
 
 test('real parsers reject shell and literal inline Python/JS syntax without executing any commands', (t) => {
   const root = fixture(t),

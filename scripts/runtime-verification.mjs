@@ -1105,6 +1105,8 @@ export async function verifyRuntime({
     cacheInstructions +
     manifestTestDependencyInstructions +
     nativeTestResultInstructions +
+    '\n加载预装浏览器库时核对入口格式：/opt/annotation/node/node_modules/playwright/index.js 是 CommonJS，MJS 使用 import playwright from 该路径后再 const { chromium } = playwright，或用 createRequire；CJS 使用 require。不要从这个 index.js 路径写 import { chromium }，也不要在执行前仅做 node --check 就认定导入能成功；setup 用与后续脚本一致的导入方式实际加载并启动浏览器。不修改项目依赖来适配临时验收脚本。\n' +
+    '\n原测试汇总须保留真实退出码，并逐项核对 tests、pass、fail、skipped 等统计是否存在且为非负整数，0 是有效计数。shell case 中空引号后接星号等于匹配所有字符串，不能拿它判断统计缺失；也不能用数值真假判断把 fail=0 当作缺失。汇总校验应能区分有效全通过、真实失败、统计缺失三种情况，包装脚本解析失败记为验收方法阻塞并保留原输出，不覆盖原套件实际通过或失败的事实。\n' +
     '\n解析原套件 JUnit XML 时先核对实际结构：pytest 常用 testsuites 作为容器根，tests、failures、errors、skipped 在其 testsuite 子项上，不能只读取 root.attrib 并把缺失属性默认成 0。按叶子 testsuite 汇总，避免父子套件重复计数；兼容根本身为 testsuite 和命名空间，并核对 testcase 与原始 stdout 的范围。缺少可靠计数写未知并保留原 XML、退出码及完整输出，不把解析错误说成原套件没有执行或测试失败。完整通过仍要求原套件已完成且真实失败、错误、跳过均为零，不改原测试、过滤用例或伪造统计。\n' +
     nativeTestAttributionInstructions +
     runtimeObservationInstructions +
@@ -1113,6 +1115,7 @@ export async function verifyRuntime({
     runtimeExitStatusInstructions +
     runtimeHarnessInstructions +
     runtimeDataIsolationInstructions +
+    '\n拖拽或排序验收先核对真实起点、终点和产品语义：操作是移动、交换还是复制，不能只因脚本想制造重复就假定拖拽会复制。实际拖拽后读取前后页位、顺序或业务状态，先确认场景确实形成，再判断相应提示、禁用和选择清空行为；未形成目标场景时保留实际状态并修订操作路径，不能只等待预设的 disabled 选择器直到超时。真实交互产生的异常仍按原题判断，不通过改 DOM、内部变量、存储或伪造事件制造通过证据。\n' +
     '\n独立浏览器验收中的文本框选必须使用真实鼠标拖选或键盘选择。DOM Range 只用于读取文本边界和可见坐标，不用 Selection.addRange、修改 selection 或 dispatchEvent 合成 mouseup 来代替用户动作，也不能用强制点击绕过不可见控件。拖选前先滚动目标文字到可见位置，检查实际选中文字与预期完全一致，再操作页面出现的按钮；先按真实 DOM、鼠标起止点和事件目标排查验收脚本，真实操作仍不符合原题要求时才单独复现业务缺陷。自带测试中的原有实现保持不变，其结果与独立真实交互的证据分开记录。\n' +
     '\n执行 pytest 等自带套件时开启逐用例结果和失败原因输出，保留最终结构化统计；不能只留下 F 标记就被过短的内部计时器终止。按已发现的用例和框架等待上限安排内外层预算，给结果写盘与清理留出余量，仍遵守每步 300 秒、合计 900 秒。需要分批时以原始收集结果划分互不遗漏的用例集合，核对完整覆盖，不使用 fail-fast、跳过失败用例、修改原测试或缩短原断言等待来凑预算；预算确实不足仍写 blocked。\n' +
     '\n日志预算每步 2 MiB，断言输出只写检查名、预期与实际的必要标量、计数或 SHA-256。取消操作前后比较含图片的编辑状态时在内存中完整比较或逐字段比较，打印比较结果及差异字段，不打印 data URL、base64、完整 HTML、整份 localStorage、图片字节或超大对象；需要保留大附件时写到临时文件并输出路径和摘要。不要截断测试执行或丢弃失败原因来控制日志。颜色和像素断言先按当前源码的透明度、叠层及抗锯齿推导合理预期，不凭任意色差阈值断言缺少标记；必须实际检查目标区域和图层内容。\n' +

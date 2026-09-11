@@ -3,7 +3,35 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { validateRuntimePlan } from '../lib/runtime-verification.mjs';
 
-export const runtimePreflightVersion = '2026-09-12.runtime-preflight3';
+export const runtimePreflightVersion = '2026-09-12.runtime-preflight4';
+// Known failures in generated verification wrappers. These bounded review
+// triggers do not load dependencies, execute scripts or alter business checks.
+export function runtimeScriptContractIssues(command) {
+  const issues = [];
+  const namedImports = command.matchAll(
+    /\bimport\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s*from\s*(['"])\/opt\/annotation\/node\/node_modules\/playwright\/index\.js\2/g,
+  );
+  if (
+    [...namedImports].some(([, names]) =>
+      names.split(',').some((name) => {
+        const specifier = name.trim();
+        return specifier && !/^default(?:\s+as\s+[\w$]+)?$/.test(specifier);
+      }),
+    )
+  )
+    issues.push(
+      '预装 Playwright 的 index.js 是 CommonJS 入口，不能从该路径使用 chromium 等 ESM 命名导入；使用默认导入后解构，或在 CJS 中 require，在 MJS 中用 createRequire。只修订临时脚本导入，不修改项目依赖或业务预期',
+    );
+  if (
+    /\bcase\s+[^\n]*(?:tests|pass|fail|skipped|count)[^\n]*\s+in\s*\n\s*(?:''|"")\s*\*(?:\s*\||\s*\))/.test(
+      command,
+    )
+  )
+    issues.push(
+      '测试汇总 case 的首分支中空引号后接星号等于通配符，会把有效统计也判为空；逐项检查计数是否存在且为非负整数，再核对真实退出码和失败数量，不能把零次失败当成缺失统计，也不能删除原测试检查',
+    );
+  return issues;
+}
 // Narrow checks for the bundled async locator helper, not a JS type checker.
 // Only inspect generated verification commands; never rewrite project code.
 export function browserLocatorContractIssues(command) {
@@ -164,6 +192,9 @@ export async function prepareRuntimePlan({
         for (const check of plan.value.checks)
           for (const message of browserLocatorContractIssues(check.command))
             issues.push({ kind: 'browser-api', id: check.id, message });
+        for (const check of plan.value.checks)
+          for (const message of runtimeScriptContractIssues(check.command))
+            issues.push({ kind: 'script-contract', id: check.id, message });
       } catch (error) {
         issues.push({ kind: 'plan', message: error.message });
       }
