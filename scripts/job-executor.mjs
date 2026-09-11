@@ -1069,7 +1069,7 @@ export function createJobExecutor({
         automation.reviewFacts = { path: factsPath, sha256: factsSha256 };
         const score = await step(
           'score',
-          ` ${scoreInstructions()}\n${harnessInstructions(result.harness)}\n你是 Codex 自动评分器。只读分析当前产物和本轮原始轨迹。\n本轮实际 Prompt：${preparation.value.prompt}\n原始验收目标（继续也必须按此目标评分）：${result.evaluationPrompt}\n本轮结果类型：${result.executionOutcome || 'complete'}\n验收条件：${JSON.stringify(preparation.value.acceptance)}\n本轮轨迹文件：${result.tracePath}\n初始快照：${result.snapshot}\n请核对实际文件及轨迹，存在 Git 仓库时可补充 diff，空目录生成项目不要求根目录有 Git。按交付完整性、指令遵循、任务规划、推理能力、执行能力依次评分 1–5，并为每项提供具体步骤、文件或工具调用的证据和影响。不要修改、修复产物或编造测试；没有执行的测试不能声称通过。评分来源必须为 AI。other 无其他问题时写“无”。`,
+          ` ${scoreInstructions({ task, turn, prompt: result.evaluationPrompt })}\n${harnessInstructions(result.harness)}\n你是 Codex 自动评分器。只读分析当前产物和本轮原始轨迹。\n本轮实际 Prompt：${preparation.value.prompt}\n原始验收目标（继续也必须按此目标评分）：${result.evaluationPrompt}\n本轮结果类型：${result.executionOutcome || 'complete'}\n验收条件：${JSON.stringify(preparation.value.acceptance)}\n本轮轨迹文件：${result.tracePath}\n初始快照：${result.snapshot}\n请核对实际文件及轨迹，存在 Git 仓库时可补充 diff，空目录生成项目不要求根目录有 Git。按交付完整性、指令遵循、任务规划、推理能力、执行能力依次评分 1–5，并为每项提供具体步骤、文件或工具调用的证据和影响。不要修改、修复产物或编造测试；没有执行的测试不能声称通过。评分来源必须为 AI。other 无其他问题时写“无”。`,
           result.workDir,
         );
         try {
@@ -1116,7 +1116,7 @@ export function createJobExecutor({
           );
         const delivery = await step(
           'delivery',
-          `${scoreInstructions()}\n以上是本次交付校验的完整五维定义和分档依据。runtime 的 expected 为执行前预期，不是当前执行状态；当前状态只以 outcome、observed、退出码及已验真日志为准，不要把历史计划中的尚未执行当作本次验收未运行。\n对以下 AI 评测数据做交付校验：${JSON.stringify({ snapshot: result.snapshot, sessionId: result.sessionId, promptId: result.promptId, tracePath: result.tracePath, prompt: preparation.value.prompt, evaluationPrompt: result.evaluationPrompt, executionOutcome: result.executionOutcome, review: result.review, processFindings: score.value.processFindings, artifactFindings: score.value.artifactFindings })}\n逐项核对 When/What/Impact/正确做法、过程与产物证据、模型归因和分数分档一致性；检查五维分数与证据是否一致、是否具体可追溯、是否存在虚假成功。基于实际轨迹与代码。passed 只代表内部 AI 评测数据是否完整一致，不能声称满足原项目人工标注规则。不要向腾讯文档或其他平台提交；返回校验清单和结论。`,
+          `${scoreInstructions({ task, turn, prompt: result.evaluationPrompt })}\n以上是本次交付校验的完整五维定义和分档依据。runtime 的 expected 为执行前预期，不是当前执行状态；当前状态只以 outcome、observed、退出码及已验真日志为准，不要把历史计划中的尚未执行当作本次验收未运行。\n对以下 AI 评测数据做交付校验：${JSON.stringify({ snapshot: result.snapshot, sessionId: result.sessionId, promptId: result.promptId, tracePath: result.tracePath, prompt: preparation.value.prompt, evaluationPrompt: result.evaluationPrompt, executionOutcome: result.executionOutcome, review: result.review, processFindings: score.value.processFindings, artifactFindings: score.value.artifactFindings })}\n逐项核对 When/What/Impact/正确做法、过程与产物证据、模型归因和分数分档一致性；检查五维分数与证据是否一致、是否具体可追溯、是否存在虚假成功。基于实际轨迹与代码。passed 只代表内部 AI 评测数据是否完整一致，不能声称满足原项目人工标注规则。不要向腾讯文档或其他平台提交；返回校验清单和结论。`,
           result.workDir,
         );
         automation.delivery = delivery;

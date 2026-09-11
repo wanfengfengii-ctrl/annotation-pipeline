@@ -15,6 +15,7 @@ const scoring = [
   'lib/workflow.mjs',
   'rules/workflow.json',
   'lib/score-consistency.mjs',
+  'lib/score-description-context.mjs',
   'scripts/evidence.mjs',
   'scripts/project-regression-context.mjs',
   'lib/runtime-verification.mjs',
