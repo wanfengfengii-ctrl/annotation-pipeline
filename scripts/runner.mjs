@@ -39,6 +39,7 @@ import {
   fingerprint,
   supplyDecision,
   createLoadAdmission,
+  readConcurrencyMode,
   canReplenish,
   heavyMemoryBudget,
   projectCapacityWithVerifier,
@@ -464,6 +465,7 @@ try {
           profile,
           occupied,
           loadAdmission,
+          concurrencyMode: readConcurrencyMode(workRoot),
         },
       );
       const docker = containers.resourceStatus();

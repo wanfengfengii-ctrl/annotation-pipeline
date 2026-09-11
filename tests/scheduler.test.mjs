@@ -1,12 +1,40 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   capacityFor,
   canReplenish,
   createLoadAdmission,
+  readConcurrencyMode,
   fingerprint,
   supplyDecision,
 } from '../scripts/scheduler.mjs';
+test('fixed project slots ignore host load but retain memory and configured limits', () => {
+  const m = { cores: 10, totalGB: 32, availableGB: 14, load: 25 };
+  const options = {
+    concurrencyMode: 'fixed',
+    loadAdmission: createLoadAdmission(),
+  };
+  assert.equal(capacityFor(m, 3, options).effective, 3);
+  assert.equal(capacityFor(m, 1, options).effective, 1);
+  assert.equal(capacityFor(m, 0, options).effective, 0);
+  assert.equal(capacityFor({ ...m, availableGB: 1 }, 3, options).effective, 0);
+  assert.equal(capacityFor({ ...m, availableGB: 5 }, 3, options).effective, 1);
+});
+test('project concurrency policy is reread and invalid configuration cannot grant slots', (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'concurrency-policy-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'concurrency-policy.json');
+  assert.equal(readConcurrencyMode(root), 'adaptive');
+  writeFileSync(file, JSON.stringify({ version: 1, mode: 'fixed' }));
+  assert.equal(readConcurrencyMode(root), 'fixed');
+  writeFileSync(file, JSON.stringify({ version: 1, mode: 'adaptive' }));
+  assert.equal(readConcurrencyMode(root), 'adaptive');
+  writeFileSync(file, JSON.stringify({ version: 1, mode: 'unlimited' }));
+  assert.throws(() => readConcurrencyMode(root), /策略无效/);
+});
 test('M1 Pro resource admission reserves memory and reduces new starts under load', () => {
   const m = { cores: 10, totalGB: 32, availableGB: 14, load: 3 };
   assert.equal(capacityFor(m).recommended, 3);

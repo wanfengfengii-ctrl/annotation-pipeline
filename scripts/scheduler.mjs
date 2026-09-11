@@ -1,7 +1,20 @@
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { resourceProfile } from '../lib/container-policy.mjs';
+
+// Read each admission cycle so an operator can restore adaptive load handling
+// without restarting the runner or interrupting a native Terminal session.
+export function readConcurrencyMode(workRoot) {
+  const file = path.join(workRoot, 'concurrency-policy.json');
+  if (!existsSync(file)) return 'adaptive';
+  const policy = JSON.parse(readFileSync(file, 'utf8'));
+  if (policy.version !== 1 || !['fixed', 'adaptive'].includes(policy.mode))
+    throw Error('项目并发策略无效');
+  return policy.mode;
+}
 
 function loadCapacity({ cores, load }, maximum) {
   return load >= cores * 1.2
@@ -83,9 +96,12 @@ export function capacityFor(
     profile = resourceProfile(),
     occupied = 0,
     loadAdmission,
+    concurrencyMode = 'adaptive',
     now = Date.now(),
   } = {},
 ) {
+  if (!['fixed', 'adaptive'].includes(concurrencyMode))
+    throw Error('项目并发策略无效');
   const recommended = Math.max(
     1,
     Math.min(4, Math.floor(cores / 3), Math.floor((totalGB - 8) / 6)),
@@ -100,10 +116,14 @@ export function capacityFor(
   const memorySlots =
     Math.max(0, occupied) +
     Math.max(0, Math.floor((availableGB - 2) / profile.hostSlotGB));
-  const loadSlots = loadAdmission
-    ? loadAdmission({ cores, load }, maximum, now)
-    : loadCapacity({ cores, load }, maximum);
+  const loadSlots =
+    concurrencyMode === 'fixed'
+      ? maximum
+      : loadAdmission
+        ? loadAdmission({ cores, load }, maximum, now)
+        : loadCapacity({ cores, load }, maximum);
   return {
+    concurrencyMode,
     recommended,
     hardwareLimit,
     effective: Math.max(0, Math.min(maximum, memorySlots, loadSlots)),
