@@ -528,6 +528,10 @@ test('two qualified candidates buffer is bounded; generation can use an idle pha
     candidateBuffer: 2,
   };
   assert.equal(supplyDecision(c, {}), null);
+  assert.equal(
+    supplyDecision({ ...c, repos: [], unfinishedProjects: 3 }, {}),
+    '现有项目题额未满，优先在原项目续题',
+  );
   assert.ok(supplyDecision({ ...c, queuedCount: 2 }, {}));
   assert.equal(
     canReplenish(c, {}, { capacity: 3, active: 3, stageAvailable: true }),

@@ -9,6 +9,7 @@ import {
   historicalValidationRetryAllowed,
   unsentFailure,
   frozenPreparationFailure,
+  closedRepairDraft,
 } from '@/lib/project-recovery.mjs';
 import { submissionIssues } from '@/lib/submission-policy.mjs';
 import {
@@ -104,13 +105,16 @@ export async function PATCH(
       if (t.turns.at(-1)?.id !== r.id)
         throw Error('后续轮次已存在，不能重跑历史轮次覆盖原始证据');
       if (canPlanDisputedTurn(t, r)) r.planRetry = true;
+      const archivedRepair = closedRepairDraft(t, r);
       const repairPreparation =
-        (!!r.repairOf && r.stage === 'prepare' && unsentFailure(r)) ||
-        frozenPreparationFailure(r);
+        !archivedRepair &&
+        ((!!r.repairOf && r.stage === 'prepare' && unsentFailure(r)) ||
+          frozenPreparationFailure(r));
       if (
-        r.projectRecovery?.state === 'blocked' &&
-        !r.planRetry &&
-        !repairPreparation
+        archivedRepair ||
+        (r.projectRecovery?.state === 'blocked' &&
+          !r.planRetry &&
+          !repairPreparation)
       ) {
         // A user-requested retry after repairing the planner must continue that
         // planner, not replay the rejected question. Keep its attempt history;

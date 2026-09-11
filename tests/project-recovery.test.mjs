@@ -20,6 +20,7 @@ import {
   projectRecoveryReady,
   postprocessRetryDue,
   frozenPreparationFailure,
+  closedRepairDraft,
 } from '../lib/project-recovery.mjs';
 import {
   canAddTurn,
@@ -326,6 +327,160 @@ function audit() {
     },
   };
 }
+
+test('a closed unsent Bug can plan a distinct goal only from archived known native history', async (t) => {
+  const f = setup(t);
+  f.turn.repairOf = 'prior';
+  f.turn.category = 'Bug 修复';
+  f.turn.stage = 'context';
+  f.turn.questionRootId = 'prior';
+  const archiveRoot = path.join(f.dir, 'prior.archive');
+  const fileName = 'workspace/' + f.task.projectSeries.directory + '/app.js';
+  const source = 'export const value = 1;\n';
+  mkdirSync(path.dirname(path.join(archiveRoot, fileName)), {
+    recursive: true,
+  });
+  writeFileSync(path.join(archiveRoot, fileName), source);
+  const manifestPath = path.join(archiveRoot, 'manifest.json');
+  const manifest = JSON.stringify({
+    files: [{ name: fileName, sha256: hash(source) }],
+    omitted: [],
+  });
+  writeFileSync(manifestPath, manifest);
+  const parent = {
+    id: 'prior',
+    questionRootId: 'prior',
+    status: 'review',
+    executionOutcome: 'complete',
+    sessionId: 'session',
+    promptId: 'native-prior',
+    traceExport: { verified: true },
+    permissionAudit: { passed: true },
+    automation: { archive: { manifestPath, manifestSha256: hash(manifest) } },
+  };
+  f.task.turns.unshift(parent);
+  Object.assign(f.state, {
+    status: 'removed',
+    questionId: 'prior',
+    sessionId: 'session',
+    terminal: { runId: 'original-run', terminalProtocolVersion },
+    terminalFinalization: {
+      runId: 'original-run',
+      completedAt: '2026-09-12T00:00:00Z',
+    },
+    results: {
+      prior: {
+        success: true,
+        sessionId: 'session',
+        promptId: 'native-prior',
+        traceExport: { verified: true },
+      },
+    },
+  });
+  const nativeRoot = path.join(f.dir, 'native');
+  mkdirSync(path.join(nativeRoot, '-workspace'), { recursive: true });
+  const native =
+    JSON.stringify({
+      type: 'user',
+      uuid: 'native-prior',
+      sessionId: 'session',
+      message: { content: 'original business question' },
+    }) +
+    '\n' +
+    JSON.stringify({ type: 'system', subtype: 'turn_duration' }) +
+    '\n';
+  writeFileSync(path.join(nativeRoot, '-workspace/session.jsonl'), native);
+  const nativeFiles = [
+    {
+      name: '-workspace/session.jsonl',
+      bytes: Buffer.byteLength(native),
+      sha256: hash(native),
+    },
+  ];
+  const nativeManifest = path.join(f.dir, 'native-manifest.json');
+  writeFileSync(nativeManifest, JSON.stringify({ files: nativeFiles }));
+  f.state.traceExport = {
+    verified: true,
+    path: nativeRoot,
+    manifestPath: nativeManifest,
+    files: 1,
+    sha256: hash(JSON.stringify(nativeFiles)),
+  };
+  f.task.container = f.state;
+  assert.equal(closedRepairDraft(f.task, f.turn), true);
+  assert.equal(projectRecoveryDue(f.task, config), true);
+  for (const patch of [
+    { claudeAttempts: ['uncertain'] },
+    { sessionId: 'maybe-sent' },
+    { questionRootId: 'other' },
+    { recoveryBlocked: true },
+  ])
+    assert.equal(closedRepairDraft(f.task, { ...f.turn, ...patch }), false);
+  assert.equal(
+    closedRepairDraft(
+      { ...f.task, container: { ...f.state, status: 'running' } },
+      f.turn,
+    ),
+    false,
+  );
+  f.containers.owned = () => {
+    throw Error('must not access removed container');
+  };
+  const out = await planFailedProject({
+    ...f,
+    turn: {
+      ...f.turn,
+      status: 'running',
+      projectRetry: { originalStatus: 'failed', originalStage: 'context' },
+    },
+    api: async () => ({ config, history: questionHistory([f.task]), mix: {} }),
+    stage: async ({ stage, allocation }) =>
+      stage === 'policy'
+        ? audit()
+        : {
+            value: {
+              action: 'advance',
+              prompt: fixture.question('独立新功能'),
+              category: allocation.categories[0],
+              difficulty: '中等',
+              projectEvidence: 'app.js',
+              baseComplete: false,
+            },
+          },
+  });
+  assert.equal(
+    out.result.projectRecovery.state,
+    'planned',
+    out.result.projectRecovery.reason,
+  );
+  assert.equal(out.result.projectRecovery.sourceSnapshot.sourceTurnId, 'prior');
+  assert.equal(f.closed(), 0);
+  assert.equal(f.turn.status, 'failed');
+  assert.equal(f.turn.category, 'Bug 修复');
+  assert.equal(
+    readFileSync(path.join(nativeRoot, '-workspace/session.jsonl'), 'utf8'),
+    native,
+  );
+  // A terminal receipt alone must not let untracked native input pass.
+  const mismatched = structuredClone(f.task);
+  mismatched.turns[0].promptId = 'different-known-input';
+  const rejected = await planFailedProject({
+    ...f,
+    task: mismatched,
+    turn: {
+      ...f.turn,
+      projectRetry: { originalStatus: 'failed', originalStage: 'context' },
+    },
+    api: async () => {
+      throw Error('must not generate');
+    },
+    stage: async () => {
+      throw Error('must not generate');
+    },
+  });
+  assert.equal(rejected.result.projectRecovery.state, 'blocked');
+  assert.match(rejected.result.projectRecovery.reason, /原生输入/);
+});
 
 test('safe failed draft retains code, closes only its container and prepares a different audited question', async (t) => {
   const f = setup(t);

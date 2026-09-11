@@ -383,6 +383,58 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
   assert.equal(repairJob.turn.id, repairDraft.id);
   assert.equal(repairJob.turn.projectRetry, undefined);
   assert.equal(repairJob.turn.claudeAttempts, undefined);
+  // A removed, archived native conversation routes an unsent Bug to planning
+  // a distinct project goal, never through the ordinary Claude execution path.
+  const closedDraft = {
+    ...repairDraft,
+    stage: 'context',
+    projectRecovery: undefined,
+  };
+  const archivedParent = {
+    ...priorNative,
+    questionRootId: 'native-root',
+    permissionAudit: { passed: true },
+    traceExport: { verified: true },
+    automation: { archive: { manifestSha256: 'a'.repeat(64) } },
+  };
+  task.container = {
+    status: 'removed',
+    questionId: 'native-root',
+    sessionId: 'original-session',
+    traceExport: { verified: true },
+    terminal: { runId: 'run' },
+    terminalFinalization: { runId: 'run', completedAt: '2026-09-12T00:00:00Z' },
+  };
+  task.turns = [archivedParent, closedDraft];
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(task),
+    task.id,
+  );
+  const closedClaim = await (
+    await post({ action: 'claim', capacity: 3, allowNewContainer: false })
+  ).json();
+  assert.equal(closedClaim.job.turn.projectRetry.originalStage, 'context');
+  assert.equal(closedClaim.job.turn.claudeAttempts, undefined);
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(task),
+    task.id,
+  );
+  const closedRetry = await routes.PATCH(
+    new Request('http://localhost/api/tasks/project', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        action: 'retry',
+        turnId: closedDraft.id,
+        revision: db
+          .prepare('SELECT revision FROM tasks WHERE id=?')
+          .get(task.id).revision,
+      }),
+    }),
+    { params: Promise.resolve({ id: task.id }) },
+  );
+  assert.equal(closedRetry.status, 200);
+  assert.equal(current().turns[1].projectRetry.originalStage, 'context');
+  delete task.container;
   const independentDraft = {
     ...repairDraft,
     repairOf: undefined,

@@ -16,6 +16,7 @@ import {
   projectRecoveryVersion,
   wasSent,
   replacementCategories,
+  closedRepairDraft,
 } from '../lib/project-recovery.mjs';
 import {
   seriesPrompt,
@@ -256,8 +257,27 @@ export async function planFailedProject({
           ? { failedTurnId: turn.id }
           : {},
       );
-      if (!wasSent(original) && !idle.empty)
-        throw Error('声称未发送的草稿存在真实原生输入');
+      if (!wasSent(original) && !idle.empty) {
+        const archivedRepair = closedRepairDraft(
+          { ...task, container: latest },
+          original,
+        );
+        const earlier = task.turns.slice(
+          0,
+          task.turns.findIndex((r) => r.id === original.id),
+        );
+        const known = new Set(
+          earlier
+            .filter((r) => questionRoot(task, r) === latest.questionId)
+            .map((r) => r.promptId)
+            .filter(Boolean),
+        );
+        if (
+          !archivedRepair ||
+          idle.completedPromptIds.some((id) => !known.has(id))
+        )
+          throw Error('声称未发送的草稿存在真实原生输入');
+      }
       return idle;
     };
     checkIdle();
