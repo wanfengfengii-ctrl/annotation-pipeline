@@ -86,7 +86,11 @@ process.stdin.on('end', () => {
   if (out.includes('.consistency.')) throw Error('Style must not trigger rescoring');
   if (revised && !input.includes('点评用具体操作、现象及影响')) throw Error('Missing prose issue');
   const value = ${JSON.stringify(plain)};
-  if (mode !== 'plain' && (!revised || mode === 'still'))
+  if (mode === 'internal') {
+    value.processFindings += '\\n原工具输出："通过"，证据 app.js:1。';
+    value.artifactFindings += '\\n验收原文保留，不改成公开点评。';
+  }
+  if (!['plain', 'internal'].includes(mode) && (!revised || mode === 'still'))
     value.descriptions[0] = '在 app.js:1 保存后列表仍显示旧内容，重新打开详情才能看到修改，核对记录时需要来回切换，因此评3分。';
   if (revised && mode === 'score-change') value.scores[0] = 4;
   if (revised && mode === 'evidence-change') value.evidenceRefs[0] = 'app.js:2';
@@ -110,6 +114,13 @@ process.stdin.on('end', () => {
     const accepted = await run('plain');
     assert.deepEqual(accepted.value, plain);
     assert.equal(accepted.writingRevision, undefined);
+    const internal = await run('internal');
+    assert.equal(internal.writingRevision, undefined);
+    assert.equal(internal.consistencyRevision, undefined);
+    assert.equal(internal.value.processFindings,
+      plain.processFindings + '\n原工具输出："通过"，证据 app.js:1。');
+    assert.equal(internal.value.artifactFindings,
+      plain.artifactFindings + '\n验收原文保留，不改成公开点评。');
     const revised = await run('revise');
     assert.deepEqual(revised.value, plain);
     assert.equal(revised.consistencyRevision, undefined);
@@ -128,7 +139,7 @@ process.stdin.on('end', () => {
     await assert.rejects(run('still'), /表达修订后仍不符合要求/);
     assert.equal(
       readFileSync(path.join(dir, 'calls'), 'utf8').trim().split('\n').length,
-      9,
+      10,
     );
     assert.equal(
       readFileSync(path.join(dir, 'app.js'), 'utf8'),
