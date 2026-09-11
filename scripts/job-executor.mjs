@@ -424,6 +424,21 @@ export function createJobExecutor({
       )
         throw Error('缺少完成的独立运行验收，不能自动出后续题');
       if (
+        turn.stageRecovery?.validationOnly &&
+        result.container?.status === 'removed'
+      ) {
+        delete automation.nextError;
+        automation.next = {
+          value: {
+            action: 'needs_input',
+            prompt: '无',
+            reason:
+              '本轮已完成独立验收与评分；原会话已归档，不能追加同会话 Bug。验收通过后由项目续题流程规划新的独立题，尚有缺陷时保留原结果等待处理',
+          },
+        };
+        return;
+      }
+      if (
         !canAddTurn(task) &&
         sessionTurns(task, turn).filter((r) => !isGatewayContinuation(r))
           .length >= 3
