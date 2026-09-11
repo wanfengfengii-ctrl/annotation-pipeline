@@ -468,7 +468,11 @@ process.stdin.on('data', c=>input+=c); process.stdin.on('end',()=>{
   if(revised && !input.includes('命中词：可能')) throw Error('Missing exact writing issue');
   const mode=fs.existsSync(${JSON.stringify(path.join(dir, 'mode'))})?fs.readFileSync(${JSON.stringify(path.join(dir, 'mode'))},'utf8'):'';
   const value={prompt:revised&&mode!=='invalid'?${JSON.stringify(fixture.categoryQuestion('Feature 迭代'))}:'可能需要加上订单筛选',category:revised&&mode==='changed'?'Bug 修复':'Feature 迭代',difficulty:'中等',stack:'TypeScript',acceptance:['切换状态重置页码','空列表测试']};
-  fs.writeFileSync(out,JSON.stringify(value)); console.log(JSON.stringify({type:'thread.started',thread_id:'fixture'}));
+  if(revised){
+    const contract=JSON.parse(fs.readFileSync(args[args.indexOf('--output-schema')+1]));
+    if(JSON.stringify(contract.required)!=='["prompt"]'||contract.additionalProperties!==false) throw Error('Frozen preparation fields exposed to wording model');
+  }
+  fs.writeFileSync(out,JSON.stringify(revised&&mode!=='changed'?{prompt:value.prompt}:value)); console.log(JSON.stringify({type:'thread.started',thread_id:'fixture'}));
 });`,
       { mode: 0o700 },
     );
@@ -496,7 +500,7 @@ process.stdin.on('data', c=>input+=c); process.stdin.on('end',()=>{
     writeFileSync(path.join(dir, 'mode'), 'changed');
     await assert.rejects(
       codexStage({ ...options, turnId: 'changed' }),
-      /不得改动 prepare.category/,
+      /只能返回 prompt 字段/,
     );
     writeFileSync(path.join(dir, 'mode'), 'invalid');
     await assert.rejects(

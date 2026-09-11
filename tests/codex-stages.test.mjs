@@ -1,7 +1,36 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateStage, validateAllocation } from '../scripts/codex-stages.mjs';
+import {
+  validateStage,
+  validateAllocation,
+  applyPreparationWording,
+} from '../scripts/codex-stages.mjs';
 import { issues, csv } from '../lib/pipeline.ts';
+test('preparation wording changes only prompt and preserves frozen obligations without mutation', () => {
+  const base = {
+    prompt: '原题',
+    category: '代码理解',
+    difficulty: '中等',
+    stack: 'JavaScript',
+    acceptance: ['说明全部有效目标', '原测试与浏览器验收分开说明'],
+  };
+  const frozen = structuredClone(base);
+  const result = applyPreparationWording(base, { prompt: '通俗的题目正文' });
+  assert.deepEqual({ ...result, prompt: base.prompt }, frozen);
+  assert.deepEqual(base, frozen);
+  result.acceptance.push('不应影响原文');
+  assert.deepEqual(base, frozen);
+  for (const patch of [
+    { prompt: 'x', acceptance: ['删掉验收'] },
+    { prompt: 'x', category: 'Bug 修复' },
+    { prompt: '' },
+    null,
+  ])
+    assert.throws(
+      () => applyPreparationWording(base, patch),
+      /只能返回 prompt/,
+    );
+});
 test('Weighted allocation cannot be changed by independent question planning', () => {
   const allocation = { category: 'Feature 迭代' };
   assert.throws(

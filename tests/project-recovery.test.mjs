@@ -19,6 +19,7 @@ import {
   projectRecoveryDue,
   projectRecoveryReady,
   postprocessRetryDue,
+  frozenPreparationFailure,
 } from '../lib/project-recovery.mjs';
 import {
   canAddTurn,
@@ -136,6 +137,24 @@ test('an unsent Bug preparation failure must not close the existing native quest
   });
   assert.equal(projectRecoveryDue(task, { autoContinue: true }), false);
   assert.equal(wasSent(turn), false);
+});
+
+test('frozen preparation wording failures retry the same draft, while submitted inputs never qualify', () => {
+  const turn = {
+    ...draft(),
+    stage: 'prepare',
+    error: '表达修订不得改动 prepare.acceptance',
+  };
+  assert.equal(frozenPreparationFailure(turn), true);
+  assert.equal(projectRecoveryDue(taskOf(turn), { autoContinue: true }), false);
+  for (const patch of [
+    { promptId: 'native' },
+    { sessionId: 'native' },
+    { claudeAttempts: ['reserved'] },
+    { stage: 'policy' },
+    { error: 'other failure' },
+  ])
+    assert.equal(frozenPreparationFailure({ ...turn, ...patch }), false);
 });
 
 test('replanning respects backoff, pause, earlier running work and terminal 504 continuation', () => {

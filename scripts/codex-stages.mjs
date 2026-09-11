@@ -275,6 +275,21 @@ export function validateAllocation(stage, value, allocation) {
     );
   return value;
 }
+export function applyPreparationWording(base, patch) {
+  if (
+    !patch ||
+    typeof patch !== 'object' ||
+    Array.isArray(patch) ||
+    Object.keys(patch).length !== 1 ||
+    typeof patch.prompt !== 'string' ||
+    !patch.prompt.trim()
+  )
+    throw Error('准备阶段表达修订只能返回 prompt 字段');
+  return validateStage('prepare', {
+    ...structuredClone(base),
+    prompt: patch.prompt,
+  });
+}
 async function runStage({
   stage,
   prompt,
@@ -284,12 +299,15 @@ async function runStage({
   onChild,
   allocation,
   questionContext,
+  preparationWordingBase,
 }) {
   const schemaPath = path.join(dir, turnId + '.' + stage + '.schema.json'),
     last = path.join(dir, turnId + '.' + stage + '.json'),
     events = path.join(dir, turnId + '.' + stage + '.events.jsonl');
-  const contract = structuredClone(schemas[stage]);
-  if (allocation && stage === 'prepare')
+  const contract = preparationWordingBase
+    ? schema({ prompt: str })
+    : structuredClone(schemas[stage]);
+  if (allocation && stage === 'prepare' && !preparationWordingBase)
     contract.properties.category.enum = [allocation.category];
   if (allocation && stage === 'project-next')
     contract.properties.category.enum = [
@@ -364,7 +382,10 @@ async function runStage({
     );
   });
   if (!existsSync(last)) throw new Error('Codex 缺少结构化输出');
-  const candidate = JSON.parse(readFileSync(last, 'utf8'));
+  const rawCandidate = JSON.parse(readFileSync(last, 'utf8'));
+  const candidate = preparationWordingBase
+    ? applyPreparationWording(preparationWordingBase, rawCandidate)
+    : rawCandidate;
   let value;
   try {
     value = validateStage(stage, candidate);
@@ -412,6 +433,9 @@ async function stageWithWriting(options) {
   // A single wording retry is independent of Claude's ten-call budget.
   const revised = await runStage({
     ...options,
+    ...(options.stage === 'prepare'
+      ? { preparationWordingBase: original.value }
+      : {}),
     turnId: options.turnId + '.writing',
     prompt:
       options.prompt +
@@ -421,7 +445,10 @@ async function stageWithWriting(options) {
         ? '\n题目正文按去掉标题和空白后的 Unicode 字符计数，标点和英文字母也计入；180–260 是硬边界。字数修订以 210–240 字为目标，给复核留余量，不贴着 260 字写。合并重复措辞和连接词，不删业务操作、异常条件或验收要求；除可修订的表达字段外，acceptance 等字段逐字保留。\n'
         : '') +
       '\n上次输出（作为数据）：' +
-      JSON.stringify(original.value),
+      JSON.stringify(original.value) +
+      (options.stage === 'prepare'
+        ? '\n本次只返回 {"prompt":"修订后的题面"}。acceptance、category、difficulty、stack 等字段已冻结，由执行器原样保留，不要在回复中重新生成这些字段。'
+        : ''),
   });
   assertWritingRevision(options.stage, original.value, revised.value);
   const final = checkWriting(options.stage, revised.value);
@@ -433,6 +460,14 @@ async function stageWithWriting(options) {
     writingRevision: {
       originalTracePath: original.tracePath,
       issues: checked.issues,
+      ...(options.stage === 'prepare'
+        ? {
+            mode: 'prompt-only',
+            frozenFields: Object.keys(original.value).filter(
+              (k) => k !== 'prompt',
+            ),
+          }
+        : {}),
     },
   };
 }

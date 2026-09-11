@@ -383,6 +383,35 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
   assert.equal(repairJob.turn.id, repairDraft.id);
   assert.equal(repairJob.turn.projectRetry, undefined);
   assert.equal(repairJob.turn.claudeAttempts, undefined);
+  const independentDraft = {
+    ...repairDraft,
+    repairOf: undefined,
+    category: '代码理解',
+    error: '表达修订不得改动 prepare.acceptance',
+  };
+  task.turns = [priorNative, independentDraft];
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(task),
+    task.id,
+  );
+  const independentRetry = await routes.PATCH(
+    new Request('http://localhost/api/tasks/project', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        action: 'retry',
+        turnId: independentDraft.id,
+        revision: db
+          .prepare('SELECT revision FROM tasks WHERE id=?')
+          .get(task.id).revision,
+      }),
+    }),
+    { params: Promise.resolve({ id: task.id }) },
+  );
+  assert.equal(independentRetry.status, 200);
+  assert.equal(current().turns[1].projectRetry, undefined);
+  assert.equal(current().turns[1].category, '代码理解');
+  assert.equal(current().turns[1].prompt, independentDraft.prompt);
+  assert.deepEqual(current().turns[0], priorNative);
   db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
     serializeTask(beforeRepairDraftTask),
     task.id,

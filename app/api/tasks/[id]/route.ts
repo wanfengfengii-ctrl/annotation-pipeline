@@ -8,6 +8,7 @@ import {
   validationRetryAllowed,
   historicalValidationRetryAllowed,
   unsentFailure,
+  frozenPreparationFailure,
 } from '@/lib/project-recovery.mjs';
 import { submissionIssues } from '@/lib/submission-policy.mjs';
 import {
@@ -104,7 +105,8 @@ export async function PATCH(
         throw Error('后续轮次已存在，不能重跑历史轮次覆盖原始证据');
       if (canPlanDisputedTurn(t, r)) r.planRetry = true;
       const repairPreparation =
-        !!r.repairOf && r.stage === 'prepare' && unsentFailure(r);
+        (!!r.repairOf && r.stage === 'prepare' && unsentFailure(r)) ||
+        frozenPreparationFailure(r);
       if (
         r.projectRecovery?.state === 'blocked' &&
         !r.planRetry &&
@@ -117,8 +119,7 @@ export async function PATCH(
       }
       if (repairPreparation) {
         delete r.projectRetry;
-        t.automationNotice =
-          '修复题尚未发送，保留原会话和历史记录，重新准备题面';
+        t.automationNotice = '题目尚未发送，保留原题和历史记录，重新准备题面';
       }
       if (r.stageRecovery && !r.planRetry && !r.projectRetry) {
         r.stageRecovery = {
