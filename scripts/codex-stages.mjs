@@ -137,7 +137,11 @@ export const schemas = {
     questionCompliant: { type: 'boolean' },
     questionChecks: strings,
     wordingRequirements: strings,
-    wordingDuplicatePairs: strings,
+    wordingDuplicatePairs: {
+      ...strings,
+      description:
+        '只填写实际发现的重复句对。逐句核对后没有重复必须返回空数组 []，不能填写无、无重复、未发现重复等说明；这些说明放在 redundancy 检查或 reason 中。实际存在重复不得清空。',
+    },
     workflowFeatures: strings,
     businessDetails: strings,
     simpleFeatures: strings,
