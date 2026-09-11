@@ -40,7 +40,6 @@ import {
   supplyDecision,
   createLoadAdmission,
   canReplenish,
-  canStartHeavy,
   heavyMemoryBudget,
   projectCapacityWithVerifier,
 } from './scheduler.mjs';
@@ -495,9 +494,14 @@ try {
             : docker.resourceSample?.reason ||
               '同时按宿主机与 Docker 虚拟机资源限制';
       const readySources = docker.ready ? context.repos : [];
-      budget.heavyMemoryBytes = heavyMemoryBudget(docker, profile);
+      const heavyMemoryPoolBytes = heavyMemoryBudget(
+        docker,
+        profile,
+        6 * 2 ** 30,
+      );
       budget.update(resource.effective, {
-        heavyAllowed: canStartHeavy(docker, profile),
+        heavyAllowed: heavyMemoryPoolBytes > 0,
+        heavyMemoryPoolBytes,
       });
       schedulerStatus = {
         ...resource,

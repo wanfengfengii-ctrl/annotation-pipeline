@@ -49,31 +49,107 @@ function temp(t) {
   return dir;
 }
 
-test('shared budget overlaps Claude with postprocessing, limits Codex/heavy and prioritizes delivery', async () => {
+test('shared budget overlaps stages and prioritizes delivery when all three slots are occupied', async () => {
   const budget = new StageBudget({ capacity: 3 }),
     a = deferred(),
     b = deferred(),
+    c = deferred(),
     order = [];
   const first = budget.run('claude', 'a', 'claude', () => a.promise);
   const scoring = budget.run('codex', 'b', 'score', () => b.promise);
+  const heavy = budget.run('heavy', 'c', 'runtime-running', () => c.promise);
   const generating = budget.run('codex', 'supply', 'generate', async () =>
     order.push('generate'),
   );
   const delivery = budget.run('codex', 'c', 'delivery', async () =>
     order.push('delivery'),
   );
-  const heavy = budget.run('heavy', 'c', 'runtime-running', async () =>
-    order.push('heavy'),
-  );
+  assert.equal(budget.running.size, 3);
+  c.resolve();
   await heavy;
-  assert.equal(budget.running.size, 2);
   b.resolve();
   await scoring;
   await delivery;
   await generating;
-  assert.deepEqual(order, ['heavy', 'delivery', 'generate']);
+  assert.deepEqual(order, ['delivery', 'generate']);
   a.resolve();
   await first;
+});
+test('Codex and heavy stages each admit three workers while a fourth waits for the shared budget', async () => {
+  for (const kind of ['codex', 'heavy']) {
+    const budget = new StageBudget({ capacity: 3 });
+    const gates = Array.from({ length: 4 }, deferred),
+      started = [];
+    const jobs = gates.map((gate, i) =>
+      budget.run(kind, String(i), 'runtime-running', async () => {
+        started.push(i);
+        await gate.promise;
+      }),
+    );
+    await tick();
+    assert.deepEqual(started, [0, 1, 2]);
+    assert.equal(budget.snapshot().limits[kind], 3);
+    gates[0].resolve();
+    await jobs[0];
+    await tick();
+    assert.deepEqual(started, [0, 1, 2, 3]);
+    gates.forEach((g) => g.resolve());
+    await Promise.all(jobs);
+  }
+});
+test('parallel verifiers receive separate memory grants and cannot reserve the same pool twice', async () => {
+  const budget = new StageBudget({ capacity: 3 }),
+    GiB = 2 ** 30;
+  budget.update(3, { heavyMemoryPoolBytes: 3 * GiB });
+  const gates = Array.from({ length: 3 }, deferred),
+    grants = [];
+  const jobs = gates.map((gate, i) =>
+    budget.run('heavy', String(i), 'runtime-running', async (grant) => {
+      grants.push(grant.memoryBytes);
+      await gate.promise;
+    }),
+  );
+  // A pool update before the callbacks start must not alter their reserved grants.
+  budget.update(3, { heavyMemoryPoolBytes: 6 * GiB });
+  await tick();
+  assert.deepEqual(grants, [GiB, GiB, GiB]);
+  assert.equal(budget.snapshot().heavyReservedBytes, 3 * GiB);
+  budget.update(3, { heavyMemoryPoolBytes: GiB });
+  let extra = false;
+  const waiting = budget.run('heavy', 'later', 'runtime-running', async () => {
+    extra = true;
+  });
+  gates[0].resolve();
+  await jobs[0];
+  await tick();
+  assert.equal(extra, false);
+  gates[1].resolve();
+  await jobs[1];
+  await tick();
+  assert.equal(extra, false);
+  gates[2].resolve();
+  await jobs[2];
+  await waiting;
+  assert.equal(extra, true);
+  assert.equal(budget.snapshot().heavyReservedBytes, 0);
+});
+test('timing passes the reserved verifier memory to its actual work', async (t) => {
+  const b = new StageBudget({ capacity: 3 }),
+    MiB = 2 ** 20;
+  b.update(3, { heavyMemoryPoolBytes: 768 * MiB });
+  const timing = attemptTiming({
+    dir: temp(t),
+    taskId: 'task',
+    turnId: 'turn',
+    release: 'test',
+  });
+  assert.equal(
+    await timing.stage('runtime-running', (grant) => grant.memoryBytes, {
+      budget: b,
+      kind: 'heavy',
+    }),
+    768 * MiB,
+  );
 });
 test('capacity shrink does not stop active work; waiting resumes after load recovery', async () => {
   const b = new StageBudget({ capacity: 2 }),
@@ -271,6 +347,9 @@ test('lightweight admission reserves verifier memory and never grants it under p
   };
   assert.equal(projectCapacityWithVerifier(engine, profile), 3);
   assert.equal(heavyMemoryBudget(engine, profile), GiB);
+  engine.memoryBytes = 16 * GiB;
+  assert.equal(heavyMemoryBudget(engine, profile, 6 * GiB), 6 * GiB);
+  engine.memoryBytes = 8 * GiB;
   engine.resourceSample.ownedContainers.push({ memoryLimitBytes: 1.5 * GiB });
   assert.equal(heavyMemoryBudget(engine, profile), 0);
   engine.resourceSample.ownedContainers = [];

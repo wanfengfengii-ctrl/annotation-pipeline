@@ -218,7 +218,11 @@ export function canReplenish(
   return supplyDecision(context, state, now) === null;
 }
 
-export function heavyMemoryBudget(engine, profile = resourceProfile()) {
+export function heavyMemoryBudget(
+  engine,
+  profile = resourceProfile(),
+  maximumBytes = 2 * 2 ** 30,
+) {
   const sample = engine?.resourceSample;
   if (!engine?.ready || !sample?.ok) return 0;
   const reserved = (sample.ownedContainers || []).reduce(
@@ -237,7 +241,7 @@ export function heavyMemoryBudget(engine, profile = resourceProfile()) {
   const bytes =
     Math.floor(
       Math.min(
-        2 * 2 ** 30,
+        maximumBytes,
         engine.memoryBytes - reserved - external - profile.dockerReserveBytes,
       ) /
         (256 * 2 ** 20),

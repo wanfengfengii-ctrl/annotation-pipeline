@@ -38,7 +38,7 @@ export function attemptTiming({
       const id = randomUUID(),
         queued = now();
       emit('stage-queued', { stage: name, spanId: id });
-      const run = async () => {
+      const run = async (grant) => {
         const start = now();
         emit('stage-start', {
           stage: name,
@@ -46,7 +46,7 @@ export function attemptTiming({
           queueMs: Math.max(0, start - queued),
         });
         try {
-          const value = await work();
+          const value = await work(grant);
           emit('stage-end', {
             stage: name,
             spanId: id,
