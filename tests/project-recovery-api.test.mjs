@@ -537,6 +537,7 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     turnId: historyId,
     jobToken: hj.turn.jobToken,
     success: true,
+    projectRecovery: structuredClone(historyTurn.projectRecovery),
     container: historyContainer,
     traceExport: historyTurn.traceExport,
     permissionAudit: historyTurn.permissionAudit,
@@ -567,6 +568,39 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
   assert.notEqual(
     (await post({ ...historyFinish, sessionId: 'wrong-session' })).status,
     200,
+  );
+  assert.notEqual(
+    (
+      await post({
+        ...historyFinish,
+        projectRecovery: {
+          ...historyTurn.projectRecovery,
+          nextTurnId: 'new-question',
+        },
+      })
+    ).status,
+    200,
+    'historical context must not authorize a new project recovery',
+  );
+  const failedHistory = await post({
+    ...historyFinish,
+    success: false,
+    error: '验收脚本定位错误',
+  });
+  assert.equal(failedHistory.status, 200, await failedHistory.clone().text());
+  assert.equal(current().turns[0].status, 'failed');
+  assert.equal(current().turns[0].jobToken, undefined);
+  assert.equal(current().turns[0].stageRecovery.retrying, false);
+  assert.deepEqual(
+    current().turns[0].projectRecovery,
+    historyTurn.projectRecovery,
+  );
+  assert.deepEqual(current().turns[1], liveBeforeFinish.turns[1]);
+  assert.equal(current().turns.length, 2);
+  // Independently verify the successful result path from the same claimed state.
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(liveBeforeFinish),
+    task.id,
   );
   const historySaved = await post(historyFinish);
   assert.equal(historySaved.status, 200, await historySaved.clone().text());

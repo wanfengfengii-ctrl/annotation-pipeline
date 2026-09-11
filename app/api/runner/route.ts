@@ -676,10 +676,15 @@ export async function POST(req: Request) {
           item.task.turns.at(-1)?.id === r.id ||
           r.projectRetry ||
           r.planRetry ||
-          b.projectRecovery ||
+          (b.projectRecovery !== undefined &&
+            JSON.stringify(b.projectRecovery) !==
+              JSON.stringify(r.projectRecovery)) ||
           b.gatewayFailure
         )
           throw Error('历史验收不能变更当前项目或创建后续题');
+        // Old results retain their original project-recovery receipt as
+        // context. Accept that unchanged receipt, but never execute or replace
+        // it here; a new recovery proposal is still rejected above.
         for (const key of [
           'sessionId',
           'promptId',
