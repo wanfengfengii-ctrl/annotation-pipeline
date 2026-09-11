@@ -102,6 +102,8 @@ async function execute(
         exitCode = 0;
       if (args.includes('annotation.verification-probe=true'))
         output = JSON.stringify(capabilities);
+      if (args.includes('annotation.verification-preflight=true'))
+        output = JSON.stringify({ version: 1, issues: [] });
       if (args[0] === 'exec') {
         assert.equal(args.at(-2), '-c');
         const command = args.at(-1);

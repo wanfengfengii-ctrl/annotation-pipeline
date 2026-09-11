@@ -182,6 +182,9 @@ export function runtimeRetryContext(report, context) {
           logSha256,
           evidenceLine,
           codeEvidence,
+          command,
+          expected,
+          requirement,
         }) => ({
           id,
           kind,
@@ -191,6 +194,15 @@ export function runtimeRetryContext(report, context) {
           logSha256,
           evidenceLine,
           codeEvidence,
+          command:
+            command ||
+            report.plan.value.checks.find((c) => c.id === id)?.command,
+          expected,
+          requirement,
+          logExcerpt: runtimeEvidenceLines(readFileSync(logPath, 'utf8'))
+            .slice(Math.max(0, evidenceLine - 5), evidenceLine + 12)
+            .join('\n')
+            .slice(0, 3500),
         }),
       ),
     };

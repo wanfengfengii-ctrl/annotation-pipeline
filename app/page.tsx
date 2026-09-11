@@ -7,7 +7,10 @@ import {
   freshCategories,
 } from '@/lib/project-series.mjs';
 import { RecordsTable } from '@/components/pipeline/records-table';
-import { sentProjectCounts } from '@/lib/project-recovery.mjs';
+import {
+  sentProjectCounts,
+  validationRetryAllowed,
+} from '@/lib/project-recovery.mjs';
 import { formatQuestionText } from '@/lib/question-text.mjs';
 import { canPlanDisputedTurn } from '@/lib/disputed-continuation.mjs';
 import { initialCodeURL, recordRound, recordStack } from '@/lib/record-fields';
@@ -1652,9 +1655,16 @@ function TurnPanel({
           <Button
             variant="outline"
             disabled={busy}
-            onClick={() => run({ action: 'retry', turnId: r.id })}
+            onClick={() =>
+              run({
+                action: validationRetryAllowed(t, r)
+                  ? 'retry-validation'
+                  : 'retry',
+                turnId: r.id,
+              })
+            }
           >
-            重试失败阶段
+            {validationRetryAllowed(t, r) ? '仅重做验收与评分' : '重试失败阶段'}
           </Button>
         )}
       {r.excluded ? (

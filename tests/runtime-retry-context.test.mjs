@@ -23,6 +23,7 @@ import {
   runtimePythonBrowserExample,
 } from '../scripts/runtime-verification.mjs';
 import { jobReleaseProtocol } from '../scripts/job-release.mjs';
+import { completedValidationEvidence } from '../scripts/completed-validation.mjs';
 const hash = (data) => createHash('sha256').update(data).digest('hex');
 
 function fixture(t) {
@@ -123,6 +124,123 @@ function fixture(t) {
   });
   return { context, report, root, runs, prepared };
 }
+
+test('completed archived recovery binds the exact native turn, export and unchanged source', (t) => {
+  const f = fixture(t),
+    { dir, workDir, imageId, prompt, acceptance } = f.context;
+  const state = {
+    status: 'removed',
+    taskId: 'task',
+    questionId: 'question',
+    containerId: 'container',
+    imageId,
+    snapshot: 'docker://image',
+    workDir,
+  };
+  const turn = {
+    id: 'turn',
+    questionRootId: 'question',
+    promptId: 'done',
+    sessionId: 'session',
+    stageRecovery: { validationOnly: true },
+  };
+  const events = [
+    {
+      type: 'user',
+      uuid: 'earlier',
+      sessionId: 'session',
+      message: { content: prompt },
+    },
+    { type: 'assistant', isApiErrorMessage: true, message: { content: [] } },
+    { type: 'system', subtype: 'turn_duration' },
+    {
+      type: 'user',
+      uuid: 'done',
+      sessionId: 'session',
+      message: { content: prompt },
+    },
+    {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'Finished' }] },
+    },
+    { type: 'system', subtype: 'turn_duration' },
+  ];
+  const native = events.map((e) => JSON.stringify(e)).join('\n') + '\n';
+  const nativePath = path.join(dir, 'turn.native.jsonl');
+  writeFileSync(nativePath, native);
+  const exportRoot = path.join(dir, 'export');
+  mkdirSync(path.join(exportRoot, '-workspace'), { recursive: true });
+  writeFileSync(path.join(exportRoot, '-workspace/session.jsonl'), native);
+  const files = [
+    {
+      name: '-workspace/session.jsonl',
+      bytes: Buffer.byteLength(native),
+      sha256: hash(native),
+    },
+  ];
+  const manifestPath = path.join(dir, 'native-manifest.json');
+  writeFileSync(
+    manifestPath,
+    JSON.stringify({ containerId: 'container', files }),
+  );
+  const cached = {
+    prepare: { value: { prompt, acceptance } },
+    snapshot: {
+      engine: 'codex-cli',
+      value: { ready: true },
+      environmentEvidence: { ...state, running: true },
+    },
+    claude: {
+      success: true,
+      executionOutcome: 'complete',
+      permissionAudit: { passed: true },
+      container: state,
+      workDir,
+      promptId: 'done',
+      sessionId: 'session',
+      traceExport: {
+        verified: true,
+        path: exportRoot,
+        manifestPath,
+        files: 1,
+        sha256: hash(JSON.stringify(files)),
+      },
+    },
+    runtimeVerification: f.report,
+  };
+  const input = { task: { id: 'task' }, turn, cached, state, dir };
+  const before = structuredClone(input);
+  const result = completedValidationEvidence(input);
+  assert.equal(result.historical, true);
+  assert.equal(result.running, false);
+  assert.equal(result.sourceReportSha256, f.report.reportSha256);
+  assert.deepEqual(input, before);
+  for (const changed of [
+    { pending: {} },
+    { containerId: 'other' },
+    { questionId: 'other' },
+  ])
+    assert.throws(() =>
+      completedValidationEvidence({
+        ...input,
+        state: { ...state, ...changed },
+      }),
+    );
+  assert.throws(() =>
+    completedValidationEvidence({
+      ...input,
+      turn: { ...turn, promptId: 'earlier' },
+    }),
+  );
+  writeFileSync(nativePath, native.replace('Finished', 'Changed'));
+  assert.throws(() => completedValidationEvidence(input), /导出原件不一致/);
+  writeFileSync(nativePath, native);
+  writeFileSync(path.join(workDir, 'app.js'), 'console.log(2);\n');
+  assert.throws(
+    () => completedValidationEvidence(input),
+    /原验收源码或日志不一致/,
+  );
+});
 
 test('verified blocked history retains four real defects but cannot be reused as a passed run', (t) => {
   const f = fixture(t);

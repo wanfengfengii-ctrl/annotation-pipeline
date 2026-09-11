@@ -34,6 +34,7 @@ export function runtimePlanningContext({ task, turn, dir, files }) {
     previousTurnId: prior ? previous.id : null,
     inventorySha256: hash(JSON.stringify(files)),
     files: files.map((f) => f.path),
+    projectDirectory: task.projectSeries?.directory || null,
     changed,
     removed,
     entryCandidates: files

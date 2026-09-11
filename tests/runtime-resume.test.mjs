@@ -118,9 +118,11 @@ function fixture(t) {
       calls.push(args);
       const output = args.includes('annotation.verification-probe=true')
         ? JSON.stringify(capabilities)
-        : args[0] === 'exec'
-          ? 'result\rprogress\nASSERT PASS\n'
-          : 'container';
+        : args.includes('annotation.verification-preflight=true')
+          ? JSON.stringify({ version: 1, issues: [] })
+          : args[0] === 'exec'
+            ? 'result\rprogress\nASSERT PASS\n'
+            : 'container';
       if (options.logPath) writeFileSync(options.logPath, output);
       return {
         exitCode: 0,

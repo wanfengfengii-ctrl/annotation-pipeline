@@ -358,7 +358,19 @@ async function runStage({
     );
   });
   if (!existsSync(last)) throw new Error('Codex 缺少结构化输出');
-  const value = validateStage(stage, JSON.parse(readFileSync(last, 'utf8')));
+  const candidate = JSON.parse(readFileSync(last, 'utf8'));
+  let value;
+  try {
+    value = validateStage(stage, candidate);
+  } catch (error) {
+    if (stage === 'runtime-plan')
+      error.runtimePlanCandidate = {
+        value: candidate,
+        tracePath: events,
+        outputPath: last,
+      };
+    throw error;
+  }
   validateAllocation(stage, value, allocation);
   const thread = output.split('\n').flatMap((x) => {
     try {

@@ -436,7 +436,11 @@ export async function POST(req: Request) {
         : [];
       const established = (t: Task) => !!t.container || t.turns.some(wasSent);
       const unfinishedEstablished = tasks.filter(
-        (t) => t.projectSeries && !t.closed && !projectQuotaComplete(t) && established(t),
+        (t) =>
+          t.projectSeries &&
+          !t.closed &&
+          !projectQuotaComplete(t) &&
+          established(t),
       ).length;
       const ordered = [...tasks]
         .reverse()
@@ -446,9 +450,11 @@ export async function POST(req: Request) {
         );
       for (const item of ordered) {
         if (
-          item.projectSeries && !established(item) &&
+          item.projectSeries &&
+          !established(item) &&
           unfinishedEstablished >= Math.min(3, config.concurrency)
-        ) continue;
+        )
+          continue;
         if (
           Array.isArray(b.excludeTaskIds) &&
           b.excludeTaskIds.includes(item.id)
@@ -515,6 +521,8 @@ export async function POST(req: Request) {
       if (!item || !r || r.status !== 'running' || r.jobToken !== b.jobToken)
         throw Error('执行额度凭据无效');
       if (r.projectRetry) throw Error('项目续题规划不能调用 Claude');
+      if (r.stageRecovery?.validationOnly)
+        throw Error('仅重做验收不能调用 Claude');
       if (
         !r.repairOf &&
         !r.continuationOf &&
@@ -709,7 +717,15 @@ export async function POST(req: Request) {
         return Response.json({ ok: true });
       }
       if (!b.success) {
-        for (const key of ['sessionId', 'promptId', 'tracePath', 'traceExport', 'permissionAudit', 'output', 'finishedAt'] as const)
+        for (const key of [
+          'sessionId',
+          'promptId',
+          'tracePath',
+          'traceExport',
+          'permissionAudit',
+          'output',
+          'finishedAt',
+        ] as const)
           if (b[key] === undefined && r[key] !== undefined) b[key] = r[key];
       }
       if (

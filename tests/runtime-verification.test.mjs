@@ -672,6 +672,11 @@ test('Setup dependency failure remains blocked with bound probe evidence and unt
       calls.push(args);
       if (args.includes('annotation.verification-probe=true'))
         return dockerResult(JSON.stringify(probeCapabilities), options);
+      if (args.includes('annotation.verification-preflight=true'))
+        return dockerResult(
+          JSON.stringify({ version: 1, issues: [] }),
+          options,
+        );
       if (args[0] === 'exec')
         return dockerResult(
           'ENVIRONMENT_BLOCKED: browser download failed\n',

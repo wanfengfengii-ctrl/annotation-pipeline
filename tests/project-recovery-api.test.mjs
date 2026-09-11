@@ -361,6 +361,45 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     null,
     'explicit retry does not reset the automatic retry budget',
   );
+  const validationRevision = db
+    .prepare('SELECT revision FROM tasks WHERE id=?')
+    .get(task.id).revision;
+  const validationRequest = await routes.PATCH(
+    new Request('http://localhost/api/tasks/project', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        action: 'retry-validation',
+        turnId: blocked.id,
+        revision: validationRevision,
+      }),
+    }),
+    { params: Promise.resolve({ id: task.id }) },
+  );
+  assert.equal(validationRequest.status, 200);
+  assert.equal(current().turns[0].projectRetry, undefined);
+  assert.equal(current().turns[0].stageRecovery.validationOnly, true);
+  assert.equal(current().turns[0].projectRecovery.attempts, 4);
+  const validationJob = (
+    await (await post({ action: 'claim', capacity: 3 })).json()
+  ).job;
+  assert.ok(validationJob.turn.stageRecovery.validationOnly);
+  const deniedValidationSend = await post({
+    action: 'reserve-claude',
+    taskId: task.id,
+    turnId: blocked.id,
+    jobToken: validationJob.turn.jobToken,
+    attemptId: 'must-not-send',
+    sessionId: 'native-session',
+  });
+  assert.notEqual(deniedValidationSend.status, 200);
+  for (const key of [
+    'sessionId',
+    'promptId',
+    'tracePath',
+    'traceExport',
+    'review',
+  ])
+    assert.deepEqual(current().turns[0][key], blocked[key]);
   // Finish this fixture before exercising unrelated project admission quotas.
   task.turns = [retained];
   db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(

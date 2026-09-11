@@ -3,7 +3,10 @@ import { isContinuation } from '@/lib/round-context.mjs';
 import { updateRecordMetadata } from '@/lib/record-metadata';
 import { businessRecord } from '@/lib/business-record.mjs';
 import { canAddTurn } from '@/lib/project-series.mjs';
-import { projectQuotaComplete } from '@/lib/project-recovery.mjs';
+import {
+  projectQuotaComplete,
+  validationRetryAllowed,
+} from '@/lib/project-recovery.mjs';
 import { submissionIssues } from '@/lib/submission-policy.mjs';
 import {
   canPlanDisputedTurn,
@@ -115,6 +118,24 @@ export async function PATCH(
       }
       r.status = 'queued';
       if (!r.projectRetry) r.error = '';
+    } else if (b.action === 'retry-validation') {
+      const r = t.turns.find((r) => r.id === b.turnId);
+      if (!validationRetryAllowed(t, r))
+        throw Error(
+          '此轮不能仅重做验收：需本项目末轮已完成、原件齐全且没有运行中的后续题',
+        );
+      r!.stageRecovery = {
+        ...r!.stageRecovery,
+        attempts: (r!.stageRecovery?.attempts || 0) + 1,
+        retrying: true,
+        validationOnly: true,
+        originalStage: r!.stageRecovery?.originalStage || r!.stage,
+        originalError: r!.stageRecovery?.originalError || r!.error,
+        queuedAt: new Date().toISOString(),
+      };
+      delete r!.projectRetry;
+      r!.status = 'queued';
+      t.automationNotice = '保留本题产物和原始轨迹，仅重做独立验收及评分';
     } else if (b.action === 'retry-plan') {
       const r = t.turns.at(-1);
       const disputed = canPlanDisputedTurn(t, r);

@@ -5,6 +5,7 @@ import {
   policyHistory,
 } from '../lib/question-history.mjs';
 import { runtimePlanningContext } from './runtime-planning-context.mjs';
+import { completedValidationEvidence } from './completed-validation.mjs';
 import { scoreDescriptionContext } from '../lib/score-description-context.mjs';
 import { stageContractDigest } from './stage-contract.mjs';
 import { DockerRuntime } from './docker-runtime.mjs';
@@ -407,7 +408,11 @@ export function createJobExecutor({
         prompt,
         cwd,
         dir,
-        turnId: turn.id + '.attempt-' + (cached.attempt || 1),
+        turnId:
+          turn.id +
+          '.attempt-' +
+          (cached.attempt || 1) +
+          (extra.artifactSuffix || ''),
         onChild,
       });
       return value;
@@ -863,7 +868,20 @@ export function createJobExecutor({
         const container = cached.claude?.container || task.container;
         if (!container || !validDockerSnapshot(container.snapshot))
           throw Error('缺少经过核验的容器初始环境');
-        const environmentEvidence = containers.environmentEvidence(task, turn);
+        const savedContainerState = containers.load(task.id);
+        const historicalEnvironment =
+          turn.stageRecovery?.validationOnly &&
+          savedContainerState?.status === 'removed'
+            ? completedValidationEvidence({
+                task,
+                turn,
+                cached,
+                state: savedContainerState,
+                dir,
+              })
+            : null;
+        const environmentEvidence =
+          historicalEnvironment || containers.environmentEvidence(task, turn);
         const environmentPath = path.join(
           dir,
           turn.id + '.attempt-' + (cached.attempt || 1) + '.environment.json',
@@ -887,17 +905,19 @@ export function createJobExecutor({
           (turn.repairOf &&
             task.turns.find((r) => r.id === turn.repairOf)?.automation
               ?.snapshot);
-        const snap = preserveInitialSnapshot
-          ? resumeInitialSnapshot(
-              initialSnapshot,
-              environmentEvidence,
-              environmentPath,
-            )
-          : await step(
-              'snapshot',
-              `只读检查容器任务的环境证据：${JSON.stringify(container)}。执行器已在本阶段开始前通过 Docker CLI 实时核验容器身份、镜像、运行状态、唯一工作区挂载和隔离配置，任一项不符会由程序直接中止。脱敏核验文件：${environmentPath}，内容：${JSON.stringify(environmentEvidence)}。你的只读环境不能访问 Docker socket，不执行 Docker、容器控制、终端探测或其他运行环境命令；容器实时状态引用执行器核验结果，不重复探测。你负责读取当前绑定挂载目录及初始代码清单，核对代码摘要、依赖声明和启动说明。容器从指定镜像和空 /workspace 启动，再导入系统准备的项目骨架或上题冻结的代码；初始代码以 scaffoldSnapshot 或 sourceSnapshot 证据为准。ready 表示环境及初始代码证据是否可用于开始本题，不表示业务功能已完成。首题骨架的 NotImplementedError 和跳过的占位测试属于预期，不因此拒绝环境就绪；不在此阶段启动业务服务或运行验收测试。不要要求根目录有 Git，不得修改、提交或推送。head 返回镜像摘要，remote 返回镜像名称。environmentLevel 只能是 ${workflow.environmentLevels.join('；')}。列出依赖、启动方法和真实核验范围；镜像固定不代表外部服务及后续下载的依赖已经冻结，不得编造运行结果。`,
-              task.workDir || cached.claude.workDir,
-            );
+        const snap = historicalEnvironment
+          ? { ...initialSnapshot, completedValidation: historicalEnvironment }
+          : preserveInitialSnapshot
+            ? resumeInitialSnapshot(
+                initialSnapshot,
+                environmentEvidence,
+                environmentPath,
+              )
+            : await step(
+                'snapshot',
+                `只读检查容器任务的环境证据：${JSON.stringify(container)}。执行器已在本阶段开始前通过 Docker CLI 实时核验容器身份、镜像、运行状态、唯一工作区挂载和隔离配置，任一项不符会由程序直接中止。脱敏核验文件：${environmentPath}，内容：${JSON.stringify(environmentEvidence)}。你的只读环境不能访问 Docker socket，不执行 Docker、容器控制、终端探测或其他运行环境命令；容器实时状态引用执行器核验结果，不重复探测。你负责读取当前绑定挂载目录及初始代码清单，核对代码摘要、依赖声明和启动说明。容器从指定镜像和空 /workspace 启动，再导入系统准备的项目骨架或上题冻结的代码；初始代码以 scaffoldSnapshot 或 sourceSnapshot 证据为准。ready 表示环境及初始代码证据是否可用于开始本题，不表示业务功能已完成。首题骨架的 NotImplementedError 和跳过的占位测试属于预期，不因此拒绝环境就绪；不在此阶段启动业务服务或运行验收测试。不要要求根目录有 Git，不得修改、提交或推送。head 返回镜像摘要，remote 返回镜像名称。environmentLevel 只能是 ${workflow.environmentLevels.join('；')}。列出依赖、启动方法和真实核验范围；镜像固定不代表外部服务及后续下载的依赖已经冻结，不得编造运行结果。`,
+                task.workDir || cached.claude.workDir,
+              );
         if (!preserveInitialSnapshot) {
           snap.environmentEvidence = environmentEvidence;
           snap.environmentEvidencePath = environmentPath;
@@ -987,6 +1007,8 @@ export function createJobExecutor({
           jobToken: turn.jobToken,
           automation,
         };
+        if (historicalEnvironment)
+          result.container = containers.public(savedContainerState);
         if (!result.success) throw new Error(result.error || 'Claude 执行失败');
         if (permissionIssues(result).length)
           throw Error(permissionIssues(result).join('；'));

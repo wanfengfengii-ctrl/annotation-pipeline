@@ -135,7 +135,7 @@ test('replanning respects backoff, pause, earlier running work and terminal 504 
   assert.equal(projectRecoveryDue(task, config), false);
 });
 
-test('completed Claude work retries only its failed postprocessing before replanning', () => {
+test('completed Claude work keeps its artifact after bounded postprocessing retries', () => {
   const turn = {
     ...draft(),
     excluded: false,
@@ -155,6 +155,8 @@ test('completed Claude work retries only its failed postprocessing before replan
   assert.equal(postprocessRetryDue(task, config), true);
   turn.stageRecovery = { attempts: 2 };
   assert.equal(postprocessRetryDue(task, config), false);
+  assert.equal(projectRecoveryDue(task, config), false);
+  turn.automation = { submittedPolicyEvidence: { reason: '原题重复' } };
   assert.equal(projectRecoveryDue(task, config), true);
   turn.executionOutcome = 'truncated';
   assert.equal(postprocessRetryDue(task, config), false);
@@ -182,9 +184,24 @@ test('global goals include later iterations, queued candidates and rejected draf
 
 test('sent-question audits keep their original history while new questions see later rejected goals', () => {
   const original = [{ id: 'older', prompt: 'earlier goal' }];
-  const later = [...original, { id: 'later', prompt: 'rejected after the original was sent' }];
-  assert.deepEqual(policyHistory(later, 'current', { preserveQuestion: true, policyOrigin: { history: original } }), original);
-  assert.deepEqual(policyHistory(later, 'current', { preserveQuestion: false, policyOrigin: { history: original } }), later);
+  const later = [
+    ...original,
+    { id: 'later', prompt: 'rejected after the original was sent' },
+  ];
+  assert.deepEqual(
+    policyHistory(later, 'current', {
+      preserveQuestion: true,
+      policyOrigin: { history: original },
+    }),
+    original,
+  );
+  assert.deepEqual(
+    policyHistory(later, 'current', {
+      preserveQuestion: false,
+      policyOrigin: { history: original },
+    }),
+    later,
+  );
 });
 
 function setup(t) {
@@ -382,17 +399,25 @@ test('source baseline prefers the verified previous code and rejects tampered ar
 
 test('a later permission denial disqualifies a prior archive in the same session', (t) => {
   const f = setup(t);
-  f.task.turns.unshift({
-    id: 'previous',
-    sessionId: 'denied-session',
-    status: 'review',
-    permissionAudit: { passed: true },
-    automation: { archive: { manifestSha256: 'untrusted', manifestPath: '/must-not-read' } },
-  }, {
-    id: 'denied-repair',
-    sessionId: 'denied-session',
-    permissionAudit: { passed: false },
-  });
+  f.task.turns.unshift(
+    {
+      id: 'previous',
+      sessionId: 'denied-session',
+      status: 'review',
+      permissionAudit: { passed: true },
+      automation: {
+        archive: {
+          manifestSha256: 'untrusted',
+          manifestPath: '/must-not-read',
+        },
+      },
+    },
+    {
+      id: 'denied-repair',
+      sessionId: 'denied-session',
+      permissionAudit: { passed: false },
+    },
+  );
   const kept = retainRecoverySource(f);
   assert.equal(kept.sourceTurnId, f.turn.id);
   assert.equal(kept.baseline, 'idle-current-source');
@@ -400,14 +425,68 @@ test('a later permission denial disqualifies a prior archive in the same session
 
 test('an API failure before postprocessing reaches Claude collection preserves cached native evidence', async (t) => {
   const f = setup(t);
-  const native = {success: true,sessionId: 'session',promptId: 'prompt',tracePath: '/original.jsonl',traceExport: {verified: true},permissionAudit: {passed: true},executionOutcome: 'complete',output: 'original output'};
-  writeFileSync(path.join(f.dir, f.turn.id + '.stages.json'), JSON.stringify({claude: native,prepare: {value: {prompt: f.turn.prompt,category: f.turn.category,difficulty: '中等',acceptance: ['original']}}}));
-  const turn = {...f.turn,status: 'running',stageRecovery: {attempts: 1,retrying: true},review: {scores: [4,4,4,4,4]}};
-  const execute = createJobExecutor({root: process.cwd(),workRoot: path.dirname(f.dir),containers: {...f.containers,public: s=>s,execute(){throw Error('must not execute Claude');}},api(){throw Error('API unavailable before stage');},track(){},isStopping: ()=>false,release: 'test'});
-  const {result} = await execute({task: {...f.task,turns:[turn]},turn});
+  const native = {
+    success: true,
+    sessionId: 'session',
+    promptId: 'prompt',
+    tracePath: '/original.jsonl',
+    traceExport: { verified: true },
+    permissionAudit: { passed: true },
+    executionOutcome: 'complete',
+    output: 'original output',
+  };
+  writeFileSync(
+    path.join(f.dir, f.turn.id + '.stages.json'),
+    JSON.stringify({
+      claude: native,
+      prepare: {
+        value: {
+          prompt: f.turn.prompt,
+          category: f.turn.category,
+          difficulty: '中等',
+          acceptance: ['original'],
+        },
+      },
+    }),
+  );
+  const turn = {
+    ...f.turn,
+    status: 'running',
+    stageRecovery: { attempts: 1, retrying: true },
+    review: { scores: [4, 4, 4, 4, 4] },
+  };
+  const execute = createJobExecutor({
+    root: process.cwd(),
+    workRoot: path.dirname(f.dir),
+    containers: {
+      ...f.containers,
+      public: (s) => s,
+      execute() {
+        throw Error('must not execute Claude');
+      },
+    },
+    api() {
+      throw Error('API unavailable before stage');
+    },
+    track() {},
+    isStopping: () => false,
+    release: 'test',
+  });
+  const { result } = await execute({
+    task: { ...f.task, turns: [turn] },
+    turn,
+  });
   assert.equal(result.success, false);
   assert.match(result.error, /API unavailable/);
-  for (const key of ['sessionId','promptId','tracePath','traceExport','permissionAudit','output']) assert.deepEqual(result[key], native[key], key);
+  for (const key of [
+    'sessionId',
+    'promptId',
+    'tracePath',
+    'traceExport',
+    'permissionAudit',
+    'output',
+  ])
+    assert.deepEqual(result[key], native[key], key);
   assert.deepEqual(result.review, turn.review);
 });
 
