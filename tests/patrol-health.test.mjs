@@ -105,3 +105,17 @@ test('recovery remains tracked across phase changes until actual completion', ()
   assert.equal(state.incidents.length, 0);
   assert.equal(state.latestCompleted, new Date(now).toISOString());
 });
+
+test('recovered output uses actual delivery time while failed or running attempts are excluded', () => {
+  const next = structuredClone(input);
+  const completed = new Date(now).toISOString();
+  Object.assign(next.tasks[0].turns[0], {
+    status: 'review', finishedAt: new Date(now - 6 * 3600000).toISOString(),
+    automation: { delivery: { finishedAt: completed, value: { passed: true } } },
+  });
+  assert.equal(patrolHealth(next).latestCompleted, completed);
+  next.tasks[0].turns[0].status = 'running';
+  assert.equal(patrolHealth(next).latestCompleted, null);
+  next.tasks[0].turns[0].status = 'failed';
+  assert.equal(patrolHealth(next).latestCompleted, null);
+});
