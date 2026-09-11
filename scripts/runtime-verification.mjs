@@ -1113,6 +1113,7 @@ export async function verifyRuntime({
     runtimeObservationInstructions +
     '\n浏览器辅助 unique 是 async 函数，调用结果是 Promise。使用 const button = page.locator("真实定位器"); await unique(button); await button.click(); 这样的三步写法；读取 innerText、fill 等也在原 locator 上执行。不要写 await unique(locator).click()，也不要 const button = unique(locator) 后调用 button.click()。健康检查和页面访问端口必须与源码启动入口实际监听端口一致；不要仅改探针端口或设置项目未读取的 PORT 环境变量，独立容器可以复用项目原端口。\n' +
     '\n点击载入样例、切换请求或提交后，先按真实界面等待异步请求及目标控件渲染完成，再读取字段列表、计数或文本。Node 和 Python 都使用 locator.waitFor/wait_for 或有明确业务条件的等待，不能把 click 返回后立即读取的空列表当作稳定结果，也不靠固定 sleep、强制点击或改 DOM 凑通过。记录等待的具体条件、实际控件及请求状态；等待后真实业务内容仍缺失时按原题独立判断，定位假设不成立或异步步骤未完成则保留方法问题，不能一律把超时当产品缺陷或一律免责。列表可以有多条记录，唯一性要求针对本次要操作的具体条目或控件，不要求整个请求列表只有一项。按真实业务名称、记录标识或可见内容缩小定位后再验证唯一，不能随意 first() 或删除其他记录。运行副本完整性检查失败时输出实际新增、修改、删除的路径和前后摘要，不只输出两份清单不相等；所有原受保护文件仍逐一校验。Python 在任何导入、启动或测试前可设置 PYTHONDONTWRITEBYTECODE=1 避免新建字节码缓存，不修改项目文件。确实属于运行生成的缓存和按存储代码确认的数据库状态，须与源码、配置、测试和未知新增文件区分；保留完整清单，不能为通过而扩大忽略范围。\n' +
+    '\n每个新建浏览器页面在第一次定位业务控件前，都须显式 goto 已核实的本地应用地址并等业务入口就绪，打印实际 URL 与页面标题。服务健康检查不会自动打开新建的 about:blank 页面，不能只创建页面后直接调用封装的业务操作函数。上次出现非唯一文本定位时，先读真实模板确定目标控件的角色、所在区域和关联记录，再缩小定位并记录匹配数；例如同一名称同时出现在候选列表、图示和编辑区，必须限定本次需要操作的区域，不能随意取第一个或强制点击。\n' +
     runtimeExitStatusInstructions +
     runtimeHarnessInstructions +
     runtimeDataIsolationInstructions +

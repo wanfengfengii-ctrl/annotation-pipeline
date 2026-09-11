@@ -3,11 +3,21 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { validateRuntimePlan } from '../lib/runtime-verification.mjs';
 
-export const runtimePreflightVersion = '2026-09-12.runtime-preflight5';
+export const runtimePreflightVersion = '2026-09-12.runtime-preflight6';
 // Known failures in generated verification wrappers. These bounded review
 // triggers do not load dependencies, execute scripts or alter business checks.
 export function runtimeScriptContractIssues(command) {
   const issues = [];
+  if (
+    /\.(?:newPage|new_page)\s*\(/.test(command) &&
+    /\.(?:locator|getByRole|getByText|get_by_role|get_by_text)\s*\(/.test(
+      command,
+    ) &&
+    !/\.(?:goto|setContent|set_content)\s*\(/.test(command)
+  )
+    issues.push(
+      '临时浏览器脚本创建页面并定位业务控件，却没有打开应用页面。须在交互前导航到已验证的本地服务地址，等待页面业务入口就绪；HTTP 服务健康不代表新页面已经导航，不能在 about:blank 上等待控件。只修复临时验收脚本，不改变业务断言',
+    );
   const namedImports = command.matchAll(
     /\bimport\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s*from\s*(['"])\/opt\/annotation\/node\/node_modules\/playwright\/index\.js\2/g,
   );

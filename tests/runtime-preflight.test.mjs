@@ -1,4 +1,44 @@
 import test from 'node:test';
+
+test('browser plans must navigate before locating business controls on a fresh page', () => {
+  const js =
+    "const page = await context.newPage(); await page.locator('#sample').click();";
+  assert.match(runtimeScriptContractIssues(js).join(' '), /about:blank/);
+  assert.deepEqual(
+    runtimeScriptContractIssues(
+      js.replace(
+        'await page.locator',
+        "await page.goto('http://127.0.0.1:8080'); await page.locator",
+      ),
+    ),
+    [],
+  );
+  assert.deepEqual(
+    runtimeScriptContractIssues(
+      js.replace(
+        'await page.locator',
+        "await page.setContent('<button id=sample>sample</button>'); await page.locator",
+      ),
+    ),
+    [],
+  );
+  assert.match(
+    runtimeScriptContractIssues(
+      "page = context.new_page()\npage.get_by_role('button').click()",
+    ).join(' '),
+    /about:blank/,
+  );
+  assert.deepEqual(
+    runtimeScriptContractIssues(
+      "page = context.new_page()\npage.goto('http://127.0.0.1:8080')\npage.get_by_role('button').click()",
+    ),
+    [],
+  );
+  assert.deepEqual(
+    runtimeScriptContractIssues('node /tmp/existing-verified-script.cjs'),
+    [],
+  );
+});
 import assert from 'node:assert/strict';
 import {
   mkdtempSync,
