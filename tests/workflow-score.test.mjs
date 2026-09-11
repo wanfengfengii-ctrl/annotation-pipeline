@@ -57,4 +57,12 @@ test('scoring separates immutable pre-execution expectations from verified lates
     /保留原 npm ci 失败和清单与锁文件错配.*不能声称干净安装通过/,
   );
   assert.match(prompt, /独立验收的操作不得归为被测模型的行为/);
+  assert.match(prompt, /后续独立验收未完成，不等于原作业漏做或原题功能不可用/);
+  assert.match(prompt, /未记录实际值的断言失败，不能单独作为产品缺陷/);
+  assert.match(prompt, /不否定原作业已有的通过证据/);
+  assert.match(
+    prompt,
+    /缺少实际观察时保留证据缺口并补验，不编造缺陷、不预设满分/,
+  );
+  assert.match(prompt, /交付校验提出的建议分数只是复核线索，不直接照抄/);
 });

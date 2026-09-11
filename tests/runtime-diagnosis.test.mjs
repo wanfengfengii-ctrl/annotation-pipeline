@@ -18,6 +18,7 @@ import {
   finalizeRuntimeReport,
   writeRuntimeVerificationReport,
   reuseRuntimeVerification,
+  runtimeObservationInstructions,
 } from '../scripts/runtime-verification.mjs';
 import {
   assertRegressionNextDecision,
@@ -28,6 +29,7 @@ const sha = (v) => createHash('sha256').update(v).digest('hex');
 function fixture(
   t,
   text = 'download 1%\rdownload 2%\r\n\u001b[32mASSERT PASS\u001b[0m\n',
+  exitCode = 0,
 ) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'runtime-diagnosis-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -59,7 +61,7 @@ function fixture(
   const runs = [
     {
       id: 'acceptance',
-      exitCode: 0,
+      exitCode,
       timedOut: false,
       limited: false,
       sourceChanged: false,
@@ -170,6 +172,35 @@ test('Unicode control characters cannot add visual evidence lines', (t) => {
       .map((r) => r.text),
     f.text.split('\n'),
   );
+});
+
+test('a failed assertion label is retained as evidence without supplying a fabricated actual value', (t) => {
+  const f = fixture(
+    t,
+    'ASSERT FAIL invalid procedure result is excluded from coverage\n',
+    1,
+  );
+  const original = readFileSync(f.logPath);
+  const prepared = prepareRuntimeDiagnosis(f.preparation);
+  assert.ok(prepared.instruction.includes(runtimeObservationInstructions));
+  assert.match(prepared.instruction, /断言标签不是页面实际结果/);
+  assert.match(
+    prepared.instruction,
+    /失败日志缺少判断所需的实际值.*标为 blocked/,
+  );
+  assert.match(prepared.instruction, /不改业务阈值或原项目测试来凑通过/);
+  assert.match(prepared.instruction, /原题要求精确文本或格式时按原要求比较/);
+  assert.deepEqual(readFileSync(f.logPath), original);
+  assert.equal(f.runs[0].exitCode, 1);
+  const rows = readFileSync(prepared.evidence.logs[0].numberedPath, 'utf8')
+    .trimEnd()
+    .split('\n')
+    .map(JSON.parse);
+  assert.equal(
+    rows[0].text,
+    'ASSERT FAIL invalid procedure result is excluded from coverage',
+  );
+  assert.ok(!rows.some((row) => row.text.includes('actual=')));
 });
 
 test('LF bounds remain strict and original hash failures never become diagnosis retries', (t) => {
