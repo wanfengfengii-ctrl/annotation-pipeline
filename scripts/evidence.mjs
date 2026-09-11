@@ -418,7 +418,7 @@ export function createEvidenceArchive({
       const sourceName = new RegExp(
         '^' +
           escapedTurnId +
-          '\\.attempt-[1-9]\\d*(?:\\.consistency)?(?:\\.writing)?\\.' +
+          '\\.attempt-[1-9]\\d*(?:\\.consistency)?(?:\\.writing|\\.citations)?\\.' +
           suffix.replaceAll('.', '\\.') +
           '$',
       );

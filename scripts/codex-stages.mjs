@@ -4,6 +4,7 @@ import path from 'node:path';
 import { verifyScoreEvidence, verifyMentionedScoreLines } from './evidence.mjs';
 import { scoreDescriptionIssues } from '../lib/score-description-context.mjs';
 import { scoreDescriptionGroundingIssues } from '../lib/score-description-grounding.mjs';
+import { repairScoreCitations } from './score-citation-repair.mjs';
 import { validateScaffold } from './project-scaffold.mjs';
 import { codexTurnIds } from '../lib/harness.mjs';
 import { stackFieldInstructions } from '../lib/stack-field.mjs';
@@ -448,7 +449,7 @@ export async function codexStage(options) {
   }
   if (!issues.length) return original;
   // One independent evidence review may re-score; wording-only retries may not.
-  const revised = await stageWithWriting({
+  let revised = await stageWithWriting({
     ...options,
     turnId: options.turnId + '.consistency',
     prompt:
@@ -460,7 +461,11 @@ export async function codexStage(options) {
       '\n在 processFindings 说明维度归属和维持或调整的事实依据。保留真实问题和验证范围，不能只删命中词；本次仍需完整五维结构化输出。',
   });
   assertScoreConsistency(revised.value.scores, revised.value.descriptions);
-  verifyScoreEvidence(revised.value, options.cwd, options.dir);
+  revised = await repairScoreCitations(
+    { ...options, turnId: options.turnId + '.consistency' },
+    revised,
+    runStage,
+  );
   verifyMentionedScoreLines(revised.value, options.cwd, options.dir);
   const repeated = [
     ...scoreDescriptionIssues(revised.value, options.comparisonHistory),
@@ -475,6 +480,8 @@ export async function codexStage(options) {
       originalTracePaths: [
         original.tracePath,
         original.writingRevision?.originalTracePath,
+        revised.citationRepair?.originalTracePath,
+        revised.writingRevision?.originalTracePath,
       ].filter(Boolean),
       originalScores: original.value.scores,
       issues,
