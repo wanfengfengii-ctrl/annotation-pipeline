@@ -16,6 +16,7 @@ import {
 } from './solo-records.mjs';
 import { savePrivateJSON, SOLO_ORIGIN } from './solo-client.mjs';
 import { withSoloLock } from './solo-lock.mjs';
+import { assertUploadWindow } from './solo-schedule.mjs';
 import { assertPreparedNativeAttachment } from './solo-native-attachment.mjs';
 import {
   blockUpload,
@@ -73,7 +74,10 @@ export function validateReceipt(packet, receipt) {
 }
 
 export const prepareUI = () => locked(prepareUnlocked);
-export const markSending = (key) => locked(() => markSendingUnlocked(key));
+export const markSending = (key) => {
+  assertUploadWindow();
+  return locked(() => markSendingUnlocked(key));
+};
 export const recordReceipt = (key, receipt) =>
   locked(() => recordReceiptUnlocked(key, receipt));
 
@@ -273,6 +277,8 @@ async function markSendingUnlocked(key) {
   }
   const archive = await attachment(row, { attachment_max_mb: 20 });
   assertPreparedNativeAttachment(archive, p.attachment);
+  // Preparation and attachment verification can cross midnight.
+  assertUploadWindow();
   entry.state = 'submitting';
   entry.submittingAt = new Date().toISOString();
   await write(ledger);

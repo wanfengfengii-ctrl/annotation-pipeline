@@ -1,6 +1,6 @@
-# SOLO 每两小时上传
+# SOLO 白天每两小时上传
 
-目标：https://solo2.jzxhnh.com。用户授权将本系统做好的标注数据填入该平台，每天北京时间 00:00、02:00、04:00、06:00、08:00、10:00、12:00、14:00、16:00、18:00、20:00、22:00 上传，每两小时一次。默认使用 Codex 内置浏览器中的现有登录，账号显示名为牛宇航，用户名为 niuyuhang。账号密码和浏览器 Cookie 不进入流水线数据、命令参数或日志。
+目标：https://solo2.jzxhnh.com。用户授权将本系统做好的标注数据填入该平台，每天北京时间 08:00、10:00、12:00、14:00、16:00、18:00、20:00、22:00 上传，白天每两小时一次。00:00（含）至 08:00（不含）暂停新上传、旧批次续传和上传登录预检，凌晨产出的数据留到早上 08:00；项目产出和常规巡检继续运行。默认使用 Codex 内置浏览器中的现有登录，账号显示名为牛宇航，用户名为 niuyuhang。账号密码和浏览器 Cookie 不进入流水线数据、命令参数或日志。
 
 本功能上传 AI 评分，保留 AI 来源及之后由用户二次确认的状态，不声称已经人工审核。上传与平台质检通过是两个不同状态；平台返回的待返修、废弃结果必须保留。
 
@@ -52,7 +52,7 @@ SOLO 附件由 `solo-native-attachment.mjs` 从已核验的完整原生 projects
 
 ## 每次定时执行
 
-1. 现有巡检每 15 分钟运行（整点、15 分、半点和 45 分），先执行 `node scripts/solo-schedule.mjs --due`。北京时间每个单数小时的 30 分做登录预检，在随后双数整点开始的半小时窗口创建新批次；23:30 的预检对应次日 00:00。已因登录暂停的批次优先续传，不受原时段限制。新批次先运行 `--prepare`，将完整输出保存为私有 plan.json，再执行 `solo-schedule.mjs --claim PLAN_JSON`，即使 canClaim=false 也要执行这次 claim，固定本批成员及原件摘要。无新数据会直接结束空批次。登录未就绪时保存 waiting_login；不能登录失败就丢掉本次批次。resume 模式执行 `--claim`，不传新成员。仅 claimed=true 才进入上传，并保存返回的 slot、attemptId。没有新数据且无新的异常时保持安静。
+1. 现有巡检每 30 分钟运行（整点和半点），先执行 `node scripts/solo-schedule.mjs --due`。北京时间 09:30、11:30、13:30、15:30、17:30、19:30、21:30 做登录预检，随后双数整点开始的半小时窗口创建新批次；08:00 首批当场检查登录，不进行凌晨或 23:30 预检。uploadPaused=true 时不创建或恢复上传批次；已有 active 不接管；仅当前上传者完成已点击提交的回执核对后，或确认原上传者结束并按既有租期规则核对后，才能按原 slot、attemptId 以 waiting_window 收尾。08:00 后优先恢复 waiting_window 和因登录暂停的原批次，保持固定成员。新批次先运行 `--prepare`，将完整输出保存为私有 plan.json，再执行 `solo-schedule.mjs --claim PLAN_JSON`，即使 canClaim=false 也要执行这次 claim，固定本批成员及原件摘要。无新数据会直接结束空批次。登录未就绪时保存 waiting_login；不能登录失败就丢掉本次批次。resume 模式执行 `--claim`，不传新成员。仅 claimed=true 才进入上传，并保存返回的 slot、attemptId。没有新数据且无新的异常时保持安静。
 2. preflightDue 或 loginCheckDue 时，使用 CUA 的 `cua.getState()` 查找 SOLO 标签页，按返回的浏览器和标签 ID 选择；不存在则在内置浏览器打开目标站点。复用牛宇航（可见用户名 niuyuhang）的登录。登录页可按 [SOLO 登录密码保存](solo-login.md) 使用 macOS 钥匙串与 CUA 内存填表；密码未保存、被拒绝、账号不符或需要验证码时保留批次并提示，不猜密码或绕过确认。每次记录真实浏览器观察到的登录结果，运行 `--login-result RECEIPT_JSON`；仅该输出 notify=true 时发送新的登录提示，重复问题保持安静。预检不提前上传，提前半小时的预检结果也不能代替上传时的实际账号确认。认证观察最多有效 5 分钟；正式开始前必须仍然有效。登录恢复后再次 --claim 原批次，并用新 prepare 输出执行 --batch-plan；只能处理返回的本批成员，新增记录留待下一个新批次。
 3. 对每条记录，先在我的提交通过原生 SessionID 和 TurnID/PromptID 核对有无远端记录。两者均一致才能认为同一条；打开详情核对全部字段和附件。已有记录保存回执并跳过，内容不一致则保留原记录并报告，不创建副本或自动覆盖。
 4. 如果本地状态为 submitting/uncertain，只查远端结果，不再次点击提交。没有明确结果时留在待核对状态。普通 prepared 记录且未找到远端匹配，才填写新表单。相同会话前序记录无法确认已提交时，暂停该会话后续记录，继续其他会话。
@@ -62,7 +62,7 @@ SOLO 附件由 `solo-native-attachment.mjs` 从已核验的完整原生 projects
 8. 最终点击前运行 `node scripts/solo-ui-queue.mjs --mark-sending TASK_ID:TURN_ID`；它重新确认当前准入、数据和附件未变，并先持久化 submitting。命令失败则不要点击。成功后只点击一次提交并质检。
 9. 等待提交回执，打开数据详情，核对平台记录编号、原生 ID、轮次、全部文本、分数和附件。保存私有 JSON 回执后运行 `node scripts/solo-ui-queue.mjs --receipt TASK_ID:TURN_ID RECEIPT_JSON_PATH`。回执格式见下节。网络中断或结果不明时保留 submitting，下次仅查询确认。
 10. 平台待返修或废弃的记录已提交，不重新创建；保留理由并通知用户。根据真实轨迹进行评分返修属于独立处理，不删关键词、编造事实或调分来规避质检。不得点击管理员飞书同步、删除、质检覆盖等无关操作。
-11. 本批按顺序处理可提交项。长批次至少每 15 分钟用 slot、attemptId 执行 --touch。登录中断时立即停止后续提交，以 waiting_login 和真实 reasonCode 结束本次 attempt，保留成员、已上传回执及 submitting 状态；恢复后只续传该批剩余项。正常结束保存 slot、attemptId、status（completed/blocked/failed）、counts 到私有 run-summary.json，再执行 `node scripts/solo-schedule.mjs --finish .runner/solo-upload/run-summary.json`。附件、题目等非登录拦截用 blocked，不能靠重新登录解除。仅在有新上传、状态变化、失败或需要用户处理时通知。保留 SOLO 标签页作为 handoff/deliverable，维持下次可复用的登录状态。
+11. 本批按顺序处理可提交项，每条点击提交前再次执行 --due 确认 uploadPaused=false；--mark-sending 在提交标记前也检查北京时间。跨午夜后不再开始下一条，已点击的记录只查询回执，以 waiting_window 结束原 attempt，保留成员、回执和状态不明记录，早上 08:00 再恢复。长批次至少每 15 分钟用 slot、attemptId 执行 --touch。登录中断时立即停止后续提交，以 waiting_login 和真实 reasonCode 结束本次 attempt，保留成员、已上传回执及 submitting 状态；恢复后只在 08:00 至 24:00 续传该批剩余项。正常结束保存 slot、attemptId、status（completed/waiting_window/blocked/failed）、counts 到私有 run-summary.json，再执行 `node scripts/solo-schedule.mjs --finish .runner/solo-upload/run-summary.json`。附件、题目等非登录拦截用 blocked，不能靠重新登录解除。仅在有新上传、状态变化、失败或需要用户处理时通知。保留 SOLO 标签页作为 handoff/deliverable，维持下次可复用的登录状态。
 
 ## 登录与批次命令合同
 
@@ -123,7 +123,7 @@ running 批次不会被自动抢占，租期为 45 分钟。`--due` 返回 activ
 
 验证：`node --test tests/solo-upload.test.mjs tests/solo-upload-holds.test.mjs tests/solo-native-attachment.test.mjs`。测试覆盖字段映射、消息 UUID 与原生 PromptID 区分、原生目录完整性、内部证据隔离、原件不变、禁止上传、分页查重、断网与不明确回执、重复启动、资格变化、附件摘要和大小、服务端拒绝、字段回读、浏览器回执、台账锁及会话连续性。
 
-这是本机 Codex 定时任务，需要电脑开机、Codex 运行、本地流水线可访问；自动登录还需要本机钥匙串可读取。复用现有每 15 分钟巡检，调度对齐整点、15 分、半点和 45 分。错过双数整点的新批次窗口不补造批次；已经固定成员且因登录暂停的批次，会在之后的巡检中检查登录，恢复后续传原批，跨时段和跨日也保留同一清单。预检发生在每次上传前半小时，不提前提交。
+这是本机 Codex 定时任务，需要电脑开机、Codex 运行、本地流水线可访问；自动登录还需要本机钥匙串可读取。复用现有每 30 分钟巡检，调度对齐整点和半点。错过双数整点的新批次窗口不补造批次；已经固定成员且因登录暂停的批次，会在之后的巡检中检查登录，恢复后仅在 08:00 至 24:00 续传原批，跨日也保留同一清单。跨午夜暂停记为 waiting_window，不伪装为登录失败或上传完成；状态不明的提交只能查询回执。首批 08:00 当场检查登录，其余白天批次提前半小时预检，不提前提交。
 
 ## 页面上传状态与题目去重（2026-09-10）
 

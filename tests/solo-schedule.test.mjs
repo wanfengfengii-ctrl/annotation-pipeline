@@ -15,6 +15,8 @@ import {
   resumePlan,
   loginMaxAgeMs,
   attemptLeaseMs,
+  uploadAllowed,
+  assertUploadWindow,
 } from '../scripts/solo-schedule.mjs';
 
 const at = (time) => new Date(time);
@@ -44,8 +46,8 @@ const finish = (state, attempt, status, now, extra = {}) =>
     now,
   );
 
-test('all two-hour Shanghai windows have half-hour boundaries and midnight preflight advances the date', () => {
-  for (let h = 1; h < 24; h += 2) {
+test('daytime two-hour Shanghai windows have half-hour boundaries and no overnight preflight', () => {
+  for (let h = 9; h < 22; h += 2) {
     const hour = String(h).padStart(2, '0');
     const upcoming = String((h + 1) % 24).padStart(2, '0');
     const day = h === 23 ? '2026-09-11' : '2026-09-10';
@@ -67,13 +69,46 @@ test('all two-hour Shanghai windows have half-hour boundaries and midnight prefl
     assert.equal(preflightSlot(at(`2026-09-10T${upcoming}:00:00+08:00`)), null);
   }
   assert.equal(uploadSlot(at('2026-09-10T00:00:00Z')), firstSlot);
-  assert.equal(
-    preflightSlot(at('2026-12-31T23:30:00+08:00')),
-    '2027-01-01T00:00+08:00',
-  );
+  for (const time of [
+    '00:00:00',
+    '02:00:00',
+    '04:00:00',
+    '06:00:00',
+    '07:59:59',
+  ]) {
+    const now = at(`2026-09-10T${time}+08:00`);
+    assert.equal(uploadAllowed(now), false);
+    assert.throws(
+      () => assertUploadWindow(now),
+      /UPLOAD_PAUSED_UNTIL_08_SHANGHAI/,
+    );
+    assert.equal(uploadSlot(now), null);
+    assert.equal(preflightSlot(now), null);
+  }
+  for (const time of ['07:30:00', '23:30:00'])
+    assert.equal(preflightSlot(at(`2026-12-31T${time}+08:00`)), null);
+  assert.equal(uploadAllowed(at('2026-09-10T23:59:59+08:00')), true);
+  assert.doesNotThrow(() => assertUploadWindow(start));
   const due = dueUpload(start, { runs: {} });
-  assert.equal(due.times.length, 12);
-  assert.equal(due.loginTimes.length, 12);
+  assert.deepEqual(due.times, [
+    '08:00',
+    '10:00',
+    '12:00',
+    '14:00',
+    '16:00',
+    '18:00',
+    '20:00',
+    '22:00',
+  ]);
+  assert.deepEqual(due.loginTimes, [
+    '09:30',
+    '11:30',
+    '13:30',
+    '15:30',
+    '17:30',
+    '19:30',
+    '21:30',
+  ]);
 });
 
 test('new two-hour windows preserve completed old batches and prioritize unfinished batches', () => {
@@ -102,7 +137,7 @@ test('new two-hour windows preserve completed old batches and prioritize unfinis
 
 test('preflight records login without starting or completing an upload batch', () => {
   const state = { runs: {} };
-  const now = at('2026-09-10T07:30:00+08:00');
+  const now = at('2026-09-10T09:30:00+08:00');
   const due = dueUpload(now, state);
   assert.equal(due.preflightDue, true);
   assert.equal(due.loginCheckDue, true);
@@ -199,16 +234,71 @@ test('claim persists the original batch even when login is missing', () => {
   assert.deepEqual(resumed.members, [member(1)]);
 });
 
-test('login recovery resumes the same slot across midnight without inventing a missed batch', () => {
+test('login recovery at night waits until 08:00 and resumes the original batch without inventing missed batches', () => {
   const state = { runs: {} };
   claim(state);
   const tomorrow = at('2026-09-11T03:00:00+08:00');
   recordLogin(state, observation(tomorrow), tomorrow);
-  const resumed = claim(state, tomorrow);
+  const before = structuredClone(state);
+  const paused = claim(state, tomorrow);
+  assert.equal(paused.claimed, false);
+  assert.equal(paused.uploadPaused, true);
+  assert.equal(paused.loginCheckDue, false);
+  assert.equal(paused.nextUploadAt, '2026-09-11T08:00+08:00');
+  assert.deepEqual(state, before);
+  const morning = at('2026-09-11T08:00:00+08:00');
+  recordLogin(state, observation(morning), morning);
+  const resumed = claim(state, morning);
+  assert.equal(resumed.claimed, true);
   assert.equal(resumed.slot, firstSlot);
   assert.equal(resumed.mode, 'resume');
   assert.deepEqual(Object.keys(state.runs), [firstSlot]);
   assert.equal(dueUpload(tomorrow, { runs: {} }).due, false);
+});
+
+test('a batch crossing midnight pauses after receipt reconciliation and resumes remaining fixed members at 08:00', () => {
+  const evening = at('2026-12-31T22:00:00+08:00');
+  const state = loggedIn(evening);
+  const first = claim(state, evening);
+  const midnight = at('2027-01-01T00:00:00+08:00');
+  const due = dueUpload(midnight, state);
+  assert.equal(due.due, false);
+  assert.equal(due.loginCheckDue, false);
+  assert.equal(due.active.attemptId, first.attemptId);
+  assert.equal(due.active.action, 'finish_receipts_then_pause');
+  assert.equal(touchUpload(state, first, midnight).uploadPaused, true);
+  finish(state, first, 'waiting_window', midnight, {
+    counts: { uncertain: 1 },
+  });
+  assert.equal(state.runs[first.slot].status, 'waiting_window');
+  assert.equal(
+    state.login.status,
+    'authenticated',
+    'night pause is not a login failure',
+  );
+  const before = structuredClone(state);
+  assert.equal(claim(state, midnight).claimed, false);
+  assert.deepEqual(state, before);
+  const morning = at('2027-01-01T08:00:00+08:00');
+  assert.equal(
+    dueUpload(morning, state).canClaim,
+    false,
+    'login must be freshly checked',
+  );
+  recordLogin(state, observation(morning), morning);
+  const second = claim(state, morning, [member(2)]);
+  assert.equal(second.claimed, true);
+  assert.equal(second.slot, first.slot);
+  assert.notEqual(second.attemptId, first.attemptId);
+  assert.deepEqual(second.members, [member(1)]);
+  const plan = resumePlan(
+    state.runs[first.slot],
+    { packets: [member(1)] },
+    {
+      entries: { [member(1).key]: { state: 'submitting' } },
+    },
+  );
+  assert.equal(plan.packets[0].state, 'uncertain');
 });
 
 test('duplicate claims and expired running attempts never cause a second upload owner', () => {

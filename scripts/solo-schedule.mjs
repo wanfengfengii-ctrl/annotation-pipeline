@@ -5,15 +5,15 @@ import { fileURLToPath } from 'node:url';
 import { savePrivateJSON, SOLO_ORIGIN } from './solo-client.mjs';
 import { withSoloLock } from './solo-lock.mjs';
 
-export const scheduleVersion = '2026-09-10.two-hour1';
-const uploadHours = Array.from({ length: 12 }, (_, i) =>
-  String(i * 2).padStart(2, '0'),
+export const scheduleVersion = '2026-09-11.daytime-two-hour1';
+const uploadHours = Array.from({ length: 8 }, (_, i) =>
+  String(8 + i * 2).padStart(2, '0'),
 );
 export const uploadTimes = uploadHours.map((hour) => `${hour}:00`);
-export const loginTimes = Array.from(
-  { length: 12 },
-  (_, i) => `${String(i * 2 + 1).padStart(2, '0')}:30`,
-);
+// The first batch checks login at 08:00; overnight has no upload preflight.
+export const loginTimes = uploadHours
+  .slice(1)
+  .map((hour) => `${String(Number(hour) - 1).padStart(2, '0')}:30`);
 export const loginMaxAgeMs = 5 * 60 * 1000;
 export const attemptLeaseMs = 45 * 60 * 1000;
 const loginFailures = new Set([
@@ -57,6 +57,12 @@ function shanghai(now) {
   );
 }
 const slotFor = (p, hour) => `${p.year}-${p.month}-${p.day}T${hour}:00+08:00`;
+export function uploadAllowed(now = new Date()) {
+  return Number(shanghai(now).hour) >= 8;
+}
+export function assertUploadWindow(now = new Date()) {
+  if (!uploadAllowed(now)) fail('UPLOAD_PAUSED_UNTIL_08_SHANGHAI');
+}
 export function uploadSlot(now = new Date()) {
   const p = shanghai(now);
   return uploadHours.includes(p.hour) && Number(p.minute) < 30
@@ -65,10 +71,12 @@ export function uploadSlot(now = new Date()) {
 }
 export function preflightSlot(now = new Date()) {
   const p = shanghai(now);
-  if (Number(p.hour) % 2 !== 1 || Number(p.minute) < 30) return null;
-  // The 23:30 preflight belongs to the following day's 00:00 upload.
+  if (!uploadAllowed(now) || Number(p.hour) % 2 !== 1 || Number(p.minute) < 30)
+    return null;
   const upcoming = shanghai(new Date(now.getTime() + 30 * 60 * 1000));
-  return slotFor(upcoming, upcoming.hour);
+  return uploadHours.includes(upcoming.hour)
+    ? slotFor(upcoming, upcoming.hour)
+    : null;
 }
 function freshLogin(now, login) {
   const age = now.getTime() - Date.parse(login?.checkedAt);
@@ -82,25 +90,29 @@ function freshLogin(now, login) {
   );
 }
 export function dueUpload(now, state) {
+  const uploadPaused = !uploadAllowed(now);
   const runs = Object.entries(state.runs || {});
   const active = runs.find(([, r]) => r.status === 'running');
   const pending = runs
     .filter(
       ([, r]) =>
-        r.status === 'waiting_login' &&
-        loginFailures.has(r.reasonCode) &&
+        (r.status === 'waiting_window' ||
+          (r.status === 'waiting_login' && loginFailures.has(r.reasonCode))) &&
         Array.isArray(r.members),
     )
     .sort(([a], [b]) => a.localeCompare(b))[0];
   const window = uploadSlot(now);
-  const slot = active
-    ? null
-    : pending?.[0] || (window && !state.runs?.[window] ? window : null);
+  const slot =
+    active || uploadPaused
+      ? null
+      : pending?.[0] || (window && !state.runs?.[window] ? window : null);
   const preflight = preflightSlot(now);
   const preflightDue = !active && !!preflight && !state.preflights?.[preflight];
   const authenticated = freshLogin(now, state.login);
   return {
     version: scheduleVersion,
+    uploadPaused,
+    nextUploadAt: uploadPaused ? slotFor(shanghai(now), '08') : null,
     due: !!slot,
     slot,
     mode: slot ? (pending ? 'resume' : 'new') : null,
@@ -116,7 +128,9 @@ export function dueUpload(now, state) {
             !active[1].leaseUntil ||
             !Number.isFinite(Date.parse(active[1].leaseUntil)) ||
             Date.parse(active[1].leaseUntil) <= now.getTime(),
-          action: 'reconcile_existing_attempt_only',
+          action: uploadPaused
+            ? 'finish_receipts_then_pause'
+            : 'reconcile_existing_attempt_only',
         }
       : null,
     timezone: 'Asia/Shanghai',
@@ -272,12 +286,19 @@ export function touchUpload(state, input, now = new Date()) {
     slot: input.slot,
     attemptId: input.attemptId,
     leaseUntil: run.leaseUntil,
+    uploadPaused: !uploadAllowed(now),
   };
 }
 export function finishUpload(state, input, now = new Date()) {
   const run = ownedRun(state, input);
   if (
-    !['completed', 'waiting_login', 'blocked', 'failed'].includes(input.status)
+    ![
+      'completed',
+      'waiting_login',
+      'waiting_window',
+      'blocked',
+      'failed',
+    ].includes(input.status)
   )
     fail('BATCH_STATUS_INVALID');
   if (input.status === 'waiting_login' && !loginFailures.has(input.reasonCode))
