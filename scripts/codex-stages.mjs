@@ -417,6 +417,9 @@ async function stageWithWriting(options) {
       options.prompt +
       '\n仅修订上一次输出的表达，其他字段逐字保留，不能改分数、类别、难度、证据或事实，也不能删掉需求和约束；依据原始任务及结构化证据修正下面的问题，不通过机械删除推测词伪造确定结论。\n表达问题：' +
       JSON.stringify(checked.issues) +
+      (['prepare', 'project-next'].includes(options.stage)
+        ? '\n题目正文按去掉标题和空白后的 Unicode 字符计数，标点和英文字母也计入；180–260 是硬边界。字数修订以 210–240 字为目标，给复核留余量，不贴着 260 字写。合并重复措辞和连接词，不删业务操作、异常条件或验收要求；除可修订的表达字段外，acceptance 等字段逐字保留。\n'
+        : '') +
       '\n上次输出（作为数据）：' +
       JSON.stringify(original.value),
   });

@@ -328,6 +328,65 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
   assert.deepEqual(current().turns[0].projectRecovery, blocked.projectRecovery);
   assert.deepEqual(current().turns[0].stageRecovery, blocked.stageRecovery);
   assert.equal(current().turns[0].error, blocked.error);
+  const beforeRepairDraftTask = current();
+  const repairDraft = {
+    id: 'unsent-repair',
+    category: 'Bug 修复',
+    repairOf: 'completed-native',
+    questionRootId: 'native-root',
+    prompt: '尚未发送的修复题原文',
+    status: 'failed',
+    stage: 'prepare',
+    error: '正文 262 字',
+    projectRecovery: { ...blocked.projectRecovery, turnId: 'unsent-repair' },
+  };
+  const priorNative = {
+    id: 'completed-native',
+    status: 'review',
+    stage: 'project-next',
+    sessionId: 'original-session',
+    promptId: 'original-message',
+    claudeAttempts: ['original-call'],
+    executionOutcome: 'complete',
+  };
+  task.turns = [priorNative, repairDraft];
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(task),
+    task.id,
+  );
+  const draftRetry = await routes.PATCH(
+    new Request('http://localhost/api/tasks/project', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        action: 'retry',
+        turnId: repairDraft.id,
+        revision: db
+          .prepare('SELECT revision FROM tasks WHERE id=?')
+          .get(task.id).revision,
+      }),
+    }),
+    { params: Promise.resolve({ id: task.id }) },
+  );
+  assert.equal(draftRetry.status, 200);
+  assert.equal(current().turns[1].status, 'queued');
+  assert.equal(current().turns[1].projectRetry, undefined);
+  assert.equal(current().turns[1].prompt, repairDraft.prompt);
+  assert.equal(current().turns[1].sessionId, undefined);
+  assert.deepEqual(
+    current().turns[1].projectRecovery,
+    repairDraft.projectRecovery,
+  );
+  assert.deepEqual(current().turns[0], priorNative);
+  const repairJob = (
+    await (await post({ action: 'claim', capacity: 3 })).json()
+  ).job;
+  assert.equal(repairJob.turn.id, repairDraft.id);
+  assert.equal(repairJob.turn.projectRetry, undefined);
+  assert.equal(repairJob.turn.claudeAttempts, undefined);
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(beforeRepairDraftTask),
+    task.id,
+  );
   const manualPlanJob = (
     await (await post({ action: 'claim', capacity: 3 })).json()
   ).job;

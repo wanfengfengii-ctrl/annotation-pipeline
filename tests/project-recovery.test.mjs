@@ -119,6 +119,25 @@ test('unsent failures finish the question container without closing the project;
   assert.equal(projectRecoveryDue(task, config), false);
 });
 
+test('an unsent Bug preparation failure must not close the existing native question or replan another goal', () => {
+  const turn = {
+    ...draft(),
+    category: 'Bug 修复',
+    repairOf: 'prior',
+    stage: 'prepare',
+  };
+  const task = taskOf(turn);
+  task.turns.unshift({
+    id: 'prior',
+    status: 'review',
+    promptId: 'native-input',
+    sessionId: 'native-session',
+    executionOutcome: 'complete',
+  });
+  assert.equal(projectRecoveryDue(task, { autoContinue: true }), false);
+  assert.equal(wasSent(turn), false);
+});
+
 test('replanning respects backoff, pause, earlier running work and terminal 504 continuation', () => {
   const turn = draft(),
     task = taskOf(turn);
