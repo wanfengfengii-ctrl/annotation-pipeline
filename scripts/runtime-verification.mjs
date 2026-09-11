@@ -1107,6 +1107,8 @@ export async function verifyRuntime({
     nativeTestResultInstructions +
     nativeTestAttributionInstructions +
     runtimeObservationInstructions +
+    '\n浏览器辅助 unique 是 async 函数，调用结果是 Promise。使用 const button = page.locator("真实定位器"); await unique(button); await button.click(); 这样的三步写法；读取 innerText、fill 等也在原 locator 上执行。不要写 await unique(locator).click()，也不要 const button = unique(locator) 后调用 button.click()。健康检查和页面访问端口必须与源码启动入口实际监听端口一致；不要仅改探针端口或设置项目未读取的 PORT 环境变量，独立容器可以复用项目原端口。\n' +
+    '\n列表可以有多条记录，唯一性要求针对本次要操作的具体条目或控件，不要求整个请求列表只有一项。按真实业务名称、记录标识或可见内容缩小定位后再验证唯一，不能随意 first() 或删除其他记录。运行副本完整性检查失败时输出实际新增、修改、删除的路径和前后摘要，不只输出两份清单不相等；所有原受保护文件仍逐一校验。Python 在任何导入、启动或测试前可设置 PYTHONDONTWRITEBYTECODE=1 避免新建字节码缓存，不修改项目文件。确实属于运行生成的缓存和按存储代码确认的数据库状态，须与源码、配置、测试和未知新增文件区分；保留完整清单，不能为通过而扩大忽略范围。\n' +
     runtimeExitStatusInstructions +
     runtimeHarnessInstructions +
     runtimeDataIsolationInstructions +

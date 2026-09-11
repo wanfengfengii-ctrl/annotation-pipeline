@@ -3,7 +3,29 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { validateRuntimePlan } from '../lib/runtime-verification.mjs';
 
-export const runtimePreflightVersion = '2026-09-11.runtime-preflight2';
+export const runtimePreflightVersion = '2026-09-12.runtime-preflight3';
+// Narrow checks for the bundled async locator helper, not a JS type checker.
+// Only inspect generated verification commands; never rewrite project code.
+export function browserLocatorContractIssues(command) {
+  if (!command.includes('/opt/annotation/verification-browser.cjs')) return [];
+  const methods =
+    'click|fill|innerText|textContent|isEnabled|isVisible|count|inputValue|selectOption|check|uncheck|press';
+  const chained = new RegExp(
+    `\\bunique\\s*\\((?:[^()\\n]|\\([^()\\n]*\\))*\\)\\s*\\.\\s*(?:${methods})\\s*\\(`,
+  );
+  const assigned = [
+    ...command.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*unique\s*\(/g),
+  ].some(([, name]) =>
+    new RegExp(
+      `\\b${name.replace(/\$/g, '\\$')}\\s*\\.\\s*(?:${methods})\\s*\\(`,
+    ).test(command),
+  );
+  return chained.test(command) || assigned
+    ? [
+        'unique(locator) 返回 Promise，不能直接调用点击或读取方法；先保存原 locator，再 await unique(locator)，然后在原 locator 上 await click/fill/innerText；不要改变业务断言',
+      ]
+    : [];
+}
 export function knownRuntimeRequirements(history) {
   return (history?.checks || [])
     .filter((check) => check.outcome === 'reproduced')
@@ -139,6 +161,9 @@ export async function prepareRuntimePlan({
             throw Error('执行前修订不能删除、替换或改变原业务检查及其预期');
         }
         validateReferences(plan.value);
+        for (const check of plan.value.checks)
+          for (const message of browserLocatorContractIssues(check.command))
+            issues.push({ kind: 'browser-api', id: check.id, message });
       } catch (error) {
         issues.push({ kind: 'plan', message: error.message });
       }

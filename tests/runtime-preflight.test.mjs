@@ -18,9 +18,34 @@ import {
   runtimePathInstructions,
   assertKnownRuntimeChecks,
   knownRuntimeRequirements,
+  browserLocatorContractIssues,
 } from '../scripts/runtime-plan-preflight.mjs';
 import { validateCodeRef } from '../scripts/runtime-verification.mjs';
 import diagnostics from '../scripts/runtime-browser-diagnostics.cjs';
+
+test('preflight catches calling locator methods on the async unique helper before execution', () => {
+  const helper =
+    'const { unique } = require("/opt/annotation/verification-browser.cjs");\n';
+  for (const code of [
+    "await unique(page.locator('#btn-sample')).click();",
+    "const text = await unique(page.locator('#summary-bar')).innerText();",
+    "const entry = unique(page.locator('#coverageLink')); await entry.click();",
+  ])
+    assert.equal(browserLocatorContractIssues(helper + code).length, 1, code);
+  for (const code of [
+    "const button = page.locator('#btn-sample'); await unique(button); await button.click();",
+    "await (await unique(page.locator('#btn-sample'))).click();",
+    "const entry = await unique(page.locator('#coverageLink')); await entry.click();",
+    "const pending = unique(page.locator('#coverageLink')); await (await pending).click();",
+  ])
+    assert.deepEqual(browserLocatorContractIssues(helper + code), [], code);
+  assert.deepEqual(
+    browserLocatorContractIssues(
+      'const entry = unique(locator); entry.click();',
+    ),
+    [],
+  );
+});
 
 const check = {
   id: 'business',
