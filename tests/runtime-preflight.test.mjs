@@ -484,3 +484,41 @@ test('browser diagnostics retain the original error and never select a duplicate
   }
   assert.match(messages[0], /保存/);
 });
+
+test('unique re-resolves a temporarily detached locator without selecting its first match', async () => {
+  let waits = 0,
+    counts = 0;
+  const locator = {
+    first: () => ({
+      waitFor: async ({ timeout }) => {
+        waits++;
+        assert.ok(timeout > 0 && timeout <= 5000);
+      },
+    }),
+    count: async () => (++counts === 1 ? 0 : 1),
+  };
+  assert.equal(await diagnostics.unique(locator), locator);
+  assert.equal(waits, 2);
+  assert.equal(counts, 2);
+  counts = 0;
+  locator.count = async () => (++counts === 1 ? 0 : 2);
+  await assert.rejects(diagnostics.unique(locator), /expected=1 actual=2/);
+});
+
+test('unique keeps one total timeout and preserves a subsequent attachment failure', async () => {
+  const timeouts = [],
+    error = Error('attachment timeout');
+  const locator = {
+    first: () => ({
+      waitFor: async ({ timeout }) => {
+        timeouts.push(timeout);
+        if (timeouts.length > 1) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 15));
+      },
+    }),
+    count: async () => 0,
+  };
+  await assert.rejects(diagnostics.unique(locator), (e) => e === error);
+  assert.equal(timeouts.length, 2);
+  assert.ok(timeouts[1] < timeouts[0]);
+});

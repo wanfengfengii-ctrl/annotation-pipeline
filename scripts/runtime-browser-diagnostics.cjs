@@ -49,10 +49,29 @@ async function withPageDiagnostics(page, work) {
   }
 }
 async function unique(locator) {
-  await locator.first().waitFor({ state: 'attached', timeout: 5000 });
-  const count = await locator.count();
-  if (count !== 1)
-    throw Error('VERIFICATION_LOCATOR_COUNT expected=1 actual=' + count);
-  return locator;
+  const deadline = performance.now() + 5000;
+  let detached = false;
+  for (;;) {
+    const remaining = Math.ceil(deadline - performance.now());
+    if (remaining <= 0)
+      throw Error(
+        'VERIFICATION_LOCATOR_UNSTABLE expected=1 actual=0 timeout=5000',
+      );
+    // first() is only an attachment wait. Never return or act on that narrowed
+    // locator: count every match again after the wait, including after rerenders.
+    await locator.first().waitFor({ state: 'attached', timeout: remaining });
+    const count = await locator.count();
+    if (count === 1) return locator;
+    if (count !== 0)
+      throw Error('VERIFICATION_LOCATOR_COUNT expected=1 actual=' + count);
+    if (!detached) {
+      console.log(
+        'VERIFICATION_LOCATOR_RETRY expected=1 actual=0 reason=detached_after_wait',
+      );
+      detached = true;
+    }
+    // It existed during waitFor but disappeared before count. Re-resolve the
+    // same locator within the original deadline; do not reset the timeout.
+  }
 }
 module.exports = { pageControls, withPageDiagnostics, unique };
