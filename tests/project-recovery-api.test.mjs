@@ -329,4 +329,12 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     true,
     'only both actual-sent quotas permit automatic project closure',
   );
+  db.exec('DELETE FROM tasks');
+  for (let i = 0; i < 3; i++) {
+    const established = {...task,id: 'existing-'+i,closed:false,turns:[{...original,claudeAttempts:['sent'],stage:'claude',executionOutcome:'truncated'}]};
+    db.prepare('INSERT INTO tasks(id,data,created_at) VALUES(?,?,?)').run(established.id,serializeTask(established),'2026-09-09');
+  }
+  const backlog = {...task,id:'backlog',closed:false,turns:[{...original,id:'first',excluded:false,status:'queued',stage:undefined}]};
+  db.prepare('INSERT INTO tasks(id,data,created_at) VALUES(?,?,?)').run(backlog.id,serializeTask(backlog),'2026-09-10');
+  assert.equal((await (await post({action:'claim',capacity:3})).json()).job,null,'an old queued new project cannot bypass existing unfinished project slots');
 });

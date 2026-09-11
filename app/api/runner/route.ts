@@ -434,6 +434,10 @@ export async function POST(req: Request) {
       const residents = Array.isArray(b.residentTaskIds)
         ? b.residentTaskIds
         : [];
+      const established = (t: Task) => !!t.container || t.turns.some(wasSent);
+      const unfinishedEstablished = tasks.filter(
+        (t) => t.projectSeries && !t.closed && !projectQuotaComplete(t) && established(t),
+      ).length;
       const ordered = [...tasks]
         .reverse()
         .sort(
@@ -441,6 +445,10 @@ export async function POST(req: Request) {
             Number(residents.includes(b.id)) - Number(residents.includes(a.id)),
         );
       for (const item of ordered) {
+        if (
+          item.projectSeries && !established(item) &&
+          unfinishedEstablished >= Math.min(3, config.concurrency)
+        ) continue;
         if (
           Array.isArray(b.excludeTaskIds) &&
           b.excludeTaskIds.includes(item.id)
