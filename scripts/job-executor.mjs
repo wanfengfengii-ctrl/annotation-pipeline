@@ -327,8 +327,16 @@ export function createJobExecutor({
         stage: name,
       });
       if (name === 'runtime-running') return;
-      if (name === 'prepare' && !preserveQuestion)
+      if (name === 'prepare' && !preserveQuestion) {
         prompt += questionRevisionInstructions(cached.questionRevision);
+        if (cached.questionRevision)
+          extra = {
+            ...extra,
+            preparationWordingBase: structuredClone(
+              cached.questionRevision.preparation.value,
+            ),
+          };
+      }
       if (name === 'next') prompt += '\n' + repairBatchInstructions();
       if (['score', 'project-next', 'next', 'delivery'].includes(name)) {
         prompt +=

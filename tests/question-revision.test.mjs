@@ -45,6 +45,10 @@ test('unsent duplicate wording receives one revision and preserves rejection and
     questionRevisionInstructions(cached.questionRevision),
     /再次完整审核/,
   );
+  assert.match(
+    questionRevisionInstructions(cached.questionRevision),
+    /只返回 \{"prompt"/,
+  );
   cached.prepare = structuredClone(preparation);
   assert.equal(
     beginQuestionRevision(cached, { audit, preserveQuestion: false }),
@@ -117,6 +121,10 @@ test('an unsent language-only rejection gets one revision without changing its s
     true,
   );
   assert.equal(cached.questionRevision.issue, 'language');
+  assert.match(
+    questionRevisionInstructions(cached.questionRevision),
+    /只返回 \{"prompt"/,
+  );
   assert.deepEqual(cached.questionRevision.preparation, preparation);
   assert.deepEqual(cached.questionRevision.rejectedAudit, languageAudit);
   cached.prepare = structuredClone(preparation);

@@ -13,6 +13,7 @@ import {
 const f = fixture('question-revision-flow', {
   FIXTURE_STOP_PROJECT: '1',
   FIXTURE_REJECT_WORDING_ONCE: '1',
+  FIXTURE_DRIFT_WORDING_ACCEPTANCE: '1',
 });
 const original = (await api('/api/scheduler', null, 'GET')).config;
 let child;
@@ -36,6 +37,9 @@ try {
       (e) => e.name === name && (name !== 'claude' || e.event === 'start'),
     ).length;
   assert.equal(count('prepare'), 2);
+  assert.deepEqual(calls(f).filter((e) => e.name === 'prepare')[1].schemaKeys, [
+    'prompt',
+  ]);
   assert.equal(count('policy'), 2);
   assert.equal(
     count('claude'),

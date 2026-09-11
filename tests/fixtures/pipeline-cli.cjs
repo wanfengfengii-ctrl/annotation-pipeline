@@ -35,6 +35,10 @@ if (
   process.exit(0);
 }
 if (name === 'docker') {
+  if (a[0] === 'run' && a.includes('annotation.verification-preflight=true')) {
+    console.log(JSON.stringify({ version: 1, issues: [] }));
+    process.exit(0);
+  }
   if (a[0] === 'run' && a.includes('annotation.verification-probe=true')) {
     console.log(
       JSON.stringify({
@@ -250,7 +254,11 @@ process.stdin.on('end', async () => {
     ].find((s) => schema.endsWith('.' + s + '.schema.json'));
   fs.appendFileSync(
     process.env.FIXTURE_LOG,
-    JSON.stringify({ name: stage, time: Date.now() }) + '\n',
+    JSON.stringify({
+      name: stage,
+      time: Date.now(),
+      schemaKeys: Object.keys(JSON.parse(fs.readFileSync(schema)).properties),
+    }) + '\n',
   );
   for (const x of ['score', 'project-next', 'delivery']) {
     const flag = path.join(dir, 'fail-' + x + '-once');
@@ -277,6 +285,11 @@ process.stdin.on('end', async () => {
         'Feature 迭代',
       ]).flat(),
     ];
+  const allocatedCategory =
+    JSON.parse(fs.readFileSync(schema, 'utf8')).properties.category
+      ?.enum?.[0] ||
+    input.match(/本题已分配分类：([^，\n]+)/)?.[1] ||
+    '代码测试';
   const values = {
     'runtime-plan': {
       summary: 'synthetic independent runtime plan',
@@ -346,14 +359,8 @@ process.stdin.on('end', async () => {
       stack: 'fixture',
     },
     prepare: {
-      prompt: categoryQuestion(
-        JSON.parse(fs.readFileSync(schema, 'utf8')).properties.category
-          ?.enum?.[0] || '代码测试',
-        count,
-      ),
-      category:
-        JSON.parse(fs.readFileSync(schema, 'utf8')).properties.category
-          ?.enum?.[0] || '代码测试',
+      prompt: categoryQuestion(allocatedCategory, count),
+      category: allocatedCategory,
       difficulty: '中等',
       stack: 'fixture',
       acceptance: ['fixture evidence'],
@@ -435,6 +442,14 @@ process.stdin.on('end', async () => {
     const rejected = path.join(dir, 'wording-rejected');
     if (stage === 'prepare' && !fs.existsSync(rejected))
       values.prepare.prompt += '处理结果可以回看和比较。';
+    if (
+      stage === 'prepare' &&
+      fs.existsSync(rejected) &&
+      process.env.FIXTURE_DRIFT_WORDING_ACCEPTANCE
+    )
+      values.prepare.acceptance = [
+        'wording must not replace the frozen acceptance',
+      ];
     if (stage === 'policy' && !fs.existsSync(rejected)) {
       Object.assign(values.policy, {
         allowed: false,
@@ -445,14 +460,22 @@ process.stdin.on('end', async () => {
       fs.writeFileSync(rejected, '1');
     }
   }
-  fs.writeFileSync(out, JSON.stringify(values[stage]));
+  const promptOnly =
+    stage === 'prepare' &&
+    JSON.stringify(
+      Object.keys(JSON.parse(fs.readFileSync(schema)).properties),
+    ) === '["prompt"]';
+  const response = promptOnly
+    ? { prompt: values.prepare.prompt }
+    : values[stage];
+  fs.writeFileSync(out, JSON.stringify(response));
   console.log(
     JSON.stringify({ type: 'thread.started', thread_id: 'fixture-' + stage }),
   );
   console.log(
     JSON.stringify({
       type: 'item.completed',
-      item: { type: 'agent_message', text: JSON.stringify(values[stage]) },
+      item: { type: 'agent_message', text: JSON.stringify(response) },
     }),
   );
   console.log(JSON.stringify({ type: 'turn.completed' }));
