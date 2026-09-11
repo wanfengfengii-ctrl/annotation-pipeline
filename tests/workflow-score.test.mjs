@@ -10,12 +10,27 @@ test('scoring carries every dimension rubric and requires reviewable grade reaso
     assert.ok(prompt.includes(`${dimension.name}：${dimension.rubric}`));
   assert.match(
     prompt,
-    /descriptions 每项.*实际证据.*所选档位.*相邻高档.*相邻低档/,
+    /processFindings 按五维.*实际证据.*所选档位.*相邻高档.*相邻低档/,
   );
   assert.match(prompt, /1 分或 5 分只比较存在的相邻档/);
   assert.match(prompt, /不能为沿用旧分数而凑理由.*AI 核验后自行决定/);
   assert.match(prompt, /processFindings 标明本次采用的评分规则版本/);
   assert.match(prompt, /不新增 schema 未定义的分档字段/);
+  assert.match(
+    prompt,
+    /descriptions 每项只用通俗的一段话说明本维真实表现及影响/,
+  );
+  assert.match(prompt, /所有打分后的 descriptions 必须真实、通俗易懂/);
+  assert.match(prompt, /没有实际执行的操作不能写成试过、验证通过或已经可用/);
+  assert.match(prompt, /不因公开点评没有分档分析或行号而判为缺少证据/);
+  assert.match(
+    prompt,
+    /evidenceRefs 每维提供 1 至 8 个实际存在的文件路径:行号/,
+  );
+  assert.doesNotMatch(
+    prompt,
+    /选档理由写入各维 descriptions|保留真实的相对文件路径或日志行号|再写对应档位/,
+  );
 });
 
 test('scoring separates immutable pre-execution expectations from verified latest results', () => {
