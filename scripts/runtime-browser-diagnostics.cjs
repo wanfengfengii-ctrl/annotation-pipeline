@@ -1,11 +1,10 @@
 // Verification-only helpers. They observe the actual page without choosing a
 // replacement selector, dispatching synthetic events or suppressing assertions.
-async function pageControls(page) {
+async function locatorControls(locator, limit = 60, textLimit = 120) {
   let timer;
-  const controls = page
-    .locator('input,select,textarea,button,a,[role],[aria-label]')
-    .evaluateAll((nodes) =>
-      nodes.slice(0, 60).map((el) => ({
+  const controls = locator.evaluateAll(
+    (nodes, { limit, textLimit }) =>
+      nodes.slice(0, limit).map((el) => ({
         tag: el.tagName.toLowerCase(),
         id: el.id,
         role: el.getAttribute('role'),
@@ -15,11 +14,12 @@ async function pageControls(page) {
         ),
         text: /^(INPUT|TEXTAREA)$/.test(el.tagName)
           ? ''
-          : (el.textContent || '').trim().slice(0, 120),
+          : (el.textContent || '').trim().slice(0, textLimit),
         disabled: !!el.disabled,
         visible: !!el.getClientRects().length,
       })),
-    );
+    { limit, textLimit },
+  );
   try {
     return await Promise.race([
       controls,
@@ -30,6 +30,11 @@ async function pageControls(page) {
   } finally {
     clearTimeout(timer);
   }
+}
+async function pageControls(page) {
+  return locatorControls(
+    page.locator('input,select,textarea,button,a,[role],[aria-label]'),
+  );
 }
 async function withPageDiagnostics(page, work) {
   try {
@@ -62,8 +67,19 @@ async function unique(locator) {
     await locator.first().waitFor({ state: 'attached', timeout: remaining });
     const count = await locator.count();
     if (count === 1) return locator;
-    if (count !== 0)
+    if (count !== 0) {
+      // Show the actual competing records, even when they fall outside the
+      // page-wide control cap. This is diagnostic only, never a fallback click.
+      try {
+        console.log(
+          'VERIFICATION_LOCATOR_MATCHES ' +
+            JSON.stringify(await locatorControls(locator, 12, 240)),
+        );
+      } catch (error) {
+        console.log('VERIFICATION_LOCATOR_MATCHES_UNAVAILABLE ' + error.name);
+      }
       throw Error('VERIFICATION_LOCATOR_COUNT expected=1 actual=' + count);
+    }
     if (!detached) {
       console.log(
         'VERIFICATION_LOCATOR_RETRY expected=1 actual=0 reason=detached_after_wait',

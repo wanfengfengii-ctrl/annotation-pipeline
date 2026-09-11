@@ -5,13 +5,13 @@ import { verifyScoreEvidence, verifyMentionedScoreLines } from './evidence.mjs';
 import { scoreDescriptionIssues } from '../lib/score-description-context.mjs';
 import { scoreDescriptionGroundingIssues } from '../lib/score-description-grounding.mjs';
 import { repairScoreCitations } from './score-citation-repair.mjs';
+import { repairScoreClarity } from './score-clarity-repair.mjs';
 import { validateScaffold } from './project-scaffold.mjs';
 import { codexTurnIds } from '../lib/harness.mjs';
 import { stackFieldInstructions } from '../lib/stack-field.mjs';
 import { rules as taskRules } from '../lib/task-policy.mjs';
 import {
   scoreConsistencyIssues,
-  assertScoreConsistency,
   scoreConsistencyInstructions,
   scoreConsistencyVersion,
 } from '../lib/score-consistency.mjs';
@@ -521,7 +521,11 @@ export async function codexStage(options) {
       JSON.stringify({ issues, previous: original.value }) +
       '\n在 processFindings 说明维度归属和维持或调整的事实依据。保留真实问题和验证范围，不能只删命中词；本次仍需完整五维结构化输出。',
   });
-  assertScoreConsistency(revised.value.scores, revised.value.descriptions);
+  revised = await repairScoreClarity(
+    { ...options, turnId: options.turnId + '.consistency' },
+    revised,
+    runStage,
+  );
   revised = await repairScoreCitations(
     { ...options, turnId: options.turnId + '.consistency' },
     revised,
@@ -529,6 +533,7 @@ export async function codexStage(options) {
   );
   verifyMentionedScoreLines(revised.value, options.cwd, options.dir);
   const repeated = [
+    ...checkWriting('score', revised.value).issues,
     ...scoreDescriptionIssues(revised.value, options.comparisonHistory),
     ...scoreDescriptionGroundingIssues(revised.value),
   ];
@@ -542,6 +547,7 @@ export async function codexStage(options) {
         original.tracePath,
         original.writingRevision?.originalTracePath,
         revised.citationRepair?.originalTracePath,
+        revised.clarityRepair?.originalTracePath,
         revised.writingRevision?.originalTracePath,
       ].filter(Boolean),
       originalScores: original.value.scores,

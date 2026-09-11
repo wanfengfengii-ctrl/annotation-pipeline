@@ -567,6 +567,40 @@ test('unique re-resolves a temporarily detached locator without selecting its fi
   await assert.rejects(diagnostics.unique(locator), /expected=1 actual=2/);
 });
 
+test('ambiguous locator logs bounded competing records without input values or fallback actions', async () => {
+  const messages = [];
+  const old = console.log;
+  const node = (tag, text) => ({
+    tagName: tag, id: '', labels: [], disabled: false,
+    textContent: text, value: 'do-not-log-input',
+    getAttribute: () => null, getClientRects: () => [1],
+  });
+  const locator = {
+    first: () => ({ waitFor: async () => {} }),
+    count: async () => 14,
+    evaluateAll: async (fn, options) => fn([
+      node('BUTTON', '组电源正极未导通'),
+      node('BUTTON', '电源正极与地线被连通'),
+      node('INPUT', 'do-not-log-input'),
+      ...Array.from({ length: 11 }, () => node('BUTTON', 'x'.repeat(400))),
+    ], options),
+    click: () => { throw Error('must not act on an ambiguous match'); },
+  };
+  console.log = (x) => messages.push(x);
+  try {
+    await assert.rejects(diagnostics.unique(locator), /expected=1 actual=14/);
+  } finally {
+    console.log = old;
+  }
+  const matched = JSON.parse(messages[0].replace('VERIFICATION_LOCATOR_MATCHES ', ''));
+  assert.equal(matched.length, 12);
+  assert.equal(matched[0].text, '组电源正极未导通');
+  assert.equal(matched[1].text, '电源正极与地线被连通');
+  assert.equal(matched[2].text, '');
+  assert.equal(matched[3].text.length, 240);
+  assert.ok(!messages[0].includes('do-not-log-input'));
+});
+
 test('unique keeps one total timeout and preserves a subsequent attachment failure', async () => {
   const timeouts = [],
     error = Error('attachment timeout');

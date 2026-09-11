@@ -1099,6 +1099,7 @@ export async function verifyRuntime({
       files: manifest.files,
     }) +
     '\n' +
+    '同一分组或对象可同时出现多条不同的问题，不能只按共用名称 filter({hasText:分组名}) 就假定唯一。先核对实际问题类型、完整可见文本及所在区域，选择原验收要求指向的具体条目；定位有多个匹配时读取 VERIFICATION_LOCATOR_MATCHES 中的真实候选，修正临时脚本的定位。不能改用任意第一项、删除其他条目或减少原业务检查；再次验收仍须完整执行后续操作。\n' +
     'Node 浏览器验收可直接加载只读辅助模块 require("/opt/annotation/verification-browser.cjs")，其 unique(locator) 等待真实元素出现并要求唯一匹配；若元素出现后又在计数前消失，只在原有5秒总期限内重新等待同一定位器，不延长期限，多个匹配仍拒绝。它返回原定位器，不选择第一项代替唯一性，也不证明业务断言通过。withPageDiagnostics(page, async()=>{实际交互和断言}) 在失败时打印当前真实控件的标签、角色、显示及禁用状态并重新抛出原异常。用它包住关键交互，定位失败须保留这些现场信息；不能随意 .first()、force:true、修改 DOM 或忽略断言来通过。不存在的定位器属于验收方法问题；正确业务目标对应的真实控件缺失、禁用或遮挡仍须按原题单独用真实断言判断，不能统归工具错误。Python 浏览器脚本也在失败时采集同等少量真实控件信息，不打印完整 HTML 或输入值。\n' +
     environmentInstructions +
     imageToolsAdvice +
