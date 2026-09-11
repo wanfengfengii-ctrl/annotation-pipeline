@@ -1,12 +1,33 @@
 import {
   readFileSync,
   writeFileSync,
-  existsSync,
   unlinkSync,
   openSync,
   closeSync,
+  readdirSync,
+  lstatSync,
 } from 'node:fs';
+import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+
+// Recovery backups also contain .result.json files. Only the canonical
+// task/turn spool belongs to the runner; replaying a backup uses stale tokens.
+export function recoveryFiles(workRoot, kind) {
+  if (!['result', 'job'].includes(kind)) throw Error('恢复文件类型无效');
+  const uuid = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
+  const taskPattern = new RegExp('^' + uuid + '$');
+  const filePattern = new RegExp('^' + uuid + '\\.' + kind + '\\.json$');
+  const files = [];
+  for (const name of readdirSync(workRoot)) {
+    const dir = path.join(workRoot, name);
+    if (!taskPattern.test(name) || !lstatSync(dir).isDirectory()) continue;
+    for (const name of readdirSync(dir)) {
+      const file = path.join(dir, name);
+      if (filePattern.test(name) && lstatSync(file).isFile()) files.push(file);
+    }
+  }
+  return files;
+}
 export function identity(pid) {
   try {
     return execFileSync('ps', ['-p', String(pid), '-o', 'lstart=,comm='], {

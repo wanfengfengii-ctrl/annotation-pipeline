@@ -25,7 +25,7 @@ import {
   queueFinalSubmission,
   flushFinalSubmissions,
 } from './final-submissions.mjs';
-import { acquireLock, livingChildren } from './recovery.mjs';
+import { acquireLock, livingChildren, recoveryFiles } from './recovery.mjs';
 import {
   rules,
   policyInstructions,
@@ -53,9 +53,7 @@ import {
   writeFileSync,
   mkdirSync,
   existsSync,
-  readdirSync,
   unlinkSync,
-  statSync,
 } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -221,32 +219,17 @@ console.log(
   `Codex 编排 / Claude 执行器就绪 · ${version} · ${base} · 使用 CLI 配置模型`,
 );
 try {
-  for (const taskDir of readdirSync(workRoot)) {
-    const p = path.join(workRoot, taskDir);
-    if (!existsSync(p) || !statSync(p).isDirectory()) continue;
-    for (const name of readdirSync(p).filter((x) =>
-      x.endsWith('.result.json'),
-    )) {
-      const receipt = path.join(p, name);
-      if (
-        !existsSync(receipt + '.delivered') ||
-        readFileSync(receipt + '.delivered', 'utf8') !==
-          createHash('sha256').update(readFileSync(receipt)).digest('hex')
-      )
-        await deliver(JSON.parse(readFileSync(receipt, 'utf8')), receipt);
-    }
+  for (const receipt of recoveryFiles(workRoot, 'result')) {
+    if (
+      !existsSync(receipt + '.delivered') ||
+      readFileSync(receipt + '.delivered', 'utf8') !==
+        createHash('sha256').update(readFileSync(receipt)).digest('hex')
+    )
+      await deliver(JSON.parse(readFileSync(receipt, 'utf8')), receipt);
   }
   const orphans = [];
-  for (const name of readdirSync(workRoot)) {
-    const dir = path.join(workRoot, name);
-    if (!statSync(dir).isDirectory()) continue;
-    for (const file of readdirSync(dir).filter((f) =>
-      f.endsWith('.job.json'),
-    )) {
-      const journal = path.join(dir, file);
-      if (!existsSync(journal + '.done')) orphans.push(journal);
-    }
-  }
+  for (const journal of recoveryFiles(workRoot, 'job'))
+    if (!existsSync(journal + '.done')) orphans.push(journal);
   async function recoverOrphans() {
     // Iterate a snapshot because completed journals are removed from the live list.
     for (const journal of orphans.slice()) {
