@@ -3,6 +3,7 @@ import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { verifyScoreEvidence, verifyMentionedScoreLines } from './evidence.mjs';
 import { scoreDescriptionIssues } from '../lib/score-description-context.mjs';
+import { scoreDescriptionGroundingIssues } from '../lib/score-description-grounding.mjs';
 import { validateScaffold } from './project-scaffold.mjs';
 import { codexTurnIds } from '../lib/harness.mjs';
 import { stackFieldInstructions } from '../lib/stack-field.mjs';
@@ -437,6 +438,7 @@ export async function codexStage(options) {
   );
   issues.push(
     ...scoreDescriptionIssues(original.value, options.comparisonHistory),
+    ...scoreDescriptionGroundingIssues(original.value),
   );
   try {
     verifyScoreEvidence(original.value, options.cwd, options.dir);
@@ -460,10 +462,10 @@ export async function codexStage(options) {
   assertScoreConsistency(revised.value.scores, revised.value.descriptions);
   verifyScoreEvidence(revised.value, options.cwd, options.dir);
   verifyMentionedScoreLines(revised.value, options.cwd, options.dir);
-  const repeated = scoreDescriptionIssues(
-    revised.value,
-    options.comparisonHistory,
-  );
+  const repeated = [
+    ...scoreDescriptionIssues(revised.value, options.comparisonHistory),
+    ...scoreDescriptionGroundingIssues(revised.value),
+  ];
   if (repeated.length)
     throw Error('评分表达复评仍需核对：' + repeated.join('；'));
   return {
