@@ -69,5 +69,39 @@ test('one working project does not hide another failed project or count a queued
   next.tasks[0].turns[0].status = 'queued';
   const n = patrolHealth({ ...next, previous: p });
   assert.equal(n.latestCompleted, null);
-  assert.equal(n.noLongerLatest.length, 1);
+  assert.equal(n.noLongerLatest.length, 0);
+  assert.equal(n.incidents[0].state, 'recovery_in_progress');
+  assert.equal(n.needsFollowup, true);
+});
+
+test('a completed evaluation with blocked project continuation still needs action', () => {
+  const next = structuredClone(input);
+  Object.assign(next.tasks[0].turns[0], {
+    status: 'review',
+    automation: { delivery: { value: { passed: true } } },
+    projectRecovery: { state: 'blocked', reason: '续题审核失败', attempts: 3 },
+  });
+  const p = patrolHealth(next);
+  assert.equal(p.incidents[0].reason, '续题审核失败');
+  assert.equal(p.needsAction, true);
+});
+
+test('recovery remains tracked across phase changes until actual completion', () => {
+  let state = patrolHealth(input);
+  const next = structuredClone(input);
+  next.runner.scheduler.active = 1;
+  for (const stage of ['runtime-plan', 'runtime-running', 'score']) {
+    Object.assign(next.tasks[0].turns[0], { status: 'running', stage });
+    state = patrolHealth({ ...next, previous: state });
+    assert.equal(state.incidents.length, 1);
+    assert.equal(state.needsFollowup, true);
+  }
+  Object.assign(next.tasks[0].turns[0], {
+    status: 'review',
+    finishedAt: new Date(now).toISOString(),
+    automation: { delivery: { value: { passed: true } } },
+  });
+  state = patrolHealth({ ...next, previous: state });
+  assert.equal(state.incidents.length, 0);
+  assert.equal(state.latestCompleted, new Date(now).toISOString());
 });
