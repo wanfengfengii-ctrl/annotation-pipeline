@@ -330,11 +330,12 @@ export async function planFailedProject({
     };
     const audit = await stage({
       stage: 'policy',
+      questionContext: { category: candidate.category },
       cwd,
       dir,
       onChild,
       turnId: turn.id + '.replan-' + recovery.attempts,
-      prompt: `${policyInstructions()}\n本次只读审核同项目替代候选，上一题失败记录保留。先读取实际源码确认新增/迭代边界，再核对全局历史及禁出难度规则。候选：${JSON.stringify(candidate)}\n${goalHistoryInstructions((await api({ action: 'supply-context' })).history)}`,
+      prompt: `${policyInstructions({ category: candidate.category })}\n本次只读审核同项目替代候选，上一题失败记录保留。先读取实际源码确认新增/迭代边界，再核对全局历史及禁出难度规则。checkedGroups 必须返回所有固定组 ID ${JSON.stringify(rules.groups.map((g) => g.id))}，不得填写审核步骤或中文组名。matchedRuleIds 使用实际命中的组 ID，无命中写空数组；duplicateTaskIds 使用重复题目对应的真实 ID，无重复写空数组。候选：${JSON.stringify(candidate)}\n${goalHistoryInstructions((await api({ action: 'supply-context' })).history)}`,
     });
     audit.ruleVersion = rules.version;
     audit.questionRuleVersion = questionRules.version;

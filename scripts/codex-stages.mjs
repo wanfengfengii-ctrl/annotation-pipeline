@@ -6,6 +6,7 @@ import { scoreDescriptionIssues } from '../lib/score-description-context.mjs';
 import { validateScaffold } from './project-scaffold.mjs';
 import { codexTurnIds } from '../lib/harness.mjs';
 import { stackFieldInstructions } from '../lib/stack-field.mjs';
+import { rules as taskRules } from '../lib/task-policy.mjs';
 import {
   scoreConsistencyIssues,
   assertScoreConsistency,
@@ -147,7 +148,13 @@ export const schemas = {
     followupReason: str,
     matchedRuleIds: strings,
     duplicateTaskIds: strings,
-    checkedGroups: strings,
+    checkedGroups: {
+      type: 'array',
+      items: { type: 'string', enum: taskRules.groups.map((g) => g.id) },
+      minItems: taskRules.groups.length,
+      maxItems: taskRules.groups.length,
+      description: '逐类检查所有固定禁出组，填写每个组的原始 ID，不使用中文名称或审核步骤名称。',
+    },
     reason: str,
   }),
   generate: schema({
