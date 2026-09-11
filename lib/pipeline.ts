@@ -1,3 +1,4 @@
+import { runtimeRecoveryLabel } from './runtime-recovery.mjs';
 import {
   humanIssues,
   humanAsReview,
@@ -195,6 +196,25 @@ export type Turn = {
     gatewayContinuation?: Record<string, unknown>;
     submittedPolicyEvidence?: Record<string, unknown>;
     projectContinuation?: Record<string, unknown>;
+    runtimeRecovery?: {
+      version: string;
+      turnId: string;
+      state: 'waiting' | 'paused' | 'complete';
+      plan?: { path: string; sha256: string };
+      product?: { path: string; sha256: string };
+      completedIds: string[];
+      stalledAttempts: number;
+      producedOutput: boolean;
+      retryAt: string;
+      lastError: string;
+      stage: string;
+    };
+    runtimeSuite?: {
+      version: string;
+      manifestPath: string;
+      manifestSha256: string;
+      checks: number;
+    };
     runtimeVersion?: string;
     runtimeVerification?: any;
     preparation?: any;
@@ -383,7 +403,9 @@ export function issues(t: Task, r: Turn) {
 }
 export function status(t: Task) {
   if (pending(t))
-    return t.turns.some((x) => x.status === 'running') ? '执行中' : '排队中';
+    return t.turns.some((x) => x.status === 'running')
+      ? '执行中'
+      : t.turns.map(runtimeRecoveryLabel).find(Boolean) || '排队中';
   if (t.closed) return '已结束';
   if (t.turns.some(blocksProject)) return '执行异常';
   if (

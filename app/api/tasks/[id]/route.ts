@@ -156,6 +156,13 @@ export async function PATCH(
       delete r!.projectRetry;
       delete r!.planRetry;
       r!.status = 'queued';
+      if (r!.automation?.runtimeRecovery)
+        r!.automation.runtimeRecovery = {
+          ...r!.automation.runtimeRecovery,
+          state: 'waiting',
+          stalledAttempts: 0,
+          retryAt: new Date().toISOString(),
+        };
       t.automationNotice = '保留本题产物和原始轨迹，仅重做独立验收及评分';
     } else if (b.action === 'retry-plan') {
       const r = t.turns.at(-1);

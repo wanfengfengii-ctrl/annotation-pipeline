@@ -1,3 +1,7 @@
+import {
+  runtimeRecoveryEligible,
+  runtimeRecoveryDue,
+} from '@/lib/runtime-recovery.mjs';
 import { sessionFinalization } from '@/lib/session-finalization.mjs';
 import {
   questionHistory,
@@ -439,6 +443,7 @@ export async function POST(req: Request) {
         t.turns.some(
           (r) =>
             r.status === 'queued' &&
+            runtimeRecoveryDue(r) &&
             r.stageRecovery?.validationOnly &&
             r.stageRecovery.retrying &&
             r.executionOutcome === 'complete' &&
@@ -491,9 +496,13 @@ export async function POST(req: Request) {
         const r =
           item.turns.find(
             (r: any) =>
-              r.status === 'queued' && r.stageRecovery?.validationOnly,
+              r.status === 'queued' &&
+              runtimeRecoveryDue(r) &&
+              r.stageRecovery?.validationOnly,
           ) ||
-          item.turns.find((r: any) => r.status === 'queued') ||
+          item.turns.find(
+            (r: any) => r.status === 'queued' && runtimeRecoveryDue(r),
+          ) ||
           (recoverProject || retryStage ? item.turns.at(-1) : undefined);
         if (!r) continue;
         if (retryStage)
@@ -934,6 +943,24 @@ export async function POST(req: Request) {
         r.reproducibility = text(b.reproducibility, '本轮环境等级', 300);
       if (!item.task.snapshot && typeof b.snapshot === 'string')
         item.task.snapshot = b.snapshot;
+      if (!b.success && runtimeRecoveryEligible(r)) {
+        r.status = 'queued';
+        r.stageRecovery = {
+          ...r.stageRecovery,
+          attempts: r.stageRecovery?.attempts || 0,
+          retrying: true,
+          validationOnly: true,
+          historical,
+          originalStage: r.stage,
+          originalError: r.error,
+          queuedAt: new Date().toISOString(),
+          retryAt: r.automation!.runtimeRecovery.retryAt,
+        };
+        item.task.automationNotice =
+          r.automation!.runtimeRecovery.state === 'paused'
+            ? '验收产物和断点已保留，连续恢复未取得新进展，等待处理失败步骤'
+            : '验收产物和断点已保留，稍后自动继续未完成步骤';
+      }
       const disputedPlan = !b.success && disputeContinuationReady(r);
       const recovery = historical
         ? null

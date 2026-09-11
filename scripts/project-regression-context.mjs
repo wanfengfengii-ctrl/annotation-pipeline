@@ -131,6 +131,11 @@ export function assertRegressionPlanCoverage(plan, context) {
   }
   const historicalIds = new Set(context.checks.map((check) => check.id));
   if (
+    !context.checks.some(
+      (check) =>
+        check.scope === 'question' &&
+        plan.suite?.currentCheckIds?.includes(check.id),
+    ) &&
     !plan.checks.some(
       (check) => check.kind === 'acceptance' && !historicalIds.has(check.id),
     )
@@ -291,6 +296,8 @@ export function runtimeReviewContext(report, { scoring = false } = {}) {
       check.scope === 'question' ? 'question' : 'inherited-regression',
     ]),
   );
+  for (const id of report.plan?.value?.suite?.inheritedCheckIds || [])
+    if (!scopes.has(id)) scopes.set(id, 'inherited-regression');
   const scoped = (report.checks || []).map(
     ({
       id,

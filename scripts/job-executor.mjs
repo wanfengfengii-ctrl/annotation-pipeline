@@ -1,3 +1,9 @@
+import { runtimeSettings } from './runtime-settings.mjs';
+import {
+  loadProjectRuntimeSuite,
+  saveRuntimeSuite,
+} from './project-runtime-suite.mjs';
+import { runtimeRecoveryCandidate } from '../lib/runtime-recovery.mjs';
 import { SourceHashCache } from './source-hash-cache.mjs';
 import { planFailedProject } from './failed-project-plan.mjs';
 import {
@@ -1094,14 +1100,41 @@ export function createJobExecutor({
               ...runtimeContext,
               taskId: task.id,
               turnId: turn.id,
+              allowHistoricalImplementation: true,
               previousResult: existsSync(previousReceipt)
                 ? JSON.parse(readFileSync(previousReceipt, 'utf8'))
                 : null,
             });
+        const limits = runtimeSettings(workRoot);
+        const selectedCheckIds = (regressionContext?.checks || [])
+          .filter((c) => c.scope === 'question')
+          .map((c) => c.id);
+        const suiteBase = reused
+          ? null
+          : loadProjectRuntimeSuite(task, turn, {
+              dir,
+              imageId: result.container.imageId,
+              questionCheckIds: selectedCheckIds,
+            });
+        if (suiteBase) {
+          suiteBase.limits = limits;
+          suiteBase.prompt = runtimeContext.prompt;
+        }
         automation.runtimeVerification =
           reused ||
           (await verifyRuntime({
             ...runtimeContext,
+            limits,
+            suiteBase,
+            planCheckpoint: cached.runtimePlanCheckpoint,
+            onPlanCheckpoint: (value) => {
+              cached.runtimePlanCheckpoint = value;
+              persist();
+            },
+            onExecutionProgress: (value) => {
+              cached.runtimeExecutionProgress = value;
+              persist();
+            },
             planningContext: runtimePlanningContext({
               task,
               turn,
@@ -1163,6 +1196,20 @@ export function createJobExecutor({
             '独立运行验收阻塞：' + automation.runtimeVerification.summary,
           );
 
+        automation.runtimeSuite = saveRuntimeSuite({
+          dir,
+          taskId: task.id,
+          turnId: turn.id,
+          projectDirectory: task.projectSeries?.directory || null,
+          prompt: runtimeContext.prompt,
+          acceptance: runtimeContext.acceptance,
+          report: automation.runtimeVerification,
+        });
+        if (automation.runtimeRecovery)
+          automation.runtimeRecovery = {
+            ...automation.runtimeRecovery,
+            state: 'complete',
+          };
         const facts = {
           version: '2026-09-10.review-facts1',
           source: '执行器事实索引，结论须回查原件',
@@ -1351,6 +1398,26 @@ export function createJobExecutor({
       }
       result.success = false;
       result.error = e.message;
+      if (cached.claude?.success) {
+        const recovery = runtimeRecoveryCandidate({
+          previous: turn.automation?.runtimeRecovery,
+          plan: cached.runtimePlanCheckpoint,
+          product:
+            result.tracePath && existsSync(result.tracePath)
+              ? {
+                  path: result.tracePath,
+                  sha256: createHash('sha256')
+                    .update(readFileSync(result.tracePath))
+                    .digest('hex'),
+                }
+              : undefined,
+          progress: cached.runtimeExecutionProgress,
+          error: e.message,
+          stage,
+          turnId: turn.id,
+        });
+        if (recovery) automation.runtimeRecovery = recovery;
+      }
       const container = containers.load(task.id);
       if (container) {
         result.container = containers.public(container);
@@ -1398,7 +1465,10 @@ export function createJobExecutor({
           ? 'project-replan-' + outcome.result.projectRecovery.state
           : outcome.result.success
             ? 'completed'
-            : 'failed',
+            : outcome.result.automation?.runtimeRecovery?.state === 'waiting' ||
+                outcome.result.automation?.runtimeRecovery?.state === 'paused'
+              ? 'awaiting-runtime-recovery'
+              : 'failed',
       );
       outcome.result.automation ||= {};
       outcome.result.automation.timing = {

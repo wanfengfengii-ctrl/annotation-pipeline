@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { runtimeRecoveryCandidate } from '../lib/runtime-recovery.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync, rmSync } from 'node:fs';
 import path from 'node:path';
@@ -568,6 +569,77 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     'review',
   ])
     assert.deepEqual(current().turns[0][key], blocked[key]);
+  const originalCount = current().turns.length;
+  const timeoutRecovery = runtimeRecoveryCandidate({
+    plan: { path: '/fixture/runtime-plan', sha256: 'a'.repeat(64) },
+    progress: { completedIds: ['first'], producedOutput: true },
+    stage: 'runtime-running',
+    turnId: blocked.id,
+    error: 'timeout',
+  });
+  const timeoutFinish = {
+    action: 'finish',
+    taskId: task.id,
+    turnId: blocked.id,
+    jobToken: validationJob.turn.jobToken,
+    success: false,
+    stage: 'runtime-running',
+    error: 'timeout',
+    executionOutcome: 'complete',
+    sessionId: blocked.sessionId,
+    promptId: blocked.promptId,
+    tracePath: blocked.tracePath,
+    automation: { runtimeRecovery: timeoutRecovery },
+  };
+  const savedTimeout = await post(timeoutFinish);
+  assert.equal(savedTimeout.status, 200, await savedTimeout.clone().text());
+  assert.equal(current().turns[0].status, 'queued');
+  assert.equal(current().turns.length, originalCount);
+  assert.equal(current().turns[0].stageRecovery.validationOnly, true);
+  assert.equal(current().turns[0].promptId, blocked.promptId);
+  assert.equal(
+    (await (await post({ action: 'claim', capacity: 3 })).json()).job,
+    null,
+    'wait until retry due',
+  );
+  const pending = current();
+  pending.turns[0].automation.runtimeRecovery.retryAt = '2000-01-01T00:00:00Z';
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(pending),
+    task.id,
+  );
+  const resumedJob = (
+    await (
+      await post({ action: 'claim', capacity: 3, allowNewContainer: false })
+    ).json()
+  ).job;
+  assert.equal(resumedJob.turn.id, blocked.id);
+  assert.equal(resumedJob.turn.stageRecovery.validationOnly, true);
+  assert.notEqual(
+    (
+      await post({
+        action: 'reserve-claude',
+        taskId: task.id,
+        turnId: blocked.id,
+        jobToken: resumedJob.turn.jobToken,
+        attemptId: 'no-extra-model-call',
+        sessionId: blocked.sessionId,
+      })
+    ).status,
+    200,
+  );
+  const pausedFinish = await post({
+    ...timeoutFinish,
+    jobToken: resumedJob.turn.jobToken,
+    automation: { runtimeRecovery: { ...timeoutRecovery, state: 'paused' } },
+  });
+  assert.equal(pausedFinish.status, 200);
+  assert.equal(current().turns[0].status, 'queued');
+  assert.equal(
+    (await (await post({ action: 'claim', capacity: 3 })).json()).job,
+    null,
+    'paused recovery cannot spin indefinitely',
+  );
   // A historical postprocessor queues behind current work, then writes only
   // its old Turn. It cannot resurrect the old task container or append a Bug.
   const historyId = '11111111-1111-1111-1111-111111111111';

@@ -1,4 +1,12 @@
 import { spawn } from 'node:child_process';
+import {
+  runtimeSuitePatchSchema,
+  applyRuntimeSuitePatch,
+} from '../lib/runtime-suite.mjs';
+import {
+  runtimeRepairSchema,
+  applyRuntimeStepRepair,
+} from './runtime-plan-checkpoint.mjs';
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { verifyScoreEvidence, verifyMentionedScoreLines } from './evidence.mjs';
@@ -46,7 +54,7 @@ export const schemas = {
     checks: {
       type: 'array',
       minItems: 1,
-      maxItems: 8,
+      maxItems: 64,
       items: schema({
         id: { type: 'string', pattern: runtimeCheckIdPattern },
         kind: { type: 'string', enum: ['setup', 'acceptance', 'reproduction'] },
@@ -58,7 +66,7 @@ export const schemas = {
           description:
             '1 至 8 个当前项目内的相对文件路径:行号，多个引用用分号分隔；setup 可写无',
         },
-        timeoutSeconds: { type: 'integer', minimum: 1, maximum: 300 },
+        timeoutSeconds: { type: 'integer', minimum: 1, maximum: 1800 },
       }),
     },
   }),
@@ -67,7 +75,7 @@ export const schemas = {
     checks: {
       type: 'array',
       minItems: 1,
-      maxItems: 8,
+      maxItems: 64,
       items: schema({
         id: str,
         outcome: {
@@ -302,6 +310,9 @@ async function runStage({
   questionContext,
   preparationWordingBase,
   runtimeBudgetBase,
+  runtimeSuiteBase,
+  runtimeRepairBase,
+  runtimeLimits,
 }) {
   const schemaPath = path.join(dir, turnId + '.' + stage + '.schema.json'),
     last = path.join(dir, turnId + '.' + stage + '.json'),
@@ -319,11 +330,24 @@ async function runStage({
                 type: 'string',
                 enum: runtimeBudgetBase.checks.map((check) => check.id),
               },
-              timeoutSeconds: { type: 'integer', minimum: 1, maximum: 300 },
+              timeoutSeconds: {
+                type: 'integer',
+                minimum: 1,
+                maximum: runtimeBudgetBase.limits?.stepTimeoutSeconds || 300,
+              },
             }),
           },
         })
-      : structuredClone(schemas[stage]);
+      : runtimeRepairBase
+        ? runtimeRepairSchema(runtimeRepairBase)
+        : runtimeSuiteBase
+          ? runtimeSuitePatchSchema(runtimeSuiteBase)
+          : structuredClone(schemas[stage]);
+  if (stage === 'runtime-plan' && runtimeLimits && contract.properties.checks) {
+    contract.properties.checks.maxItems = runtimeLimits.maxChecks;
+    contract.properties.checks.items.properties.timeoutSeconds.maximum =
+      runtimeLimits.stepTimeoutSeconds;
+  }
   if (allocation && stage === 'prepare' && !preparationWordingBase)
     contract.properties.category.enum = [allocation.category];
   if (allocation && stage === 'project-next')
@@ -400,13 +424,20 @@ async function runStage({
   });
   if (!existsSync(last)) throw new Error('Codex 缺少结构化输出');
   const rawCandidate = JSON.parse(readFileSync(last, 'utf8'));
-  const candidate = preparationWordingBase
-    ? applyPreparationWording(preparationWordingBase, rawCandidate)
-    : runtimeBudgetBase
-      ? applyRuntimeBudgetRepair(runtimeBudgetBase, rawCandidate)
-      : rawCandidate;
+  let candidate = rawCandidate;
   let value;
   try {
+    candidate = preparationWordingBase
+      ? applyPreparationWording(preparationWordingBase, rawCandidate)
+      : runtimeBudgetBase
+        ? applyRuntimeBudgetRepair(runtimeBudgetBase, rawCandidate)
+        : runtimeRepairBase
+          ? applyRuntimeStepRepair(runtimeRepairBase, rawCandidate)
+          : runtimeSuiteBase
+            ? applyRuntimeSuitePatch(runtimeSuiteBase, rawCandidate)
+            : rawCandidate;
+    if (stage === 'runtime-plan' && runtimeLimits)
+      candidate = { ...candidate, limits: runtimeLimits };
     value = validateStage(stage, candidate);
   } catch (error) {
     if (stage === 'runtime-plan')

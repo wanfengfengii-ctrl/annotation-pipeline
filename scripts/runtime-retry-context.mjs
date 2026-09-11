@@ -191,6 +191,7 @@ export function runtimeRetryContext(
           command,
           expected,
           requirement,
+          timedOut,
         }) => ({
           id,
           kind,
@@ -205,6 +206,7 @@ export function runtimeRetryContext(
             report.plan.value.checks.find((c) => c.id === id)?.command,
           expected,
           requirement,
+          timedOut,
           logExcerpt: runtimeEvidenceLines(readFileSync(logPath, 'utf8'))
             .slice(Math.max(0, evidenceLine - 5), evidenceLine + 12)
             .join('\n')

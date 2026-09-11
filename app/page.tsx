@@ -1,4 +1,6 @@
 'use client';
+
+import { runtimeRecoveryLabel } from '@/lib/runtime-recovery.mjs';
 import {
   canAddTurn,
   claudeCallCount,
@@ -1293,7 +1295,7 @@ function TurnPanel({
                 ? '历史失败·已续题'
                 : r.excluded
                   ? '工程故障已排除'
-                  : labels[r.status]
+                  : runtimeRecoveryLabel(r) || labels[r.status]
           }
         />
       </div>
