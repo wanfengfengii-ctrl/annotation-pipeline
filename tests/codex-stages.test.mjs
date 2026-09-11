@@ -1,11 +1,68 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
   validateStage,
   validateAllocation,
   applyPreparationWording,
+  codexStage,
 } from '../scripts/codex-stages.mjs';
 import { issues, csv } from '../lib/pipeline.ts';
+test('the budget-only CLI contract returns a preserved full plan without requesting business text again', async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'runtime-budget-cli-'));
+  const bin = path.join(dir, 'bin');
+  mkdirSync(bin);
+  const previousPath = process.env.PATH;
+  t.after(() => {
+    process.env.PATH = previousPath;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  writeFileSync(
+    path.join(bin, 'codex'),
+    `#!${process.execPath}\nconst fs=require('fs');const args=process.argv.slice(2);const schema=JSON.parse(fs.readFileSync(args[args.indexOf('--output-schema')+1]));if(JSON.stringify(schema.required)!=='["timeouts"]')process.exit(2);const ids=schema.properties.timeouts.items.properties.id.enum;fs.writeFileSync(args[args.indexOf('--output-last-message')+1],JSON.stringify({timeouts:ids.map(id=>({id,timeoutSeconds:200}))}));console.log(JSON.stringify({type:'thread.started',thread_id:'budget-fixture'}));`,
+    { mode: 0o755 },
+  );
+  process.env.PATH = bin + path.delimiter + previousPath;
+  const base = {
+    summary: '保持说明',
+    checks: Array.from({ length: 4 }, (_, i) => ({
+      id: 'check' + i,
+      kind: 'acceptance',
+      command: 'true',
+      requirement: '明确说明无法对照的页面并禁用展开',
+      expected: '原业务预期',
+      codeEvidence: 'app.js:1',
+      timeoutSeconds: 300,
+    })),
+  };
+  const result = await codexStage({
+    stage: 'runtime-plan',
+    prompt: '只分配原步骤时限',
+    cwd: dir,
+    dir,
+    turnId: 'fixture',
+    onChild: () => {},
+    runtimeBudgetBase: base,
+  });
+  assert.deepEqual(result.value, {
+    ...base,
+    checks: base.checks.map((c) => ({ ...c, timeoutSeconds: 200 })),
+  });
+  assert.ok(base.checks.every((c) => c.timeoutSeconds === 300));
+  const patch = JSON.parse(
+    readFileSync(path.join(dir, 'fixture.runtime-plan.json')),
+  );
+  assert.deepEqual(Object.keys(patch), ['timeouts']);
+  assert.equal(result.threadId, 'budget-fixture');
+});
 test('preparation wording changes only prompt and preserves frozen obligations without mutation', () => {
   const base = {
     prompt: '原题',

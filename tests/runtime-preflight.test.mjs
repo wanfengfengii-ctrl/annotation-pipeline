@@ -23,6 +23,10 @@ import {
 } from '../scripts/runtime-plan-preflight.mjs';
 import { validateCodeRef } from '../scripts/runtime-verification.mjs';
 import diagnostics from '../scripts/runtime-browser-diagnostics.cjs';
+import {
+  runtimeBudgetRepairBase,
+  applyRuntimeBudgetRepair,
+} from '../lib/runtime-verification.mjs';
 
 test('preflight catches calling locator methods on the async unique helper before execution', () => {
   const helper =
@@ -57,6 +61,62 @@ const check = {
   codeEvidence: 'projects/p1/app.js:1',
   timeoutSeconds: 60,
 };
+test('budget patches preserve every original check byte-for-byte except the allocated timeout', () => {
+  const base = {
+    summary: '原计划',
+    checks: Array.from({ length: 4 }, (_, i) => ({
+      ...check,
+      id: 'check' + i,
+      timeoutSeconds: 300,
+    })),
+  };
+  const before = structuredClone(base);
+  const prior = {
+    plan: { value: base },
+    issues: [{ kind: 'structure', message: '独立验收总时限不能超过 15 分钟' }],
+  };
+  const frozen = runtimeBudgetRepairBase(prior);
+  assert.deepEqual(frozen, base);
+  const patch = {
+    timeouts: [...base.checks]
+      .reverse()
+      .map((c) => ({ id: c.id, timeoutSeconds: 200 })),
+  };
+  const repaired = applyRuntimeBudgetRepair(frozen, patch);
+  assert.deepEqual(repaired, {
+    ...base,
+    checks: base.checks.map((c) => ({ ...c, timeoutSeconds: 200 })),
+  });
+  assert.deepEqual(base, before);
+  assert.deepEqual(frozen, before);
+  for (const invalid of [
+    { ...patch, summary: '重写说明' },
+    { timeouts: patch.timeouts.slice(1) },
+    {
+      timeouts: patch.timeouts.map((x, i) =>
+        i ? x : { ...x, id: 'new_check' },
+      ),
+    },
+    { timeouts: patch.timeouts.map((x, i) => (i ? x : patch.timeouts[1])) },
+    {
+      timeouts: patch.timeouts.map((x) => ({ ...x, requirement: '换个说法' })),
+    },
+    { timeouts: patch.timeouts.map((x) => ({ ...x, expected: '忽略失败' })) },
+    { timeouts: patch.timeouts.map((x) => ({ ...x, timeoutSeconds: 300 })) },
+  ])
+    assert.throws(() => applyRuntimeBudgetRepair(frozen, invalid));
+  assert.equal(
+    runtimeBudgetRepairBase({
+      ...prior,
+      issues: [...prior.issues, { message: '语法错误' }],
+    }),
+    null,
+  );
+  assert.equal(
+    runtimeBudgetRepairBase({ ...prior, issues: [{ message: '路径不存在' }] }),
+    null,
+  );
+});
 test('preflight rejects named imports of the bundled CommonJS entry while allowing supported imports', () => {
   const entry = '/opt/annotation/node/node_modules/playwright/index.js';
   for (const code of [
@@ -291,24 +351,27 @@ test('schema budget errors can be repaired without spending an execution attempt
       })),
     },
   };
-  const f = setup(root, async (revision) => {
+  const f = setup(root, async (revision, prior) => {
     if (!revision) {
       const error = Error('独立验收总时限不能超过 15 分钟');
       error.runtimePlanCandidate = invalid;
       throw error;
     }
     return {
-      value: {
-        ...invalid.value,
-        checks: invalid.value.checks.map((c) => ({
-          ...c,
+      value: applyRuntimeBudgetRepair(runtimeBudgetRepairBase(prior), {
+        timeouts: invalid.value.checks.map((c) => ({
+          id: c.id,
           timeoutSeconds: 200,
         })),
-      },
+      }),
     };
   });
   const plan = await prepareRuntimePlan(f.options);
   assert.equal(plan.value.checks.length, 4);
+  assert.deepEqual(
+    plan.value.checks.map((c) => ({ ...c, timeoutSeconds: 300 })),
+    invalid.value.checks,
+  );
   assert.equal(f.calls.length, 1);
 });
 

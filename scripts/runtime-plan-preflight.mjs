@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { validateRuntimePlan } from '../lib/runtime-verification.mjs';
 
-export const runtimePreflightVersion = '2026-09-12.runtime-preflight4';
+export const runtimePreflightVersion = '2026-09-12.runtime-preflight5';
 // Known failures in generated verification wrappers. These bounded review
 // triggers do not load dependencies, execute scripts or alter business checks.
 export function runtimeScriptContractIssues(command) {

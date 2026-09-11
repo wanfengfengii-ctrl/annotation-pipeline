@@ -19,6 +19,7 @@ import {
   runtimeCheckIdPattern,
   validateRuntimePlan,
   validateRuntimeVerdict,
+  applyRuntimeBudgetRepair,
 } from '../lib/runtime-verification.mjs';
 import {
   writingInstructions,
@@ -300,13 +301,29 @@ async function runStage({
   allocation,
   questionContext,
   preparationWordingBase,
+  runtimeBudgetBase,
 }) {
   const schemaPath = path.join(dir, turnId + '.' + stage + '.schema.json'),
     last = path.join(dir, turnId + '.' + stage + '.json'),
     events = path.join(dir, turnId + '.' + stage + '.events.jsonl');
   const contract = preparationWordingBase
     ? schema({ prompt: str })
-    : structuredClone(schemas[stage]);
+    : runtimeBudgetBase
+      ? schema({
+          timeouts: {
+            type: 'array',
+            minItems: runtimeBudgetBase.checks.length,
+            maxItems: runtimeBudgetBase.checks.length,
+            items: schema({
+              id: {
+                type: 'string',
+                enum: runtimeBudgetBase.checks.map((check) => check.id),
+              },
+              timeoutSeconds: { type: 'integer', minimum: 1, maximum: 300 },
+            }),
+          },
+        })
+      : structuredClone(schemas[stage]);
   if (allocation && stage === 'prepare' && !preparationWordingBase)
     contract.properties.category.enum = [allocation.category];
   if (allocation && stage === 'project-next')
@@ -385,7 +402,9 @@ async function runStage({
   const rawCandidate = JSON.parse(readFileSync(last, 'utf8'));
   const candidate = preparationWordingBase
     ? applyPreparationWording(preparationWordingBase, rawCandidate)
-    : rawCandidate;
+    : runtimeBudgetBase
+      ? applyRuntimeBudgetRepair(runtimeBudgetBase, rawCandidate)
+      : rawCandidate;
   let value;
   try {
     value = validateStage(stage, candidate);
