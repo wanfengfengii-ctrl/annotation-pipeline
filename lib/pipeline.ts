@@ -179,6 +179,7 @@ export type Turn = {
   projectSource?: Record<string, any>;
   stageRecovery?: {
     validationOnly?: boolean;
+    historical?: boolean;
     originalStage?: string;
     attempts: number;
     retrying: boolean;

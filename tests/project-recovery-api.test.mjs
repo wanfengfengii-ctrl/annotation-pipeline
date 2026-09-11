@@ -11,6 +11,11 @@ import { projectRecoveryVersion } from '../lib/project-recovery.mjs';
 import { rules, candidateDigest } from '../lib/task-policy.mjs';
 import { questionRules } from '../lib/question-writing.mjs';
 import fixture from './fixtures/question.cjs';
+import {
+  containerPolicyVersion,
+  dockerSnapshot,
+} from '../lib/container-policy.mjs';
+import { permissionAuditVersion } from '../lib/permission-audit.mjs';
 
 test('real claim/finish routes reserve one recovery and append one audited independent question without altering the old record', async (t) => {
   const tmp = mkdtempSync(path.join(os.tmpdir(), 'project-recovery-api-'));
@@ -423,6 +428,172 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     'review',
   ])
     assert.deepEqual(current().turns[0][key], blocked[key]);
+  // A historical postprocessor queues behind current work, then writes only
+  // its old Turn. It cannot resurrect the old task container or append a Bug.
+  const historyId = '11111111-1111-1111-1111-111111111111';
+  const historyContainer = {
+    policyVersion: containerPolicyVersion,
+    taskId: task.id,
+    questionId: historyId,
+    name: 'annotation-' + task.id,
+    status: 'removed',
+    containerId: 'old-container',
+    workDir: '/old/workspace',
+    snapshot: dockerSnapshot('sha256:' + 'a'.repeat(64)),
+    terminalIdentity: {
+      transport: 'mac-terminal',
+      realTerminal: true,
+      tty: '/dev/old',
+      runId: 'old-terminal',
+    },
+  };
+  const historyTurn = {
+    ...blocked,
+    id: historyId,
+    questionRootId: historyId,
+    status: 'failed',
+    container: historyContainer,
+    traceExport: { verified: true, sha256: 'b'.repeat(64) },
+    permissionAudit: {
+      version: permissionAuditVersion,
+      passed: true,
+      modeVerified: true,
+      denialCount: 0,
+      traceSha256: 'b'.repeat(64),
+    },
+    projectRecovery: {
+      ...blocked.projectRecovery,
+      state: 'continued',
+      nextTurnId: 'current',
+    },
+  };
+  const newest = {
+    id: 'current',
+    status: 'running',
+    prompt: '当前题目',
+    sessionId: 'current-session',
+    jobToken: 'current-job',
+  };
+  const liveContainer = {
+    ...historyContainer,
+    status: 'running',
+    containerId: 'current-container',
+    questionId: '22222222-2222-2222-2222-222222222222',
+    workDir: '/current/workspace',
+  };
+  const historyTask = {
+    ...task,
+    turns: [historyTurn, newest],
+    container: liveContainer,
+    workDir: '/current/workspace',
+    sessionId: 'current-session',
+    model: 'configured-model',
+    automationMode: 'codex',
+  };
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(historyTask),
+    task.id,
+  );
+  const hr = await routes.PATCH(
+    new Request('http://localhost/api/tasks/project', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        action: 'retry-validation',
+        turnId: historyId,
+        revision: db
+          .prepare('SELECT revision FROM tasks WHERE id=?')
+          .get(task.id).revision,
+      }),
+    }),
+    { params: Promise.resolve({ id: task.id }) },
+  );
+  assert.equal(hr.status, 200, await hr.clone().text());
+  assert.equal(current().turns[0].stageRecovery.historical, true);
+  assert.equal(
+    (
+      await (
+        await post({ action: 'claim', capacity: 3, allowNewContainer: false })
+      ).json()
+    ).job,
+    null,
+    'do not interrupt current execution',
+  );
+  const waiting = current();
+  waiting.turns[1].status = 'queued';
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(waiting),
+    task.id,
+  );
+  const hj = (
+    await (
+      await post({ action: 'claim', capacity: 3, allowNewContainer: false })
+    ).json()
+  ).job;
+  assert.equal(hj.turn.id, historyId);
+  const liveBeforeFinish = current();
+  const historyFinish = {
+    action: 'finish',
+    taskId: task.id,
+    turnId: historyId,
+    jobToken: hj.turn.jobToken,
+    success: true,
+    container: historyContainer,
+    traceExport: historyTurn.traceExport,
+    permissionAudit: historyTurn.permissionAudit,
+    sessionId: historyTurn.sessionId,
+    promptId: historyTurn.promptId,
+    tracePath: historyTurn.tracePath,
+    finishedAt: historyTurn.finishedAt,
+    executionOutcome: 'complete',
+    preparedPrompt: historyTurn.prompt,
+    workDir: '/old/workspace',
+    model: 'old-model',
+    preparation: {
+      category: 'Feature 迭代',
+      difficulty: '困难',
+      stack: 'old-stack',
+    },
+    review: {
+      source: 'codex',
+      scores: [3, 4, 4, 4, 4],
+      descriptions: Array(5).fill('本轮实际结果'),
+      other: '无',
+    },
+    automation: {
+      delivery: { value: { passed: true } },
+      next: { value: { action: 'repair', prompt: '不得追加旧会话修复' } },
+    },
+  };
+  assert.notEqual(
+    (await post({ ...historyFinish, sessionId: 'wrong-session' })).status,
+    200,
+  );
+  const historySaved = await post(historyFinish);
+  assert.equal(historySaved.status, 200, await historySaved.clone().text());
+  const { turns: oldTurns, ...oldMetadata } = liveBeforeFinish,
+    { turns: newTurns, ...newMetadata } = current();
+  assert.deepEqual(
+    newMetadata,
+    oldMetadata,
+    'current project metadata must remain identical',
+  );
+  assert.deepEqual(
+    newTurns[1],
+    oldTurns[1],
+    'current question must remain identical',
+  );
+  assert.equal(
+    newTurns.length,
+    2,
+    'historical verification must not append a new Bug',
+  );
+  assert.equal(newTurns[0].status, 'review');
+  assert.deepEqual(newTurns[0].review.scores, [3, 4, 4, 4, 4]);
+  assert.equal(
+    (await post(historyFinish)).status,
+    200,
+    'repeated completion remains idempotent',
+  );
   // Finish this fixture before exercising unrelated project admission quotas.
   task.turns = [retained];
   db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(

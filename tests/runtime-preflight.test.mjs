@@ -16,6 +16,7 @@ import {
   prepareRuntimePlan,
   syntaxProbeProgram,
   runtimePathInstructions,
+  assertKnownRuntimeChecks,
 } from '../scripts/runtime-plan-preflight.mjs';
 import { validateCodeRef } from '../scripts/runtime-verification.mjs';
 import diagnostics from '../scripts/runtime-browser-diagnostics.cjs';
@@ -29,6 +30,21 @@ const check = {
   codeEvidence: 'projects/p1/app.js:1',
   timeoutSeconds: 60,
 };
+test('known reproduced failures keep their business requirement and expected result in a new plan', () => {
+  const history = { checks: [{ ...check, outcome: 'reproduced' }] };
+  assert.doesNotThrow(() =>
+    assertKnownRuntimeChecks({ checks: [check] }, history),
+  );
+  for (const checks of [
+    [],
+    [{ ...check, kind: 'setup' }],
+    [{ ...check, expected: '忽略问题' }],
+  ])
+    assert.throws(
+      () => assertKnownRuntimeChecks({ checks }, history),
+      /已复现问题/,
+    );
+});
 function fixture(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'preflight-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

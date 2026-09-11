@@ -10,6 +10,7 @@ import { RecordsTable } from '@/components/pipeline/records-table';
 import {
   sentProjectCounts,
   validationRetryAllowed,
+  historicalValidationRetryAllowed,
 } from '@/lib/project-recovery.mjs';
 import { formatQuestionText } from '@/lib/question-text.mjs';
 import { canPlanDisputedTurn } from '@/lib/disputed-continuation.mjs';
@@ -1650,21 +1651,27 @@ function TurnPanel({
       )}
       {r.status === 'failed' &&
         !r.excluded &&
-        t.turns.at(-1)?.id === r.id &&
+        (t.turns.at(-1)?.id === r.id ||
+          historicalValidationRetryAllowed(t, r)) &&
         !canPlanDisputedTurn(t, r) && (
           <Button
             variant="outline"
             disabled={busy}
             onClick={() =>
               run({
-                action: validationRetryAllowed(t, r)
-                  ? 'retry-validation'
-                  : 'retry',
+                action:
+                  validationRetryAllowed(t, r) ||
+                  historicalValidationRetryAllowed(t, r)
+                    ? 'retry-validation'
+                    : 'retry',
                 turnId: r.id,
               })
             }
           >
-            {validationRetryAllowed(t, r) ? '仅重做验收与评分' : '重试失败阶段'}
+            {validationRetryAllowed(t, r) ||
+            historicalValidationRetryAllowed(t, r)
+              ? '仅重做验收与评分'
+              : '重试失败阶段'}
           </Button>
         )}
       {r.excluded ? (

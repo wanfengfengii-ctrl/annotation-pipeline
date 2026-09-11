@@ -23,8 +23,67 @@ import {
   runtimePythonBrowserExample,
 } from '../scripts/runtime-verification.mjs';
 import { jobReleaseProtocol } from '../scripts/job-release.mjs';
-import { completedValidationEvidence } from '../scripts/completed-validation.mjs';
+import {
+  completedValidationEvidence,
+  historicalValidationContext,
+} from '../scripts/completed-validation.mjs';
 const hash = (data) => createHash('sha256').update(data).digest('hex');
+
+test('historical evaluation sees only its archived workspace and cannot control the current container', (t) => {
+  const f = fixture(t);
+  const turn = {
+    id: 'old',
+    questionRootId: 'question',
+    sessionId: 'old-session',
+    container: { containerId: 'old-container' },
+    stageRecovery: { historical: true, validationOnly: true },
+  };
+  const state = {
+    taskId: 'task',
+    questionId: 'question',
+    status: 'removed',
+    containerId: 'old-container',
+    workDir: f.context.workDir,
+    snapshot: 'old-snapshot',
+  };
+  writeFileSync(
+    path.join(f.context.dir, 'container-question.json'),
+    JSON.stringify(state),
+  );
+  const live = {
+    id: 'task',
+    workDir: '/current/workspace',
+    container: { containerId: 'current' },
+    turns: [turn, { id: 'next', status: 'running' }],
+  };
+  const original = structuredClone(live);
+  const bound = historicalValidationContext(live, turn, f.context.dir, {
+    public: (s) => structuredClone(s),
+    load() {
+      throw Error('must not read current container');
+    },
+  });
+  assert.equal(bound.task.workDir, f.context.workDir);
+  assert.deepEqual(bound.task.turns, [turn]);
+  assert.equal(bound.containers.execute, undefined);
+  assert.equal(bound.containers.publish, undefined);
+  assert.equal(bound.containers.ensure, undefined);
+  assert.equal(bound.containers.load('task').status, 'removed');
+  assert.throws(() => bound.containers.load('different'));
+  assert.deepEqual(live, original);
+  state.status = 'running';
+  writeFileSync(
+    path.join(f.context.dir, 'container-question.json'),
+    JSON.stringify(state),
+  );
+  assert.throws(
+    () =>
+      historicalValidationContext(live, turn, f.context.dir, {
+        public: (s) => s,
+      }),
+    /尚未归档/,
+  );
+});
 
 function fixture(t) {
   const parent = mkdtempSync(path.join(os.tmpdir(), 'runtime-retry-'));

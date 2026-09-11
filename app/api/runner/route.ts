@@ -482,13 +482,17 @@ export async function POST(req: Request) {
         )
           continue;
         if (
-          item.closed ||
-          item.turns.some(
-            (r: any) => r.recoveryBlocked || r.status === 'running',
-          )
+          (item.closed && !validationRecovery(item)) ||
+          item.turns.some((r: any) => r.status === 'running') ||
+          (!validationRecovery(item) &&
+            item.turns.some((r: any) => r.recoveryBlocked))
         )
           continue;
         const r =
+          item.turns.find(
+            (r: any) =>
+              r.status === 'queued' && r.stageRecovery?.validationOnly,
+          ) ||
           item.turns.find((r: any) => r.status === 'queued') ||
           (recoverProject || retryStage ? item.turns.at(-1) : undefined);
         if (!r) continue;
@@ -645,7 +649,10 @@ export async function POST(req: Request) {
           'os',
           'model',
         ] as const)
-          if (typeof b.salvage[key] === 'string')
+          if (
+            !r.stageRecovery?.historical &&
+            typeof b.salvage[key] === 'string'
+          )
             item.task[key] = b.salvage[key];
       }
       if (!b.live) delete r.recoveryToken;
@@ -660,6 +667,38 @@ export async function POST(req: Request) {
         return Response.json({ ok: true });
       if (!r || r.status !== 'running' || r.jobToken !== b.jobToken)
         throw new Error('任务状态或执行凭据不匹配');
+      const historical =
+        r.stageRecovery?.historical === true &&
+        r.stageRecovery.validationOnly === true;
+      const liveTask = item.task;
+      if (historical) {
+        if (
+          item.task.turns.at(-1)?.id === r.id ||
+          r.projectRetry ||
+          r.planRetry ||
+          b.projectRecovery ||
+          b.gatewayFailure
+        )
+          throw Error('历史验收不能变更当前项目或创建后续题');
+        for (const key of [
+          'sessionId',
+          'promptId',
+          'tracePath',
+          'finishedAt',
+          'executionOutcome',
+        ] as const)
+          if (b[key] !== undefined && b[key] !== r[key])
+            throw Error('历史验收不能改写原始身份：' + key);
+        if (b.preparedPrompt !== undefined && b.preparedPrompt !== r.prompt)
+          throw Error('历史验收不能改写原题');
+        // Normal result checks run against the old question's own identity.
+        // Only its Turn will be saved; current task/container metadata is retained.
+        item.task = {
+          ...liveTask,
+          container: r.container,
+          sessionId: r.sessionId,
+        };
+      }
       if (r.projectRetry) {
         // Planning has a separate receipt. Do not overwrite the failed run's
         // prompt, result, score, timestamps, raw identity or exclusion flag.
@@ -891,10 +930,12 @@ export async function POST(req: Request) {
       if (!item.task.snapshot && typeof b.snapshot === 'string')
         item.task.snapshot = b.snapshot;
       const disputedPlan = !b.success && disputeContinuationReady(r);
-      const recovery = planGatewayContinuation(item.task, r, {
-        id: crypto.randomUUID(),
-        callCount: claudeCallCount(item.task, questionRoot(item.task, r)),
-      });
+      const recovery = historical
+        ? null
+        : planGatewayContinuation(item.task, r, {
+            id: crypto.randomUUID(),
+            callCount: claudeCallCount(item.task, questionRoot(item.task, r)),
+          });
       if (recovery) {
         r.gatewayRecovery = {
           version: gatewayContinuationVersion,
@@ -904,7 +945,7 @@ export async function POST(req: Request) {
         item.task.automationNotice =
           '本轮已确认 504 结束，原会话排队发送继续；失败原件与实际轮次保留';
       }
-      if ((b.success || disputedPlan) && !item.task.closed) {
+      if (!historical && (b.success || disputedPlan) && !item.task.closed) {
         if (disputedPlan) delete r.planRetry;
         let decision;
         try {
@@ -952,6 +993,7 @@ export async function POST(req: Request) {
         }
       }
       if (
+        !historical &&
         projectQuotaComplete(item.task) &&
         !item.task.turns.some((x) => ['queued', 'running'].includes(x.status))
       ) {
@@ -959,7 +1001,10 @@ export async function POST(req: Request) {
         item.task.automationNotice =
           '本项目实际发送题额已满：0-1 十题、Feature 十题，完成本会话收尾后更换项目';
       }
-      await save(item.task, item.revision);
+      await save(
+        historical ? { ...liveTask, turns: item.task.turns } : item.task,
+        item.revision,
+      );
       return Response.json({ ok: true });
     }
     throw new Error('未知执行器操作');

@@ -28,7 +28,11 @@ const inventory = (manifest) => ({
 
 // A blocked report can guide a new attempt, but can never be reused as a pass.
 // Every reference is verified against the exact logical turn and current source.
-export function runtimeRetryContext(report, context) {
+export function runtimeRetryContext(
+  report,
+  context,
+  { allowCompleted = false } = {},
+) {
   if (!report) return null;
   try {
     const { taskId, turnId, dir, workDir, imageId } = context;
@@ -41,7 +45,9 @@ export function runtimeRetryContext(report, context) {
       !turnId ||
       path.basename(taskDir) !== taskId ||
       report.version !== runtimeVersion ||
-      report.status !== 'blocked' ||
+      !(allowCompleted ? ['blocked', 'passed', 'bugs'] : ['blocked']).includes(
+        report.status,
+      ) ||
       report.executed !== true ||
       report.imageId !== imageId ||
       !withinTask(report.reportPath) ||
@@ -103,7 +109,7 @@ export function runtimeRetryContext(report, context) {
       report.diagnosis.value,
     );
     if (
-      finalized.status !== 'blocked' ||
+      finalized.status !== report.status ||
       !same(finalized.checks, report.checks) ||
       finalized.summary !== report.summary
     )
@@ -170,7 +176,7 @@ export function runtimeRetryContext(report, context) {
       inputBinding,
       reportPath: report.reportPath,
       reportSha256,
-      status: 'blocked',
+      status: report.status,
       summary: report.summary,
       checks: report.checks.map(
         ({

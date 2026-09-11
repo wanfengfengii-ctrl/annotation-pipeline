@@ -46,6 +46,41 @@ export function queueFinalSubmission(workRoot, state) {
     });
 }
 
+// A failed old result may have had its original finalization queue completed
+// before scoring existed. Keep that receipt and enqueue this recovered archive
+// separately; the original Terminal export is verified by the existing consumer.
+export function queueRecoveredFinalSubmission(
+  workRoot,
+  state,
+  turnId,
+  archiveSha256,
+) {
+  if (
+    !uuid(state.taskId) ||
+    !uuid(state.questionId) ||
+    !uuid(turnId) ||
+    state.status !== 'removed' ||
+    !state.results?.[turnId]?.success ||
+    !/^[a-f0-9]{64}$/.test(archiveSha256 || '')
+  )
+    throw Error('历史验收最终提交队列身份无效');
+  const directory = path.join(workRoot, 'final-submissions');
+  mkdirSync(directory, { recursive: true });
+  const file = path.join(
+    directory,
+    `${state.taskId}.${state.questionId}.validation.${turnId}.${archiveSha256}.json`,
+  );
+  if (!existsSync(file))
+    save(file, {
+      version,
+      taskId: state.taskId,
+      questionId: state.questionId,
+      turnIds: [turnId],
+      sourceArchiveSha256: archiveSha256,
+      createdAt: new Date().toISOString(),
+    });
+}
+
 // This durable queue outlives container replacement. Only submission metadata
 // is delivered separately; original result and assessment receipts stay intact.
 export async function flushFinalSubmissions({

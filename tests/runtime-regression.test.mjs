@@ -16,6 +16,7 @@ import {
   runtimeInputDigest,
 } from '../scripts/runtime-verification.mjs';
 import { projectRegressionVersion } from '../scripts/project-regression-context.mjs';
+import { runtimeRetryContext } from '../scripts/runtime-retry-context.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const imageId = 'sha256:' + 'a'.repeat(64);
@@ -235,6 +236,11 @@ test('runtime executes current acceptance and inherited bug with fresh evidence 
   assert.deepEqual(saved.regressionContext, regressionContext);
   assert.equal(hash(readFileSync(report.reportPath)), report.reportSha256);
   assert.strictEqual(reuseRuntimeVerification(report, context), report);
+  assert.equal(runtimeRetryContext(report, context), null);
+  assert.equal(
+    runtimeRetryContext(report, context, { allowCompleted: true }).status,
+    'bugs',
+  );
   assert.deepEqual(
     readFileSync(regressionContext.checks[0].sourceReportPath),
     before,

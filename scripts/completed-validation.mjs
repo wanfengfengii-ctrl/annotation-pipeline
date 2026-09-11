@@ -6,7 +6,7 @@ import { verifyNativeExport } from './evidence.mjs';
 import { readNativeTurn } from './docker-runtime.mjs';
 
 // A removed original container is historical evidence, never a live environment.
-// Only a completed native result AND the exact source of an authenticated blocked
+// Only a completed native result AND the exact source of an authenticated
 // runtime report permit independent verification to resume without that container.
 export function completedValidationEvidence({
   task,
@@ -81,16 +81,20 @@ export function completedValidationEvidence({
   )
     throw Error('原生完成记录不匹配');
   const report = cached.runtimeVerification;
-  const feedback = runtimeRetryContext(report, {
-    taskId: task.id,
-    turnId: turn.id,
-    dir,
-    workDir: c.workDir,
-    imageId: c.container.imageId,
-    prompt: turn.evaluationPrompt || cached.prepare.value.prompt,
-    acceptance: cached.prepare.value.acceptance,
-    regressionContext: report?.regressionContext || null,
-  });
+  const feedback = runtimeRetryContext(
+    report,
+    {
+      taskId: task.id,
+      turnId: turn.id,
+      dir,
+      workDir: c.workDir,
+      imageId: c.container.imageId,
+      prompt: turn.evaluationPrompt || cached.prepare.value.prompt,
+      acceptance: cached.prepare.value.acceptance,
+      regressionContext: report?.regressionContext || null,
+    },
+    { allowCompleted: true },
+  );
   if (!feedback)
     throw Error('已归档产物与原验收源码或日志不一致，不能恢复评分');
   return {
@@ -100,5 +104,58 @@ export function completedValidationEvidence({
     initialEnvironmentEvidence: initial,
     sourceReportPath: feedback.reportPath,
     sourceReportSha256: feedback.reportSha256,
+  };
+}
+
+// Use only the archived question's own source and container record. The adapter
+// exposes no Terminal, Docker control or state publication methods. Current
+// project state and later turns remain outside the historical evaluator.
+export function historicalValidationContext(task, turn, dir, liveContainers) {
+  if (!turn.stageRecovery?.historical || !turn.stageRecovery.validationOnly)
+    throw Error('缺少历史验收恢复标记');
+  const index = task.turns.findIndex((r) => r.id === turn.id);
+  if (
+    index < 0 ||
+    index === task.turns.length - 1 ||
+    !/^[\w-]+$/.test(turn.questionRootId || '')
+  )
+    throw Error('历史验收题目身份不符');
+  const state = JSON.parse(
+    readFileSync(
+      path.join(dir, 'container-' + turn.questionRootId + '.json'),
+      'utf8',
+    ),
+  );
+  if (
+    state.status !== 'removed' ||
+    state.pending ||
+    state.taskId !== task.id ||
+    state.questionId !== turn.questionRootId ||
+    state.containerId !== turn.container?.containerId
+  )
+    throw Error('历史题目尚未归档或原容器身份不符');
+  const containers = Object.freeze({
+    load(id) {
+      if (id !== task.id) throw Error('历史验收不能读取其他项目');
+      return structuredClone(state);
+    },
+    public(value) {
+      return liveContainers.public(value);
+    },
+  });
+  return {
+    containers,
+    task: {
+      ...task,
+      turns: task.turns.slice(0, index + 1),
+      container: containers.public(state),
+      workDir: state.workDir,
+      snapshot: state.snapshot,
+      sessionId: turn.sessionId,
+      harness: turn.harness || task.harness,
+      harnessVersion: turn.harnessVersion || task.harnessVersion,
+      model: turn.model || task.model,
+      os: turn.os || task.os,
+    },
   };
 }

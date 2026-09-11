@@ -6,6 +6,7 @@ import { canAddTurn } from '@/lib/project-series.mjs';
 import {
   projectQuotaComplete,
   validationRetryAllowed,
+  historicalValidationRetryAllowed,
 } from '@/lib/project-recovery.mjs';
 import { submissionIssues } from '@/lib/submission-policy.mjs';
 import {
@@ -120,20 +121,23 @@ export async function PATCH(
       if (!r.projectRetry) r.error = '';
     } else if (b.action === 'retry-validation') {
       const r = t.turns.find((r) => r.id === b.turnId);
-      if (!validationRetryAllowed(t, r))
+      const historical = historicalValidationRetryAllowed(t, r);
+      if (!historical && !validationRetryAllowed(t, r))
         throw Error(
-          '此轮不能仅重做验收：需本项目末轮已完成、原件齐全且没有运行中的后续题',
+          '此轮不能仅重做验收：需代码已完成、原件齐全且没有交付锁定或题目审核异议',
         );
       r!.stageRecovery = {
         ...r!.stageRecovery,
         attempts: (r!.stageRecovery?.attempts || 0) + 1,
         retrying: true,
         validationOnly: true,
+        historical,
         originalStage: r!.stageRecovery?.originalStage || r!.stage,
         originalError: r!.stageRecovery?.originalError || r!.error,
         queuedAt: new Date().toISOString(),
       };
       delete r!.projectRetry;
+      delete r!.planRetry;
       r!.status = 'queued';
       t.automationNotice = '保留本题产物和原始轨迹，仅重做独立验收及评分';
     } else if (b.action === 'retry-plan') {

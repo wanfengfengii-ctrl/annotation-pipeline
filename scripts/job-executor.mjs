@@ -5,7 +5,10 @@ import {
   policyHistory,
 } from '../lib/question-history.mjs';
 import { runtimePlanningContext } from './runtime-planning-context.mjs';
-import { completedValidationEvidence } from './completed-validation.mjs';
+import {
+  completedValidationEvidence,
+  historicalValidationContext,
+} from './completed-validation.mjs';
 import { scoreDescriptionContext } from '../lib/score-description-context.mjs';
 import { stageContractDigest } from './stage-contract.mjs';
 import { DockerRuntime } from './docker-runtime.mjs';
@@ -68,6 +71,7 @@ import {
   reviewEvidence,
 } from './evidence.mjs';
 import { submissionPackageVersion } from './submission-package.mjs';
+import { queueRecoveredFinalSubmission } from './final-submissions.mjs';
 
 import { journalChild } from './recovery.mjs';
 import {
@@ -122,6 +126,7 @@ export function createJobExecutor({
   budget,
   release,
 }) {
+  const liveContainers = containers;
   async function executeClaude({ task, turn }) {
     try {
       return await containers.execute(task, turn, (attemptId, sessionId) =>
@@ -150,12 +155,17 @@ export function createJobExecutor({
     }
   }
   async function executeJob({ task, turn }, timing) {
+    const dir = path.join(workRoot, task.id);
+    const historical = turn.stageRecovery?.historical
+      ? historicalValidationContext(task, turn, dir, liveContainers)
+      : null;
+    const containers = historical?.containers || liveContainers;
+    if (historical) task = historical.task;
     const codexStage = (options) =>
       timing.stage(options.stage, () => runCodexStage(options), {
         budget,
         kind: 'codex',
       });
-    const dir = path.join(workRoot, task.id);
     mkdirSync(dir, { recursive: true });
     const cachePath = path.join(dir, turn.id + '.stages.json');
     if (turn.projectRetry)
@@ -1097,15 +1107,19 @@ export function createJobExecutor({
               cached.runtimeDiagnosisCheckpoint = value;
               persist();
             },
-            retryContext: runtimeRetryContext(cached.runtimeVerification, {
-              ...runtimeContext,
-              // Valid old failure feedback remains useful after adding regression
-              // coverage, but can never be reused as the new completed report.
-              regressionContext:
-                cached.runtimeVerification?.regressionContext || null,
-              taskId: task.id,
-              turnId: turn.id,
-            }),
+            retryContext: runtimeRetryContext(
+              cached.runtimeVerification,
+              {
+                ...runtimeContext,
+                // Valid old failure feedback remains useful after adding regression
+                // coverage, but can never be reused as the new completed report.
+                regressionContext:
+                  cached.runtimeVerification?.regressionContext || null,
+                taskId: task.id,
+                turnId: turn.id,
+              },
+              { allowCompleted: !!historical },
+            ),
             step,
             onChild,
           }));
@@ -1379,6 +1393,40 @@ export function createJobExecutor({
       writeFileSync(outcome.receipt, JSON.stringify(outcome.result), {
         mode: 0o600,
       });
+      if (
+        outcome.result.success &&
+        job.turn.stageRecovery?.validationOnly &&
+        outcome.result.container?.status === 'removed'
+      ) {
+        try {
+          const state = job.turn.stageRecovery.historical
+            ? JSON.parse(
+                readFileSync(
+                  path.join(
+                    workRoot,
+                    job.task.id,
+                    'container-' + job.turn.questionRootId + '.json',
+                  ),
+                  'utf8',
+                ),
+              )
+            : liveContainers.load(job.task.id);
+          queueRecoveredFinalSubmission(
+            workRoot,
+            state,
+            job.turn.id,
+            outcome.result.automation.archive.sha256,
+          );
+        } catch (error) {
+          outcome.result.automation.submission = {
+            ...outcome.result.automation.submission,
+            reason: '历史评分已保存，最终提交副本排队失败：' + error.message,
+          };
+          writeFileSync(outcome.receipt, JSON.stringify(outcome.result), {
+            mode: 0o600,
+          });
+        }
+      }
       return outcome;
     } catch (error) {
       timing.finish('failed');

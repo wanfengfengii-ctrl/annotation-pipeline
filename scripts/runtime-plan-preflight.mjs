@@ -4,6 +4,19 @@ import { createHash } from 'node:crypto';
 import { validateRuntimePlan } from '../lib/runtime-verification.mjs';
 
 export const runtimePreflightVersion = '2026-09-11.runtime-preflight1';
+export function assertKnownRuntimeChecks(plan, history) {
+  for (const old of history?.checks || []) {
+    if (old.outcome !== 'reproduced') continue;
+    const next = plan.checks.find((check) => check.id === old.id);
+    if (
+      !next ||
+      next.kind === 'setup' ||
+      next.requirement !== old.requirement ||
+      next.expected !== old.expected
+    )
+      throw Error('独立验收必须重新覆盖已复现问题及原预期：' + old.id);
+  }
+}
 // This program only parses text. Generated shell/Python/JavaScript is never
 // evaluated, sourced or mounted into the preflight container.
 export const syntaxProbeProgram = String.raw`
