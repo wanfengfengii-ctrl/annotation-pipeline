@@ -379,10 +379,33 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
   assert.equal(current().turns[0].projectRetry, undefined);
   assert.equal(current().turns[0].stageRecovery.validationOnly, true);
   assert.equal(current().turns[0].projectRecovery.attempts, 4);
+  const resident = {
+    ...task,
+    id: 'resident',
+    turns: [{ id: 'resident-new', status: 'queued', prompt: 'next' }],
+  };
+  db.prepare('INSERT INTO tasks(id,data,created_at) VALUES(?,?,?)').run(
+    resident.id,
+    serializeTask(resident),
+    '2026-09-09',
+  );
   const validationJob = (
-    await (await post({ action: 'claim', capacity: 3 })).json()
+    await (
+      await post({
+        action: 'claim',
+        capacity: 3,
+        allowNewContainer: false,
+        residentTaskIds: ['resident'],
+      })
+    ).json()
   ).job;
+  assert.equal(
+    validationJob.task.id,
+    task.id,
+    'completed verification precedes resident new work without requiring another Claude container',
+  );
   assert.ok(validationJob.turn.stageRecovery.validationOnly);
+  db.prepare('DELETE FROM tasks WHERE id=?').run(resident.id);
   const deniedValidationSend = await post({
     action: 'reserve-claude',
     taskId: task.id,

@@ -435,6 +435,16 @@ export async function POST(req: Request) {
         ? b.residentTaskIds
         : [];
       const established = (t: Task) => !!t.container || t.turns.some(wasSent);
+      const validationRecovery = (t: Task) =>
+        t.turns.some(
+          (r) =>
+            r.status === 'queued' &&
+            r.stageRecovery?.validationOnly &&
+            r.stageRecovery.retrying &&
+            r.executionOutcome === 'complete' &&
+            r.traceExport?.verified &&
+            r.permissionAudit?.passed,
+        );
       const unfinishedEstablished = tasks.filter(
         (t) =>
           t.projectSeries &&
@@ -446,6 +456,7 @@ export async function POST(req: Request) {
         .reverse()
         .sort(
           (a, b) =>
+            Number(validationRecovery(b)) - Number(validationRecovery(a)) ||
             Number(residents.includes(b.id)) - Number(residents.includes(a.id)),
         );
       for (const item of ordered) {
@@ -466,7 +477,8 @@ export async function POST(req: Request) {
           b.allowNewContainer === false &&
           !residents.includes(item.id) &&
           !recoverProject &&
-          !retryStage
+          !retryStage &&
+          !validationRecovery(item)
         )
           continue;
         if (
