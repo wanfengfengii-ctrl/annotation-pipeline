@@ -1105,6 +1105,7 @@ export async function verifyRuntime({
     cacheInstructions +
     manifestTestDependencyInstructions +
     nativeTestResultInstructions +
+    '\n解析原套件 JUnit XML 时先核对实际结构：pytest 常用 testsuites 作为容器根，tests、failures、errors、skipped 在其 testsuite 子项上，不能只读取 root.attrib 并把缺失属性默认成 0。按叶子 testsuite 汇总，避免父子套件重复计数；兼容根本身为 testsuite 和命名空间，并核对 testcase 与原始 stdout 的范围。缺少可靠计数写未知并保留原 XML、退出码及完整输出，不把解析错误说成原套件没有执行或测试失败。完整通过仍要求原套件已完成且真实失败、错误、跳过均为零，不改原测试、过滤用例或伪造统计。\n' +
     nativeTestAttributionInstructions +
     runtimeObservationInstructions +
     '\n浏览器辅助 unique 是 async 函数，调用结果是 Promise。使用 const button = page.locator("真实定位器"); await unique(button); await button.click(); 这样的三步写法；读取 innerText、fill 等也在原 locator 上执行。不要写 await unique(locator).click()，也不要 const button = unique(locator) 后调用 button.click()。健康检查和页面访问端口必须与源码启动入口实际监听端口一致；不要仅改探针端口或设置项目未读取的 PORT 环境变量，独立容器可以复用项目原端口。\n' +
