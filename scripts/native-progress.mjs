@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+export const nativeObservationVersion = '2026-09-11.native-observation2';
+
 // Only parsed records from the current native round can keep its observer alive.
 // Terminal redraws, metadata and repeated reads of the same record do not count.
 export class NativeProgressWatch {
@@ -17,6 +19,7 @@ export class NativeProgressWatch {
   diagnostics(now = Date.now()) {
     const silentMs = Math.max(0, now - this.lastProgressAt);
     return {
+      version: nativeObservationVersion,
       silentMs,
       lastProgressAt: new Date(this.lastProgressAt).toISOString(),
       lastProgressKind: this.lastProgressKind,
@@ -28,6 +31,9 @@ export class NativeProgressWatch {
             ? 'observe'
             : 'progressing',
       automaticResend: false,
+      observationMode:
+        silentMs >= this.timeoutMs ? 'waiting-native-completion' : 'active',
+      pollIntervalMs: silentMs >= this.timeoutMs ? 15000 : 1500,
     };
   }
   observe(native, now = Date.now()) {

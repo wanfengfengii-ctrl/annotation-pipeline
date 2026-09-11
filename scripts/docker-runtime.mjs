@@ -1100,10 +1100,11 @@ export class DockerRuntime {
       if (!this.owned(s).State.Running)
         throw Error('容器交互已退出，保留容器供导出；不恢复或重发题目');
       const native = readNativeTurn(this.native(s), turn.prompt, p.previousIds);
-      const idle = progress.observe(native);
+      progress.observe(native);
       const diagnostic = progress.diagnostics();
       if (
         diagnostic.level !== s.progress?.level ||
+        diagnostic.observationMode !== s.progress?.observationMode ||
         Date.now() - (s.progress?.observedMs || 0) >= 30000
       ) {
         s.progress = { ...diagnostic, observedMs: Date.now() };
@@ -1165,11 +1166,12 @@ export class DockerRuntime {
         await this.publish(s);
         return { ...result, container: this.public(s) };
       }
-      if (idle)
-        throw Error(
-          '本轮长时间没有新的原生执行记录，尚未确认结束；已保留容器和调用额度，重试只核对原交互，不重发题目',
-        );
-      await nap(1500);
+      // Silence is not completion: Claude's own gateway retries can outlast
+      // the progress threshold. Keep the original sent receipt and observe at
+      // a lower frequency so a late result still reaches finish/504 recovery.
+      // Only a native completion above can finish the attempt; no new input,
+      // model reservation or terminal restart is performed by this wait.
+      await nap(diagnostic.pollIntervalMs);
     }
   }
   async confirmLocalCommand(s, task, turn, native) {

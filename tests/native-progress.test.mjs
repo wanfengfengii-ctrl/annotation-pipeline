@@ -192,20 +192,105 @@ test('execute reconnect observes live work past its old deadline without reservi
   assert.equal(state.pending, undefined);
 });
 
-test('execute silence times out without terminating the container or clearing its sent receipt', async (t) => {
-  const { state, run } = fixture(t),
+test('execute silence keeps observing without clearing its sent receipt; explicit stop is still honored', async (t) => {
+  const { state, run, rt } = fixture(t),
     pending = structuredClone(state.pending);
+  let settled = false;
   const result = run().then(
     () => assert.fail('silent round cannot succeed'),
-    (error) => error,
+    (error) => {
+      settled = true;
+      return error;
+    },
   );
   await flush();
   for (let i = 0; i < 2; i++) {
     t.mock.timers.tick(1500);
     await flush();
   }
-  assert.match((await result).message, /没有新的原生执行记录/);
+  assert.equal(settled, false);
+  assert.equal(state.progress.observationMode, 'waiting-native-completion');
+  assert.equal(state.progress.pollIntervalMs, 15000);
+  assert.equal(state.progress.automaticResend, false);
+  rt.shouldStop = () => true;
+  t.mock.timers.tick(15000);
+  assert.match((await result).message, /执行器停止/);
   assert.deepEqual(state.pending, pending);
+  assert.deepEqual(state.results, {});
+});
+
+test('a gateway retry ending after forty minutes is collected after the thirty-minute silence threshold', async (t) => {
+  const { state, events, run } = fixture(t);
+  process.env.RUNNER_TIMEOUT_MS = String(30 * 60000);
+  // This attempt has no tool pending. Retry redraws do not extend progress.
+  events.splice(0);
+  const result = run();
+  let settled = false;
+  result.then(() => {
+    settled = true;
+  });
+  await flush();
+  t.mock.timers.tick(30 * 60000);
+  await flush();
+  assert.equal(settled, false);
+  assert.equal(state.progress.observationMode, 'waiting-native-completion');
+  for (let i = 0; i < 40; i++) {
+    t.mock.timers.tick(15000);
+    await flush();
+  }
+  assert.equal(settled, false);
+  assert.equal(state.pending.phase, 'sent');
+  events.push(
+    {
+      type: 'assistant',
+      uuid: 'gateway-error',
+      isApiErrorMessage: true,
+      error: 'server_error',
+      message: {
+        content: [{ type: 'text', text: 'API Error: 504 Gateway Time-out' }],
+      },
+    },
+    { type: 'system', subtype: 'turn_duration' },
+  );
+  t.mock.timers.tick(15000);
+  const value = await result;
+  assert.equal(value.success, false);
+  assert.equal(value.executionOutcome, 'error');
+  assert.equal(value.gatewayFailure.status, 504);
+  assert.equal(value.promptId, 'prompt');
+  assert.equal(value.claudeCallCount, 1);
+  assert.equal(state.pending, undefined);
+  assert.equal(Object.keys(state.results).length, 1);
+});
+
+test('new work resumes fast observation after silence and late success is collected', async (t) => {
+  const { state, events, run } = fixture(t);
+  const result = run();
+  await flush();
+  t.mock.timers.tick(3000);
+  await flush();
+  assert.equal(state.progress.pollIntervalMs, 15000);
+  events.push(activity('resumed', 'text'));
+  t.mock.timers.tick(15000);
+  await flush();
+  assert.equal(state.progress.observationMode, 'active');
+  assert.equal(state.progress.pollIntervalMs, 1500);
+  events.push({ type: 'system', subtype: 'turn_duration' });
+  t.mock.timers.tick(1500);
+  assert.equal((await result).success, true);
+  assert.equal(state.pending, undefined);
+});
+
+test('container exit during slow observation still stops without sending or clearing pending work', async (t) => {
+  const { state, run, rt } = fixture(t);
+  const result = run().catch((error) => error);
+  await flush();
+  t.mock.timers.tick(3000);
+  await flush();
+  rt.owned = () => ({ State: { Running: false } });
+  t.mock.timers.tick(15000);
+  assert.match((await result).message, /容器交互已退出/);
+  assert.equal(state.pending.phase, 'sent');
   assert.deepEqual(state.results, {});
 });
 
