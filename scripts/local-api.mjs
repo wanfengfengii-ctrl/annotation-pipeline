@@ -335,13 +335,22 @@ export async function main() {
   mkdirSync(paths.stateRoot, { recursive: true });
   const unlock = acquireApiLock(path.join(paths.stateRoot, 'local-api.lock'));
   const stateFile = path.join(paths.stateRoot, 'local-api.json');
+  const questionRuleVersion = JSON.parse(
+    readFileSync(path.join(paths.releaseRoot, 'rules/question-writing.json'), 'utf8'),
+  ).version;
   let lastPhase;
   const monitor = new LocalApiMonitor({
     probe: probeApi,
     available: portAvailable,
     launch: () => launchWrangler(paths, paths.releaseRoot),
     record: (state) => {
-      const safe = { version: 1, supervisorPid: process.pid, ...state };
+      const safe = {
+        version: 1,
+        supervisorPid: process.pid,
+        releaseRoot: paths.releaseRoot,
+        questionRuleVersion,
+        ...state,
+      };
       const temp = `${stateFile}.${process.pid}.tmp`;
       writeFileSync(temp, JSON.stringify(safe, null, 2), { mode: 0o600 });
       renameSync(temp, stateFile);

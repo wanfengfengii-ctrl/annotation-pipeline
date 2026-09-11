@@ -14,6 +14,20 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { verifyJobRelease, jobReleaseProtocol } from './job-release.mjs';
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+export function assertApiReleaseCompatible(root, workRoot, alive = (pid) => {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+}) {
+  const file = path.join(workRoot, 'local-api.json');
+  if (!existsSync(file)) return;
+  const api = JSON.parse(readFileSync(file, 'utf8'));
+  if (!Number.isInteger(api.supervisorPid) || !alive(api.supervisorPid)) return;
+  const expected = JSON.parse(
+    readFileSync(path.join(root, 'rules/question-writing.json'), 'utf8'),
+  ).version;
+  if (!api.questionRuleVersion || api.questionRuleVersion !== expected)
+    throw Error(`API 题目审核版本 ${api.questionRuleVersion || '未记录'} 与新作业 ${expected} 不一致；冻结版本已准备在 ${root}，先构建并升级 API，再重新发布作业指针`);
+}
 export function publishJobRelease({ sourceRoot, workRoot, commit }) {
   if (!/^[a-f0-9]{40}$/.test(commit)) throw Error('需要已验证的完整提交号');
   const releases = path.join(workRoot, 'releases'),
@@ -64,6 +78,9 @@ export function publishJobRelease({ sourceRoot, workRoot, commit }) {
     manifestSha256: sha(readFileSync(path.join(root, 'job-release.json'))),
   };
   const verified = verifyJobRelease(pointer, workRoot);
+  // Replanning receipts are validated by the API too. Never activate jobs
+  // whose accepted audit version the live API will reject indefinitely.
+  assertApiReleaseCompatible(root, workRoot);
   const file = path.join(workRoot, 'job-release-current.json');
   if (existsSync(file))
     writeFileSync(

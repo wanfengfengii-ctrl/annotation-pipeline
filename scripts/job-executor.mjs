@@ -175,7 +175,16 @@ export function createJobExecutor({
         dir,
         api,
         containers,
-        stage: codexStage,
+        stage: async (options) => {
+          await api({
+            action: 'stage',
+            taskId: task.id,
+            turnId: turn.id,
+            jobToken: turn.jobToken,
+            stage: options.stage,
+          });
+          return codexStage(options);
+        },
         onChild: (child) => {
           track(child);
           if (child) journalChild(path.join(dir, turn.id + '.job.json'), child);
