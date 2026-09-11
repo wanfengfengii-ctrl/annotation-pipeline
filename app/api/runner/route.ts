@@ -470,6 +470,7 @@ export async function POST(req: Request) {
           r.stageRecovery = {
             attempts: (r.stageRecovery?.attempts || 0) + 1,
             retrying: true,
+            originalStage: r.stageRecovery?.originalStage || r.stage,
             originalError: r.error,
             queuedAt: new Date().toISOString(),
           };
@@ -698,6 +699,10 @@ export async function POST(req: Request) {
         delete r.projectRetry;
         await save(item.task, item.revision);
         return Response.json({ ok: true });
+      }
+      if (!b.success) {
+        for (const key of ['sessionId', 'promptId', 'tracePath', 'traceExport', 'permissionAudit', 'output', 'finishedAt'] as const)
+          if (b[key] === undefined && r[key] !== undefined) b[key] = r[key];
       }
       if (
         b.success &&

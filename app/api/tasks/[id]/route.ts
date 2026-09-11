@@ -98,6 +98,15 @@ export async function PATCH(
       if (t.turns.at(-1)?.id !== r.id)
         throw Error('后续轮次已存在，不能重跑历史轮次覆盖原始证据');
       if (canPlanDisputedTurn(t, r)) r.planRetry = true;
+      if (r.stageRecovery && !r.planRetry) {
+        r.stageRecovery = {
+          ...r.stageRecovery,
+          attempts: r.stageRecovery.attempts + 1,
+          retrying: true,
+          originalStage: r.stageRecovery.originalStage || r.stage,
+          queuedAt: new Date().toISOString(),
+        };
+      }
       r.status = 'queued';
       r.error = '';
     } else if (b.action === 'retry-plan') {

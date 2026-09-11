@@ -234,6 +234,31 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     null,
     'backoff prevents an immediate retry loop',
   );
+  const postprocess = {
+    ...later,
+    executionOutcome: 'complete',
+    stage: 'runtime-plan',
+    tracePath: '/original.jsonl',
+    permissionAudit: { passed: true },
+  };
+  task.turns = [postprocess];
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(serializeTask(task), task.id);
+  const stageJob = (await (await post({ action: 'claim', capacity: 3 })).json()).job;
+  assert.equal(stageJob.turn.stageRecovery.originalStage, 'runtime-plan');
+  const earlyFailure = await post({action: 'finish',taskId: task.id,turnId: postprocess.id,jobToken: stageJob.turn.jobToken,success: false,stage: 'policy',error: 'audit interrupted before collecting cached Claude fields'});
+  assert.equal(earlyFailure.status, 200);
+  const retained = current().turns[0];
+  for (const key of ['sessionId', 'promptId', 'tracePath', 'traceExport', 'permissionAudit', 'output', 'finishedAt'])
+    assert.deepEqual(retained[key], postprocess[key], key);
+  assert.equal(retained.stageRecovery.originalStage, 'runtime-plan');
+  const revision = db.prepare('SELECT revision FROM tasks WHERE id=?').get(task.id).revision;
+  const manualRetry = await routes.PATCH(new Request('http://localhost/api/tasks/project', {method: 'PATCH',body: JSON.stringify({action: 'retry',turnId: retained.id,revision})}), {params: Promise.resolve({id: task.id})});
+  assert.equal(manualRetry.status, 200);
+  assert.equal(current().turns[0].stageRecovery.attempts, 2);
+  assert.equal(current().turns[0].stageRecovery.retrying, true);
+  // Finish this fixture before exercising unrelated project admission quotas.
+  task.turns = [retained];
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(serializeTask(task), task.id);
   const proposal = async (fingerprint) => {
     const c = {
       repoPath: '/tmp/fixture',

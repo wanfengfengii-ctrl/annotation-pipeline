@@ -1,6 +1,6 @@
 import { SourceHashCache } from './source-hash-cache.mjs';
 import { planFailedProject } from './failed-project-plan.mjs';
-import { goalHistoryInstructions } from '../lib/question-history.mjs';
+import { goalHistoryInstructions, policyHistory } from '../lib/question-history.mjs';
 import { runtimePlanningContext } from './runtime-planning-context.mjs';
 import { scoreDescriptionContext } from '../lib/score-description-context.mjs';
 import { stageContractDigest } from './stage-contract.mjs';
@@ -228,6 +228,7 @@ export function createJobExecutor({
     cached.attempt = (cached.attempt || 0) + 1;
     persist();
     let automation = {
+      ...(turn.stageRecovery?.retrying ? structuredClone(turn.automation || {}) : {}),
       workflowVersion: workflow.version,
       runtimeVersion,
       questionRuleVersion: questionRules.version,
@@ -281,6 +282,8 @@ export function createJobExecutor({
       persist();
     }
     let result = {
+      ...(turn.stageRecovery?.retrying ? structuredClone(turn) : {}),
+      ...(cached.claude ? structuredClone(cached.claude) : {}),
       action: 'finish',
       taskId: task.id,
       turnId: turn.id,
@@ -746,9 +749,9 @@ export function createJobExecutor({
         };
         if (!candidate.repoPath) throw Error('题目审核缺少实际容器产物目录');
         const context = await api({ action: 'supply-context' });
-        const history = context.history
-          .filter((t) => t.id !== task.id)
-          .slice(0, 200);
+        const history = policyHistory(context.history, task.id, {
+          preserveQuestion, policyOrigin: cached.policyOrigin,
+        });
         // A completed interaction with a later factual rejection can only finish
         // collecting evidence. The rejection stays effective through delivery.
         const submittedEvidence = await submittedPolicyEvidence({
