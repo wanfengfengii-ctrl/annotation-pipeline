@@ -3,11 +3,19 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { validateRuntimePlan } from '../lib/runtime-verification.mjs';
 
-export const runtimePreflightVersion = '2026-09-12.runtime-preflight6';
+export const runtimePreflightVersion = '2026-09-12.runtime-preflight7';
 // Known failures in generated verification wrappers. These bounded review
 // triggers do not load dependencies, execute scripts or alter business checks.
 export function runtimeScriptContractIssues(command) {
   const issues = [];
+  if (
+    /^\s*\(async\s*\(\s*\)\s*=>\s*withApp\s*\(async\s+\w+\s*=>\s*\{[\s\S]*?^\s*\}\)\);\s*$/m.test(
+      command,
+    )
+  )
+    issues.push(
+      '临时脚本把 async 箭头函数放在括号内但没有调用，Node 会无输出退出 0；显式调用并等待 withApp 中的验收，保留异常退出码和实际断言日志，不得靠补打印 PASS 代替执行',
+    );
   if (
     /\.(?:newPage|new_page)\s*\(/.test(command) &&
     /\.(?:locator|getByRole|getByText|get_by_role|get_by_text)\s*\(/.test(

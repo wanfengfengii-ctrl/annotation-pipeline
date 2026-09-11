@@ -1,5 +1,27 @@
 import test from 'node:test';
 
+test('discarded async browser wrapper is rejected before its false-success exit', () => {
+  const bad =
+    "cat > /tmp/check.cjs <<'NODE'\n(async () => withApp(async page => {\n  await page.locator('#button').click();\n}));\nNODE\nnode /tmp/check.cjs";
+  assert.match(runtimeScriptContractIssues(bad).join(' '), /没有调用/);
+  assert.deepEqual(
+    runtimeScriptContractIssues(bad.replace('}));', '}))();')),
+    [],
+  );
+  assert.deepEqual(
+    runtimeScriptContractIssues(
+      bad.replace('(async () => withApp', 'withApp').replace('}));', '});'),
+    ),
+    [],
+  );
+  assert.deepEqual(
+    runtimeScriptContractIssues(
+      bad.replace('(async () => withApp', 'const run = (async () => withApp'),
+    ),
+    [],
+  );
+});
+
 test('browser plans must navigate before locating business controls on a fresh page', () => {
   const js =
     "const page = await context.newPage(); await page.locator('#sample').click();";
