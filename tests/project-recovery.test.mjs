@@ -135,8 +135,22 @@ test('an unsent Bug preparation failure must not close the existing native quest
     sessionId: 'native-session',
     executionOutcome: 'complete',
   });
+  turn.questionRootId = 'prior';
+  task.container = {
+    questionId: 'prior',
+    containerId: 'existing-container',
+    status: 'running',
+  };
   assert.equal(projectRecoveryDue(task, { autoContinue: true }), false);
   assert.equal(wasSent(turn), false);
+  assert.equal(sessionFinalization(task), null);
+  turn.stage = 'context';
+  assert.equal(sessionFinalization(task), null);
+  delete turn.repairOf;
+  turn.continuationOf = 'prior';
+  assert.equal(sessionFinalization(task), null);
+  task.closed = true;
+  assert.equal(sessionFinalization(task).reason, 'operator-closed');
 });
 
 test('frozen preparation wording failures retry the same draft, while submitted inputs never qualify', () => {
@@ -147,6 +161,17 @@ test('frozen preparation wording failures retry the same draft, while submitted 
   };
   assert.equal(frozenPreparationFailure(turn), true);
   assert.equal(projectRecoveryDue(taskOf(turn), { autoContinue: true }), false);
+  assert.equal(
+    sessionFinalization({
+      ...taskOf(turn),
+      container: {
+        questionId: turn.id,
+        containerId: 'draft-container',
+        status: 'running',
+      },
+    }),
+    null,
+  );
   for (const patch of [
     { promptId: 'native' },
     { sessionId: 'native' },
