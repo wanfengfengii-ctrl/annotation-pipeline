@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { publishContainerState } from './container-publication.mjs';
 import { completedGateway504 } from './native-gateway-error.mjs';
 import {
   gatewayContinuationVersion,
@@ -483,7 +484,7 @@ export class DockerRuntime {
   }
   async publish(s) {
     this.save(s);
-    await this.report(this.public(s));
+    await publishContainerState(this.report, this.public(s));
   }
   records() {
     return readdirSync(this.root)

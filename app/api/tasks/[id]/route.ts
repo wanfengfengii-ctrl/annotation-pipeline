@@ -98,7 +98,13 @@ export async function PATCH(
       if (t.turns.at(-1)?.id !== r.id)
         throw Error('后续轮次已存在，不能重跑历史轮次覆盖原始证据');
       if (canPlanDisputedTurn(t, r)) r.planRetry = true;
-      if (r.stageRecovery && !r.planRetry) {
+      if (r.projectRecovery?.state === 'blocked' && !r.planRetry) {
+        // A user-requested retry after repairing the planner must continue that
+        // planner, not replay the rejected question. Keep its attempt history;
+        // planFailedProject rechecks idle state, source evidence and quotas.
+        r.projectRetry = { originalStatus: r.status, originalStage: r.stage };
+      }
+      if (r.stageRecovery && !r.planRetry && !r.projectRetry) {
         r.stageRecovery = {
           ...r.stageRecovery,
           attempts: r.stageRecovery.attempts + 1,
@@ -108,7 +114,7 @@ export async function PATCH(
         };
       }
       r.status = 'queued';
-      r.error = '';
+      if (!r.projectRetry) r.error = '';
     } else if (b.action === 'retry-plan') {
       const r = t.turns.at(-1);
       const disputed = canPlanDisputedTurn(t, r);

@@ -242,23 +242,131 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     permissionAudit: { passed: true },
   };
   task.turns = [postprocess];
-  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(serializeTask(task), task.id);
-  const stageJob = (await (await post({ action: 'claim', capacity: 3 })).json()).job;
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(task),
+    task.id,
+  );
+  const stageJob = (await (await post({ action: 'claim', capacity: 3 })).json())
+    .job;
   assert.equal(stageJob.turn.stageRecovery.originalStage, 'runtime-plan');
-  const earlyFailure = await post({action: 'finish',taskId: task.id,turnId: postprocess.id,jobToken: stageJob.turn.jobToken,success: false,stage: 'policy',error: 'audit interrupted before collecting cached Claude fields'});
+  const earlyFailure = await post({
+    action: 'finish',
+    taskId: task.id,
+    turnId: postprocess.id,
+    jobToken: stageJob.turn.jobToken,
+    success: false,
+    stage: 'policy',
+    error: 'audit interrupted before collecting cached Claude fields',
+  });
   assert.equal(earlyFailure.status, 200);
   const retained = current().turns[0];
-  for (const key of ['sessionId', 'promptId', 'tracePath', 'traceExport', 'permissionAudit', 'output', 'finishedAt'])
+  for (const key of [
+    'sessionId',
+    'promptId',
+    'tracePath',
+    'traceExport',
+    'permissionAudit',
+    'output',
+    'finishedAt',
+  ])
     assert.deepEqual(retained[key], postprocess[key], key);
   assert.equal(retained.stageRecovery.originalStage, 'runtime-plan');
-  const revision = db.prepare('SELECT revision FROM tasks WHERE id=?').get(task.id).revision;
-  const manualRetry = await routes.PATCH(new Request('http://localhost/api/tasks/project', {method: 'PATCH',body: JSON.stringify({action: 'retry',turnId: retained.id,revision})}), {params: Promise.resolve({id: task.id})});
+  const revision = db
+    .prepare('SELECT revision FROM tasks WHERE id=?')
+    .get(task.id).revision;
+  const manualRetry = await routes.PATCH(
+    new Request('http://localhost/api/tasks/project', {
+      method: 'PATCH',
+      body: JSON.stringify({ action: 'retry', turnId: retained.id, revision }),
+    }),
+    { params: Promise.resolve({ id: task.id }) },
+  );
   assert.equal(manualRetry.status, 200);
   assert.equal(current().turns[0].stageRecovery.attempts, 2);
   assert.equal(current().turns[0].stageRecovery.retrying, true);
+  const blocked = {
+    ...retained,
+    error: '原验收失败',
+    projectRecovery: {
+      version: projectRecoveryVersion,
+      turnId: retained.id,
+      state: 'blocked',
+      attempts: 3,
+      reason: '只读源码访问方式错误',
+      retryAt: '2999-01-01T00:00:00Z',
+    },
+  };
+  task.turns = [blocked];
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(task),
+    task.id,
+  );
+  const blockedRevision = db
+    .prepare('SELECT revision FROM tasks WHERE id=?')
+    .get(task.id).revision;
+  const plannerRetry = await routes.PATCH(
+    new Request('http://localhost/api/tasks/project', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        action: 'retry',
+        turnId: blocked.id,
+        revision: blockedRevision,
+      }),
+    }),
+    { params: Promise.resolve({ id: task.id }) },
+  );
+  assert.equal(plannerRetry.status, 200);
+  assert.deepEqual(current().turns[0].projectRetry, {
+    originalStatus: 'failed',
+    originalStage: blocked.stage,
+  });
+  assert.deepEqual(current().turns[0].projectRecovery, blocked.projectRecovery);
+  assert.deepEqual(current().turns[0].stageRecovery, blocked.stageRecovery);
+  assert.equal(current().turns[0].error, blocked.error);
+  const manualPlanJob = (
+    await (await post({ action: 'claim', capacity: 3 })).json()
+  ).job;
+  assert.ok(manualPlanJob.turn.projectRetry);
+  const forbiddenClaude = await post({
+    action: 'reserve-claude',
+    taskId: task.id,
+    turnId: blocked.id,
+    jobToken: manualPlanJob.turn.jobToken,
+    attemptId: 'must-not-send',
+    sessionId: 'native-session',
+  });
+  assert.notEqual(forbiddenClaude.status, 200);
+  const manualPlanFailure = await post({
+    action: 'finish',
+    taskId: task.id,
+    turnId: blocked.id,
+    jobToken: manualPlanJob.turn.jobToken,
+    success: false,
+    error: 'new planning obstacle',
+  });
+  assert.equal(manualPlanFailure.status, 200);
+  assert.equal(current().turns[0].projectRecovery.attempts, 4);
+  assert.equal(current().turns[0].error, blocked.error);
+  for (const key of [
+    'sessionId',
+    'promptId',
+    'tracePath',
+    'traceExport',
+    'review',
+    'stageRecovery',
+  ])
+    assert.deepEqual(current().turns[0][key], blocked[key], key);
+  assert.equal(
+    (await (await post({ action: 'claim', capacity: 3 })).json()).job,
+    null,
+    'explicit retry does not reset the automatic retry budget',
+  );
   // Finish this fixture before exercising unrelated project admission quotas.
   task.turns = [retained];
-  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(serializeTask(task), task.id);
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(task),
+    task.id,
+  );
   const proposal = async (fingerprint) => {
     const c = {
       repoPath: '/tmp/fixture',
@@ -331,10 +439,47 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
   );
   db.exec('DELETE FROM tasks');
   for (let i = 0; i < 3; i++) {
-    const established = {...task,id: 'existing-'+i,closed:false,turns:[{...original,claudeAttempts:['sent'],stage:'claude',executionOutcome:'truncated'}]};
-    db.prepare('INSERT INTO tasks(id,data,created_at) VALUES(?,?,?)').run(established.id,serializeTask(established),'2026-09-09');
+    const established = {
+      ...task,
+      id: 'existing-' + i,
+      closed: false,
+      turns: [
+        {
+          ...original,
+          claudeAttempts: ['sent'],
+          stage: 'claude',
+          executionOutcome: 'truncated',
+        },
+      ],
+    };
+    db.prepare('INSERT INTO tasks(id,data,created_at) VALUES(?,?,?)').run(
+      established.id,
+      serializeTask(established),
+      '2026-09-09',
+    );
   }
-  const backlog = {...task,id:'backlog',closed:false,turns:[{...original,id:'first',excluded:false,status:'queued',stage:undefined}]};
-  db.prepare('INSERT INTO tasks(id,data,created_at) VALUES(?,?,?)').run(backlog.id,serializeTask(backlog),'2026-09-10');
-  assert.equal((await (await post({action:'claim',capacity:3})).json()).job,null,'an old queued new project cannot bypass existing unfinished project slots');
+  const backlog = {
+    ...task,
+    id: 'backlog',
+    closed: false,
+    turns: [
+      {
+        ...original,
+        id: 'first',
+        excluded: false,
+        status: 'queued',
+        stage: undefined,
+      },
+    ],
+  };
+  db.prepare('INSERT INTO tasks(id,data,created_at) VALUES(?,?,?)').run(
+    backlog.id,
+    serializeTask(backlog),
+    '2026-09-10',
+  );
+  assert.equal(
+    (await (await post({ action: 'claim', capacity: 3 })).json()).job,
+    null,
+    'an old queued new project cannot bypass existing unfinished project slots',
+  );
 });
