@@ -163,6 +163,11 @@ export function fingerprint(repo, prompt) {
 export function supplyDecision(context, state, now = Date.now()) {
   if (!context.config.enabled) return '自动补充已暂停';
   if (!context.repos.length) return '等待配置仓库，或创建首个手动任务';
+  if (
+    (context.unfinishedProjects || 0) >=
+    Math.min(3, context.config.concurrency || 3)
+  )
+    return '现有项目题额未满，优先在原项目续题';
   if (context.generatedToday >= context.config.dailyLimit)
     return '已达今日补充上限';
   if (

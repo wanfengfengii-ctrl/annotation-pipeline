@@ -24,6 +24,7 @@ export function throughputReport({
       pendingFix: 0,
     };
   let attempts = 0,
+    replanningAttempts = 0,
     missingTiming = 0;
   const records = [];
   for (const task of tasks)
@@ -60,6 +61,10 @@ export function throughputReport({
         stageDurations: {},
       };
       for (const timing of timings) {
+        if (timing.outcome?.startsWith('project-replan-')) {
+          replanningAttempts++;
+          continue;
+        }
         if (timing.outcome === 'completed') {
           group.completedAttempts++;
           group.durations.push(timing.elapsedMs);
@@ -84,6 +89,7 @@ export function throughputReport({
     observedAt: now,
     counts,
     attempts,
+    replanningAttempts,
     missingTiming,
     note: '累计状态与每次尝试分开统计；历史缺少阶段计时不推算耗时，样本不足不宣称产量提升。',
     groups: [...groups.values()].map(({ durations, stageDurations, ...g }) => ({

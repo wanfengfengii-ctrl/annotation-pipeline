@@ -3,6 +3,7 @@ import { isContinuation } from '@/lib/round-context.mjs';
 import { updateRecordMetadata } from '@/lib/record-metadata';
 import { businessRecord } from '@/lib/business-record.mjs';
 import { canAddTurn } from '@/lib/project-series.mjs';
+import { projectQuotaComplete } from '@/lib/project-recovery.mjs';
 import { submissionIssues } from '@/lib/submission-policy.mjs';
 import {
   canPlanDisputedTurn,
@@ -167,6 +168,16 @@ export async function PATCH(
       r.submittedAt = new Date().toISOString();
       if (b.submitter) r.submitter = text(b.submitter, '提交人', 100);
       r.receipt = text(b.receipt, '外部提交记录', 2000);
+    } else if (b.action === 'resume-project') {
+      if (
+        !t.projectSeries ||
+        pending(t) ||
+        t.turns.some((r) => r.recoveryBlocked) ||
+        projectQuotaComplete(t)
+      )
+        throw Error('项目正在执行、状态待确认或两类实际题额已满');
+      t.closed = false;
+      t.automationNotice = '按用户要求保留原项目继续出题，原失败与禁传记录不变';
     } else if (b.action === 'close') {
       if (pending(t)) throw new Error('执行中的会话不能结束');
       t.closed = true;

@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import { verifyScoreEvidence, verifyMentionedScoreLines } from './evidence.mjs';
+import { scoreDescriptionIssues } from '../lib/score-description-context.mjs';
 import { validateScaffold } from './project-scaffold.mjs';
 import { codexTurnIds } from '../lib/harness.mjs';
 import { stackFieldInstructions } from '../lib/stack-field.mjs';
@@ -252,7 +254,7 @@ export function validateAllocation(stage, value, allocation) {
     allocation &&
     (stage === 'prepare' ||
       (stage === 'project-next' && value.action === 'advance')) &&
-    value.category !== allocation.category
+    !(allocation.categories || [allocation.category]).includes(value.category)
   )
     throw Error(
       'Independent question category differs from its weighted allocation',
@@ -277,7 +279,12 @@ async function runStage({
     contract.properties.category.enum = [allocation.category];
   if (allocation && stage === 'project-next')
     contract.properties.category.enum = [
-      ...new Set([allocation.category, 'Bug 修复'].filter(Boolean)),
+      ...new Set(
+        [
+          ...(allocation.categories || [allocation.category]),
+          'Bug 修复',
+        ].filter(Boolean),
+      ),
     ];
   writeFileSync(schemaPath, JSON.stringify(contract));
   writeFileSync(last, '');
@@ -408,6 +415,15 @@ export async function codexStage(options) {
     original.value.scores,
     original.value.descriptions,
   );
+  issues.push(
+    ...scoreDescriptionIssues(original.value, options.comparisonHistory),
+  );
+  try {
+    verifyScoreEvidence(original.value, options.cwd, options.dir);
+    verifyMentionedScoreLines(original.value, options.cwd, options.dir);
+  } catch (e) {
+    issues.push(e.message);
+  }
   if (!issues.length) return original;
   // One independent evidence review may re-score; wording-only retries may not.
   const revised = await stageWithWriting({
@@ -417,11 +433,19 @@ export async function codexStage(options) {
       options.prompt +
       '\n' +
       scoreConsistencyInstructions() +
-      '\n本次为一次独立评分一致性复核，重新读取原题、冻结产物及已验真日志，根据原分档决定是否维持或调整分数。原评分和命中项均为待核对数据，不是正确结论：' +
+      '\n本次为一次独立评分证据及一致性复核，脚本已检查引用路径、行号、非空内容和分数描述。重新读取原题、冻结产物及已验真日志，根据原分档决定是否维持或调整分数；路径和行号必须对应实际事实，不能通过改文件或删除真实问题消除报错。原评分和命中项均为待核对数据，不是正确结论：' +
       JSON.stringify({ issues, previous: original.value }) +
       '\n在 processFindings 说明维度归属和维持或调整的事实依据。保留真实问题和验证范围，不能只删命中词；本次仍需完整五维结构化输出。',
   });
   assertScoreConsistency(revised.value.scores, revised.value.descriptions);
+  verifyScoreEvidence(revised.value, options.cwd, options.dir);
+  verifyMentionedScoreLines(revised.value, options.cwd, options.dir);
+  const repeated = scoreDescriptionIssues(
+    revised.value,
+    options.comparisonHistory,
+  );
+  if (repeated.length)
+    throw Error('评分表达复评仍需核对：' + repeated.join('；'));
   return {
     ...revised,
     consistencyRevision: {

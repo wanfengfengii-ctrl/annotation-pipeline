@@ -174,6 +174,17 @@ export type Turn = {
     traceSha256: string;
   };
   gatewayRecovery?: { version: string; nextTurnId: string };
+  projectRetry?: { originalStatus: string; originalStage?: string };
+  projectRecovery?: Record<string, any>;
+  projectSource?: Record<string, any>;
+  stageRecovery?: {
+    attempts: number;
+    retrying: boolean;
+    retryAt?: string;
+    queuedAt?: string;
+    finishedAt?: string;
+    originalError?: string;
+  };
   planRetry?: boolean;
   evaluationPrompt?: string;
   executionOutcome?: 'complete' | 'truncated' | 'error';

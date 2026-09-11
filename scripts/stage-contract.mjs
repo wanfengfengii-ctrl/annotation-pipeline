@@ -10,6 +10,7 @@ const policy = [
   'rules/question-writing.json',
   'lib/question-writing.mjs',
   'lib/question-revision.mjs',
+  'lib/question-history.mjs',
 ];
 const scoring = [
   'lib/workflow.mjs',

@@ -32,6 +32,7 @@ import {
 import { writeTerminalFinalization } from './terminal-finalization.mjs';
 import { sessionLimits } from '../lib/project-series.mjs';
 import { disputeContinuationReady } from '../lib/disputed-continuation.mjs';
+import { projectRecoveryReady } from '../lib/project-recovery.mjs';
 import {
   auditPermissionTraces,
   verifyPermissionPreflight,
@@ -687,30 +688,47 @@ export class DockerRuntime {
     return s;
   }
   importPriorQuestion(s, task, turn) {
-    const previous = priorQuestionTurn(task, turn);
+    const replacement = turn.projectSource;
+    const previous = replacement
+      ? task.turns.find((r) => r.id === replacement.turnId)
+      : priorQuestionTurn(task, turn);
+    if (
+      replacement &&
+      (!previous ||
+        !projectRecoveryReady(previous) ||
+        previous.projectRecovery.nextTurnId !== turn.id ||
+        replacement.manifestSha256 !==
+          previous.projectRecovery.sourceSnapshot.manifestSha256)
+    )
+      throw Error('同项目续题缺少对应失败轮及验真代码来源');
     if (!previous || turn.repairOf || turn.continuationOf || s.sourceSnapshot)
       return;
     if (
-      !previous.permissionAudit?.passed ||
-      (previous.sessionId &&
-        task.turns.some(
-          (r) =>
-            r.sessionId === previous.sessionId &&
-            r.permissionAudit &&
-            !r.permissionAudit.passed,
-        ))
+      !replacement &&
+      (!previous.permissionAudit?.passed ||
+        (previous.sessionId &&
+          task.turns.some(
+            (r) =>
+              r.sessionId === previous.sessionId &&
+              r.permissionAudit &&
+              !r.permissionAudit.passed,
+          )))
     )
       throw Error('上一题缺少合格的权限核验，不能导入其代码');
-    const retained = disputeContinuationReady(previous)
-      ? previous.automation.projectContinuation.sourceSnapshot
-      : null;
+    const retained =
+      replacement ||
+      (disputeContinuationReady(previous)
+        ? previous.automation.projectContinuation.sourceSnapshot
+        : null);
     const savedArchive = previous.automation?.archive;
     const taskRoot = path.dirname(this.file(task.id));
-    const evidence = retained
-      ? path.join(path.dirname(this.file(task.id)), previous.id + '.retained')
-      : savedArchive?.manifestPath
-        ? path.dirname(savedArchive.manifestPath)
-        : path.join(taskRoot, previous.id + '.evidence');
+    const evidence = replacement
+      ? path.join(taskRoot, previous.id + '.replan-source')
+      : retained
+        ? path.join(path.dirname(this.file(task.id)), previous.id + '.retained')
+        : savedArchive?.manifestPath
+          ? path.dirname(savedArchive.manifestPath)
+          : path.join(taskRoot, previous.id + '.evidence');
     const manifestPath = path.join(evidence, 'manifest.json');
     if (
       path.dirname(evidence) !== taskRoot ||
@@ -740,6 +758,11 @@ export class DockerRuntime {
     if (retained?.verified && hash(manifestBytes) !== retained.manifestSha256)
       throw Error('异常题保留代码快照摘要不匹配');
     const manifest = JSON.parse(manifestBytes);
+    if (
+      replacement &&
+      (manifest.taskId !== task.id || manifest.turnId !== previous.id)
+    )
+      throw Error('续题源码清单不属于当前项目');
     if (
       (manifest.omitted || []).some(
         (f) =>

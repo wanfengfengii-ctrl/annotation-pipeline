@@ -7,6 +7,7 @@ import {
   freshCategories,
 } from '@/lib/project-series.mjs';
 import { RecordsTable } from '@/components/pipeline/records-table';
+import { sentProjectCounts } from '@/lib/project-recovery.mjs';
 import { formatQuestionText } from '@/lib/question-text.mjs';
 import { canPlanDisputedTurn } from '@/lib/disputed-continuation.mjs';
 import { initialCodeURL, recordRound, recordStack } from '@/lib/record-fields';
@@ -534,7 +535,10 @@ export default function Home() {
                           <div style={{ width: 150 }}>
                             {['0-1 代码生成', 'Feature 迭代'].map((c) => (
                               <div className="sub" key={c}>
-                                {c} {projectCounts(t)[c]} / 10
+                                {c} 已发送 {sentProjectCounts(t)[c]} / 10
+                                {projectCounts(t)[c] >
+                                  sentProjectCounts(t)[c] &&
+                                  ` · 预留 ${projectCounts(t)[c] - sentProjectCounts(t)[c]}`}
                               </div>
                             ))}
                             <div className="sub">
@@ -1007,9 +1011,9 @@ function TaskDetail({
       <div className="actions" style={{ margin: '16px 0' }}>
         <Badge value={status(t)} />
         <span className="tag gray">
-          0-1 {projectCounts(t)['0-1 代码生成']} / 10 · Feature{' '}
-          {projectCounts(t)['Feature 迭代']} / 10 · 已记录 {counted(t)} 条对话 ·
-          总调用 {claudeCallCount(t)}
+          已发送：0-1 {sentProjectCounts(t)['0-1 代码生成']} / 10 · Feature{' '}
+          {sentProjectCounts(t)['Feature 迭代']} / 10 · 已记录 {counted(t)}{' '}
+          条对话 · 总调用 {claudeCallCount(t)}
         </span>
         {t.projectSeries && <span className="tag">同一项目连续出题</span>}
         <span className="sub">{t.model || '模型沿用 Claude CLI 配置'}</span>
@@ -1276,7 +1280,18 @@ function TurnPanel({
             {r.category} · {r.difficulty}
           </span>
         </h3>
-        <Badge value={r.excluded ? '工程故障已排除' : labels[r.status]} />
+        <Badge
+          value={
+            r.projectRetry
+              ? '同项目续题中'
+              : r.projectRecovery?.state === 'continued' &&
+                  r.status === 'failed'
+                ? '历史失败·已续题'
+                : r.excluded
+                  ? '工程故障已排除'
+                  : labels[r.status]
+          }
+        />
       </div>
       <p className="sub">
         {fmt(producedAt(r))} · 截止 {fmt(deadline(producedAt(r)))}

@@ -1,4 +1,8 @@
 import { SourceHashCache } from './source-hash-cache.mjs';
+import { planFailedProject } from './failed-project-plan.mjs';
+import { goalHistoryInstructions } from '../lib/question-history.mjs';
+import { runtimePlanningContext } from './runtime-planning-context.mjs';
+import { scoreDescriptionContext } from '../lib/score-description-context.mjs';
 import { stageContractDigest } from './stage-contract.mjs';
 import { DockerRuntime } from './docker-runtime.mjs';
 import { prepareEnvironment } from './environment-readiness.mjs';
@@ -30,6 +34,7 @@ import {
   sessionTurns,
   projectCounts,
   repairBatchInstructions,
+  freshCategories,
 } from '../lib/project-series.mjs';
 import { workflow, scoreInstructions, nextDecision } from '../lib/workflow.mjs';
 import {
@@ -149,6 +154,19 @@ export function createJobExecutor({
     const dir = path.join(workRoot, task.id);
     mkdirSync(dir, { recursive: true });
     const cachePath = path.join(dir, turn.id + '.stages.json');
+    if (turn.projectRetry)
+      return planFailedProject({
+        task,
+        turn,
+        dir,
+        api,
+        containers,
+        stage: codexStage,
+        onChild: (child) => {
+          track(child);
+          if (child) journalChild(path.join(dir, turn.id + '.job.json'), child);
+        },
+      });
     if (turn.planRetry && turn.automation?.submittedPolicyEvidence)
       return planDisputedProject({
         task,
@@ -165,6 +183,21 @@ export function createJobExecutor({
     const cached = existsSync(cachePath)
       ? JSON.parse(readFileSync(cachePath, 'utf8'))
       : {};
+    if (turn.stageRecovery?.retrying && !cached.claude?.success) {
+      const result = {
+        ...structuredClone(turn),
+        action: 'finish',
+        taskId: task.id,
+        turnId: turn.id,
+        jobToken: turn.jobToken,
+        success: false,
+        error:
+          '后处理恢复缺少已完成的 Claude 检查点，保留原件，禁止重新发送题目',
+      };
+      const receipt = path.join(dir, turn.id + '.result.json');
+      writeFileSync(receipt, JSON.stringify(result), { mode: 0o600 });
+      return { result, receipt };
+    }
     if (cached.submittedPolicyEvidence && !cached.claude?.success)
       throw Error(
         '已发送题目存在审核异议，不能回退初始化容器或重新执行 Claude',
@@ -353,6 +386,15 @@ export function createJobExecutor({
       } else if (cached[name] && name !== 'snapshot') return cached[name];
       const value = await codexStage({
         ...extra,
+        ...(name === 'score'
+          ? {
+              comparisonHistory: scoreDescriptionContext(
+                task,
+                turn,
+                result.evaluationPrompt,
+              ),
+            }
+          : {}),
         stage: name,
         prompt,
         cwd,
@@ -392,9 +434,13 @@ export function createJobExecutor({
       }
       if (context.config.autoContinue && task.projectSeries) {
         const allocatedCategory = nextCategory(task, context.mix) || null;
+        const allowedCategories = [
+          allocatedCategory,
+          ...freshCategories.filter((c) => canAddTurn(task, c)),
+        ].filter((c, i, all) => c && all.indexOf(c) === i);
         const next = await step(
           'project-next',
-          `${seriesPrompt(task)}
+          `${seriesPrompt(task)}\n${goalHistoryInstructions(context.history)}
 当前项目题额 ${JSON.stringify(projectCounts(task))}，当前会话已记录 ${sessionTurns(task, turn).length} 条实际对话，其中 ${sessionTurns(task, turn).filter((r) => !isGatewayContinuation(r)).length} 道业务题；业务题最多初始题加两道 Bug，已授权的 504 继续不算新题，所有实际调用合计最多十次；当天全局分布（已完成及在途）：${JSON.stringify(context.mix)}。初始项目目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}
 项目路径：${task.projectSeries.directory}
 本轮实际 Prompt：${preparation.value.prompt}
@@ -402,9 +448,9 @@ export function createJobExecutor({
 本轮产物轨迹：${result.tracePath}
 本轮评分：${JSON.stringify(result.review)}
 已有题目（禁止实质重复）：${JSON.stringify(task.turns.map((r) => ({ category: r.category, prompt: r.requestedPrompt || r.prompt })))}
-读取真实项目目录和测试/错误轨迹，有具体缺陷且当前会话未达到两轮修复时才 action=repair、category=Bug 修复，这会在当前终端追问。不能把未完成的新功能或截断续写改叫 Bug，不生成 action=continue。基础可用后 action=advance，独立新题必须使用已按比例分配的 ${allocatedCategory || '无新题额度，应结束项目'} 类别，不能自行切换类别；新建此前不存在的功能算 0-1，修改已有能力算 Feature。同项目这两类各最多十题。理解与重构按 7:7:10:1:1 的累计目标选择。projectEvidence 写实际文件、现象和新功能与现有功能的边界；baseComplete 反映实际状态。修复达到两轮仍未解决时 needs_input，不换新窗口规避修复上限；所有任务充分覆盖或题额用完时 complete。只有 0-1 代码生成的 prompt 以项目名称开头，不加编号；Feature、Bug、理解、重构及其他题型不写项目名称或标题，直接写正文。Bug 修复直接像同事接着聊项目一样说明哪里出了问题、什么条件下发生、希望怎么改，不重新介绍面向人群，不用落实、核验、既有语义等正式表达。正文统一为 180 至 260 字、1 至 2 个自然段，保留真实复现数值和预期，迭代说明已有能力与本次变化，不使用模板或编造人工检查经历。结束时 prompt 写无。`,
+读取真实项目目录和测试/错误轨迹，有具体缺陷且当前会话未达到两轮修复时才 action=repair、category=Bug 修复，这会在当前终端追问。不能把未完成的新功能或截断续写改叫 Bug，不生成 action=continue。基础可用后 action=advance，独立新题优先考虑按比例推荐的 ${allocatedCategory || '无新题额度'}，实际可选类别为 ${JSON.stringify(allowedCategories)}；先核对源码能力边界，再按合规目标选择类别。推荐类别没有实质不同且符合边界的目标时，允许选择其他有额度类别，并在 projectEvidence 说明源码依据，不能把新功能硬归为迭代；新建此前不存在的功能算 0-1，修改已有能力算 Feature。同项目这两类各最多十题。理解与重构按 7:7:10:1:1 的累计目标选择。projectEvidence 写实际文件、现象和新功能与现有功能的边界；baseComplete 反映实际状态。修复达到两轮仍未解决时 needs_input，不换新窗口规避修复上限；仅两类实际发送题额均满时 complete；暂缺新目标时 needs_input 并保留项目等待续题，不因当前功能完成就关闭项目。只有 0-1 代码生成的 prompt 以项目名称开头，不加编号；Feature、Bug、理解、重构及其他题型不写项目名称或标题，直接写正文。Bug 修复直接像同事接着聊项目一样说明哪里出了问题、什么条件下发生、希望怎么改，不重新介绍面向人群，不用落实、核验、既有语义等正式表达。正文统一为 180 至 260 字、1 至 2 个自然段，保留真实复现数值和预期，迭代说明已有能力与本次变化，不使用模板或编造人工检查经历。结束时 prompt 写无。`,
           result.workDir,
-          { allocation: { category: allocatedCategory } },
+          { allocation: { categories: allowedCategories } },
         );
         if (
           next.value.action === 'repair' &&
@@ -983,6 +1029,14 @@ export function createJobExecutor({
           reused ||
           (await verifyRuntime({
             ...runtimeContext,
+            planningContext: runtimePlanningContext({
+              task,
+              turn,
+              dir,
+              files: copyVerificationSource(result.workDir, undefined, {
+                hashCache: sourceHashCache,
+              }).files,
+            }),
             withHeavy: (name, work) =>
               timing.stage(
                 name,
@@ -1263,7 +1317,13 @@ export function createJobExecutor({
     });
     try {
       const outcome = await executeJob(job, timing);
-      timing.finish(outcome.result.success ? 'completed' : 'failed');
+      timing.finish(
+        outcome.result.projectRecovery
+          ? 'project-replan-' + outcome.result.projectRecovery.state
+          : outcome.result.success
+            ? 'completed'
+            : 'failed',
+      );
       outcome.result.automation ||= {};
       outcome.result.automation.timing = {
         version: '2026-09-10.attempt-timing1',

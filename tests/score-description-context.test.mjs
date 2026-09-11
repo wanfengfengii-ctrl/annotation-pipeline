@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   scoreDescriptionContext,
   scoreDescriptionVersion,
+  scoreDescriptionIssues,
 } from '../lib/score-description-context.mjs';
 import { scoreInstructions, workflow } from '../lib/workflow.mjs';
 import { gatewayContinuationVersion } from '../lib/gateway-continuation.mjs';
@@ -21,6 +22,32 @@ const scored = (id, prompt, description = prompt) => ({
     scores: [3, 4, 5, 4, 4],
     descriptions: Array.from({ length: 5 }, (_, i) => description + i),
   },
+});
+
+test('long copied paragraphs trigger independent review while short factual labels do not', () => {
+  const description =
+    '本轮保存后的导出内容仍保留旧版本，用户重新打开并检查字段时无法确认最新修改是否已经应用，列表和详情显示了不同状态，需要依据当前源码和实际日志说明这次交付影响的具体范围。';
+  const value = {
+    scores: [4, 4, 4, 4, 4],
+    descriptions: [
+      description,
+      description,
+      '实际返回 504',
+      '无',
+      '工具已返回',
+    ],
+  };
+  const before = structuredClone(value);
+  const issues = scoreDescriptionIssues(value, [
+    { turnId: 'old', descriptions: [description] },
+  ]);
+  assert.ok(issues.some((x) => x.includes('第2维与第1维')));
+  assert.ok(issues.some((x) => x.includes('历史记录old')));
+  assert.deepEqual(value, before);
+  assert.deepEqual(
+    scoreDescriptionIssues({ descriptions: Array(5).fill('实际返回 504') }),
+    [],
+  );
 });
 
 test('related older feedback survives recent unrelated turns; current, future and excluded records stay out', () => {

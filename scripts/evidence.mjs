@@ -157,10 +157,16 @@ function scoreCitations(refs, workDir, dir) {
       if (!stat.isFile() || stat.size > 10 * 1024 * 1024)
         throw Error('评分证据须为不超过 10MB 的普通文件');
       if (!totals.has(file))
-        totals.set(file, readFileSync(file, 'utf8').split('\n').length);
+        totals.set(file, readFileSync(file, 'utf8').split('\n'));
       const line = Number(match[2]);
-      if (!Number.isSafeInteger(line) || line < 1 || line > totals.get(file))
+      if (
+        !Number.isSafeInteger(line) ||
+        line < 1 ||
+        line > totals.get(file).length
+      )
         throw Error('评分引用行号不存在：' + ref);
+      if (!totals.get(file)[line - 1].trim())
+        throw Error('评分引用指向空行，不能证明所述事实：' + ref);
       citations.push({ dimension, ref, file, line });
     }
   }
@@ -174,6 +180,24 @@ export function verifyScoreEvidence(value, workDir, dir) {
     descriptions: value.descriptions,
     evidenceVerified: true,
   };
+}
+export function verifyMentionedScoreLines(value, workDir, dir) {
+  // Additional prose citations must point at real non-empty source lines too.
+  // Only inspect paths that unambiguously resolve in the actual workspace;
+  // original machine log paths remain checked through evidenceRefs.
+  for (const text of [
+    value.processFindings,
+    value.artifactFindings,
+    ...(value.descriptions || []),
+  ]) {
+    const matches = String(text || '').matchAll(
+      /(?<![\w/])([A-Za-z_][\w./-]*\.(?:[cm]?[jt]sx?|py|md|json|html|css|go|rs)):(\d+)/g,
+    );
+    for (const match of matches) {
+      if (existsSync(path.resolve(workDir, match[1])))
+        scoreCitations(Array(5).fill(match[0]), workDir, dir);
+    }
+  }
 }
 export function createEvidenceArchive({
   dir,
