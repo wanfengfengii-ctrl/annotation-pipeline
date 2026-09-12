@@ -87,7 +87,10 @@ export function collectNativeDiagnosis(root, task, turn) {
       fs.readSync(fd, b, 0, b.length, size - b.length);
       screen = b
         .toString('utf8')
-        .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '')
+        .replace(
+          new RegExp(String.fromCharCode(27) + '\\[[0-?]*[ -/]*[@-~]', 'g'),
+          '',
+        )
         .slice(-6000);
     } finally {
       fs.closeSync(fd);
