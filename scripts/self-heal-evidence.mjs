@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { DockerRuntime } from './docker-runtime.mjs';
 import { isNativeUserMessage } from '../lib/native-user-message.mjs';
 import { readJSON } from './self-heal-io.mjs';
+export const nativeDiagnosisVersion = '2026-09-12.native-diagnosis1';
 
 // Read-only diagnosis. A similarity observation is never a completion receipt
 // and does not authorize replay, terminal input or mutation of original JSONL.

@@ -19,7 +19,10 @@ import {
   ensureServices,
 } from './self-heal-io.mjs';
 import { advanceRelease } from './self-heal-release.mjs';
-import { collectNativeDiagnosis } from './self-heal-evidence.mjs';
+import {
+  collectNativeDiagnosis,
+  nativeDiagnosisVersion,
+} from './self-heal-evidence.mjs';
 
 export async function selfHealTick(root, { act = false, notify = true } = {}) {
   const dir = path.join(root, '.runner/self-heal'),
@@ -68,6 +71,23 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
     };
   }
   state = reconcileSelfHeal(state, snapshot, Date.now(), config);
+  for (const i of Object.values(state.incidents)) {
+    if (
+      i.state === 'needs_input' &&
+      i.stage === 'claude' &&
+      i.attempts > 0 &&
+      i.attempts < config.maxAttempts &&
+      !i.nativeEvidenceVersion &&
+      snapshot.health.incidents.some(
+        (x) =>
+          x.id === i.taskId + ':' + i.turnId && x.state === 'stalled_running',
+      )
+    ) {
+      i.state = 'ready';
+      i.result =
+        '原先诊断缺少原生消息对照，补充只读证据后重新诊断，既有次数保留';
+    }
+  }
   state.health = snapshot.health;
   state.productionEnabled =
     snapshot.config.enabled && snapshot.config.autoContinue;
@@ -212,6 +232,8 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
         } catch (e) {
           nativeDiagnosis = { error: e.message };
         }
+        if (turn?.stage === 'claude')
+          i.nativeEvidenceVersion = nativeDiagnosisVersion;
         const context = {
           nativeDiagnosis,
           incident: i,
