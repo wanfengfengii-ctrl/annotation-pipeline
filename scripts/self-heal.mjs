@@ -235,6 +235,7 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
         if (turn?.stage === 'claude')
           i.nativeEvidenceVersion = nativeDiagnosisVersion;
         const context = {
+          availableRecoveryAction: recoveryAction(task, turn),
           nativeDiagnosis,
           incident: i,
           health: {

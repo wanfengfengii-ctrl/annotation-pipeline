@@ -115,7 +115,7 @@ export async function repairJob(jobFile) {
       proposal = await model(
         'maintenance-fix',
         boundaries +
-          `\n当前隔离源码是提交 ${base}。下面是本次故障摘要与只读证据路径；仅展开本次故障涉及的日志。\n${JSON.stringify(context)}\n返回 action=patch 时提供每个文件的完整新内容和原内容 SHA-256（新文件为 null），至少增加一个在原代码失败、修复后通过的单元回归测试，tests 只填 tests/*.test.mjs 路径。测试使用临时目录/模拟接口，不能访问正在运行的生产 API、真实账号、项目目录或 Docker。已存在代码修复、仅需既有受保护恢复入口时可返回 retry；无法据实修复时返回 needs_input。`,
+          `\n当前隔离源码是提交 ${base}。下面是本次故障摘要与只读证据路径；仅展开本次故障涉及的日志。\n${JSON.stringify(context)}\n返回 action=patch 时提供每个文件的完整新内容和原内容 SHA-256（新文件为 null），至少补充一个在原代码失败、修复后通过的单元回归测试，可以修改已有测试文件或新建测试文件，tests 只填 tests/*.test.mjs 路径。测试使用临时目录/模拟接口，不能访问正在运行的生产 API、真实账号、项目目录或 Docker。只有 availableRecoveryAction 非空且现有源码已能正确处理该故障时才可返回 retry。该字段为空时不能猜测重试、接管或重新导出入口；若读轨迹的逻辑没有匹配已完成轮次，应定位并修复读取逻辑，不能仅因原生轮次已完成就返回 retry。无法据实修复时返回 needs_input。`,
         contract,
         tree,
         dir,
@@ -131,6 +131,10 @@ export async function repairJob(jobFile) {
       return job;
     }
     if (proposal.action === 'retry') {
+      if (!context.availableRecoveryAction)
+        throw Error(
+          '当前阶段没有受保护恢复入口，需根据源码提供修复，不能以重试代替',
+        );
       save({ state: 'ready', phase: 'retry_ready', action: 'retry' });
       return job;
     }

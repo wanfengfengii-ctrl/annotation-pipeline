@@ -257,6 +257,13 @@ test('patch admission blocks source drift, traversal, raw data and self policy e
   assert.throws(() => validateRepair(dir, proposal), /基线/);
   proposal.files[0].beforeSha256 = digest('before');
   assert.equal(validateRepair(dir, proposal), true);
+  fs.mkdirSync(path.join(dir, 'tests'));
+  fs.writeFileSync(path.join(dir, 'tests/a.test.mjs'), 'existing assertions');
+  proposal.files[1].beforeSha256 = digest('existing assertions');
+  proposal.files[1].content = 'existing assertions plus regression';
+  assert.equal(validateRepair(dir, proposal), true);
+  proposal.files[1].content = 'existing assertions';
+  assert.throws(() => validateRepair(dir, proposal), /回归测试/);
 });
 // Patch verification runs the state tests, not a recursive repair worker/sandbox.
 test(
