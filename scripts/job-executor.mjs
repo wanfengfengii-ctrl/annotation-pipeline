@@ -1,3 +1,4 @@
+import { projectCapabilities } from '../lib/supply-feedback.mjs';
 export { FinalizationQueue } from './finalization-queue.mjs';
 export { createReplenisher } from './supply-worker.mjs';
 import { runtimeSettings } from './runtime-settings.mjs';
@@ -440,6 +441,7 @@ export function createJobExecutor({
             }
           : {}),
         stage: name,
+        stageCacheKey: stageKeys[name],
         prompt,
         cwd,
         dir,
@@ -503,7 +505,7 @@ export function createJobExecutor({
         ].filter((c, i, all) => c && all.indexOf(c) === i);
         const next = await step(
           'project-next',
-          `${seriesPrompt(task)}\n${goalHistoryInstructions(context.history)}
+          `${seriesPrompt(task)}\n已验证历史能力摘要（按其中源码与报告回查）：${JSON.stringify(projectCapabilities(task))}\n${goalHistoryInstructions(context.history)}
 当前项目题额 ${JSON.stringify(projectCounts(task))}，当前会话已记录 ${sessionTurns(task, turn).length} 条实际对话，其中 ${sessionTurns(task, turn).filter((r) => !isGatewayContinuation(r)).length} 道业务题；业务题最多初始题加两道 Bug，已授权的 504 继续不算新题，所有实际调用合计最多十次；当天全局分布（已完成及在途）：${JSON.stringify(context.mix)}。初始项目目标：${task.turns[0]?.requestedPrompt || task.turns[0]?.prompt}
 项目路径：${task.projectSeries.directory}
 本轮实际 Prompt：${preparation.value.prompt}

@@ -54,7 +54,10 @@ const fs=require('fs'),args=process.argv.slice(2);let input='';process.stdin.on(
  if(mode==='clarity'&&review&&!out.includes('.clarity.'))descriptions[1]='重跑不能证明草稿来源仍有效，确认时分别核对运行结果与来源。';
  if(review&&mode==='lower'){scores[1]=3;descriptions[1]='遗漏原题的单页替换入口，需补齐。';}
  const value={scores,descriptions,other:'无',when:Array(5).fill('本轮开发时'),behavior:Array(5).fill('核对原始记录'),impact:Array(5).fill('按本维证据判断'),expected:Array(5).fill('落实原题'),evidenceRefs:Array(5).fill(mode==='citation'&&!review?'app.js:2':'app.js:1'),processFindings:'依据原题核对归属；其他维度问题继续保留。',artifactFindings:'位置说明问题仍保留，验收范围以原日志为准。'};
- fs.writeFileSync(out,JSON.stringify(value));console.log(JSON.stringify({type:'thread.started',thread_id:'fixture'}));
+ const contract=JSON.parse(fs.readFileSync(args[args.indexOf('--output-schema')+1],'utf8'));
+ const payload=contract.properties.patches?{patches:contract.properties.patches.items.properties.field.enum.map(field=>({field,value:field==='other'?value.other:value[field.split('[')[0]][Number(field.match(/[0-4]/)[0])]}))}:value;
+ if(contract.properties.patches&&require('path').basename(out).startsWith('mutation.'))payload.scores=value.scores;
+ fs.writeFileSync(out,JSON.stringify(payload));console.log(JSON.stringify({type:'thread.started',thread_id:'fixture'}));
 });`,
       { mode: 0o700 },
     );
@@ -100,9 +103,19 @@ const fs=require('fs'),args=process.argv.slice(2);let input='';process.stdin.on(
     assert.equal(rescored.consistencyRevision.originalScores[1], 5);
     const clarifiedRestriction = await run('clarity');
     assert.equal(clarifiedRestriction.value.scores[1], 5);
-    assert.match(clarifiedRestriction.tracePath, /consistency\.clarity\.score\.events\.jsonl$/);
-    assert.match(clarifiedRestriction.clarityRepair.originalTracePath, /consistency\.score\.events\.jsonl$/);
-    assert.ok(clarifiedRestriction.consistencyRevision.originalTracePaths.includes(clarifiedRestriction.clarityRepair.originalTracePath));
+    assert.match(
+      clarifiedRestriction.tracePath,
+      /consistency\.clarity\.score\.events\.jsonl$/,
+    );
+    assert.match(
+      clarifiedRestriction.clarityRepair.originalTracePath,
+      /consistency\.score\.events\.jsonl$/,
+    );
+    assert.ok(
+      clarifiedRestriction.consistencyRevision.originalTracePaths.includes(
+        clarifiedRestriction.clarityRepair.originalTracePath,
+      ),
+    );
     await assert.rejects(run('still'), /评分一致性复评仍需核对/);
     assert.equal(
       readFileSync(path.join(dir, 'calls'), 'utf8').trim().split('\n').length,
@@ -115,11 +128,19 @@ const fs=require('fs'),args=process.argv.slice(2);let input='';process.stdin.on(
 });
 
 test('clarity is bounded and preserves scores, evidence, findings and unaffected descriptions', async () => {
-  const original = { value: {
-    scores: [5, 4], descriptions: ['重跑不能证明草稿来源有效，确认时分别核对。', '保存时页面空白，记录未写入。'],
-    evidenceRefs: ['app.js:1'], processFindings: '已核对来源校验；保存缺陷仍保留。',
-    artifactFindings: '来源过期时禁用确认。',
-  }, tracePath: 'review.jsonl' };
+  const original = {
+    value: {
+      scores: [5, 4],
+      descriptions: [
+        '重跑不能证明草稿来源有效，确认时分别核对。',
+        '保存时页面空白，记录未写入。',
+      ],
+      evidenceRefs: ['app.js:1'],
+      processFindings: '已核对来源校验；保存缺陷仍保留。',
+      artifactFindings: '来源过期时禁用确认。',
+    },
+    tracePath: 'review.jsonl',
+  };
   for (const change of ['score', 'evidence', 'finding', 'unaffected']) {
     const value = structuredClone(original.value);
     value.descriptions[0] = '重跑更新运行记录，确认还会核对草稿来源。';
@@ -127,10 +148,21 @@ test('clarity is bounded and preserves scores, evidence, findings and unaffected
     if (change === 'evidence') value.evidenceRefs[0] = 'invented.js:1';
     if (change === 'finding') value.artifactFindings = '全部正常';
     if (change === 'unaffected') value.descriptions[1] = '保存正常';
-    await assert.rejects(repairScoreClarity({ turnId: 't', prompt: '' }, original, async () => ({ value })), /不得改动/);
+    await assert.rejects(
+      repairScoreClarity({ turnId: 't', prompt: '' }, original, async () => ({
+        value,
+      })),
+      /不得改动/,
+    );
   }
   let calls = 0;
-  await assert.rejects(repairScoreClarity({ turnId: 't', prompt: '' }, original, async () => { calls++; return structuredClone(original); }), /评分一致性复评仍需核对/);
+  await assert.rejects(
+    repairScoreClarity({ turnId: 't', prompt: '' }, original, async () => {
+      calls++;
+      return structuredClone(original);
+    }),
+    /评分一致性复评仍需核对/,
+  );
   assert.equal(calls, 1);
   assert.equal(original.value.scores[0], 5);
   assert.match(original.value.descriptions[0], /不能/);

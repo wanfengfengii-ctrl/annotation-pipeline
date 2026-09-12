@@ -1,0 +1,217 @@
+{
+  "projectSeries": {
+    "version": "2026-09-09.project2",
+    "directory": "projects/p-97adbddf-0171-4dbe-b3a2-2e41ead591ea"
+  },
+  "id": "a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3",
+  "title": "本地交付样例",
+  "repoPath": "/tmp/records-fixture",
+  "stack": "TypeScript",
+  "category": "0-1 代码生成",
+  "difficulty": "困难",
+  "reproducibility": "无外部依赖",
+  "snapshot": "docker://annotation-pipeline/claude-code:2.1.266-webdeps-cache2-20260910@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "createdAt": "2026-09-12T10:57:33.313Z",
+  "closed": true,
+  "turns": [
+    {
+      "roundNumber": 1,
+      "id": "0ea29be8-f9a5-4680-8c40-ff223ea77cac",
+      "prompt": "=1+1\n中文<&\" 0",
+      "category": "0-1 代码生成",
+      "difficulty": "困难",
+      "status": "review",
+      "createdAt": "2026-09-12T10:57:33.313Z",
+      "questionRootId": "0ea29be8-f9a5-4680-8c40-ff223ea77cac",
+      "startedAt": "2026-09-12T10:57:33.324Z",
+      "stage": "claude",
+      "claudeAttempts": [
+        "attempt-1",
+        "attempt-2",
+        "attempt-3",
+        "attempt-4",
+        "attempt-5",
+        "attempt-6",
+        "attempt-7",
+        "attempt-8",
+        "attempt-9",
+        "attempt-10"
+      ],
+      "container": {
+        "questionId": "0ea29be8-f9a5-4680-8c40-ff223ea77cac",
+        "containerId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00",
+        "scaffoldSnapshot": {
+          "manifestPath": "/fixture/scaffold.json",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "files": 1
+        },
+        "terminalIdentity": {
+          "transport": "mac-terminal",
+          "runId": "0ea29be8-f9a5-4680-8c40-ff223ea77cac",
+          "realTerminal": true,
+          "tty": "/dev/fixture"
+        },
+        "taskId": "a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3",
+        "name": "annotation-a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3",
+        "policyVersion": "2026-09-09.docker1",
+        "status": "running",
+        "image": "annotation-pipeline/claude-code:2.1.266-webdeps-cache2-20260910",
+        "imageId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "snapshot": "docker://annotation-pipeline/claude-code:2.1.266-webdeps-cache2-20260910@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "workDir": "/fixture/a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3/workspace"
+      },
+      "traceExport": {
+        "verified": true,
+        "path": "/fixture/projects",
+        "files": 1,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "permissionAudit": {
+        "version": "2026-09-09.permissions1",
+        "passed": true,
+        "modeVerified": true,
+        "denialCount": 0,
+        "traceSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "finishedAt": "2026-09-12T10:57:39.271Z",
+      "sessionId": "records-session-0",
+      "output": "",
+      "error": "",
+      "tracePath": "/fixture/trajectory-0",
+      "productionHistory": {
+        "version": "2026-09-12.production1",
+        "firstObservedAt": "2026-09-12T10:57:39.271Z",
+        "firstDeliveredAt": "2026-09-12T10:57:39.271Z",
+        "historicalBaseline": false,
+        "revalidationCount": 0,
+        "lastDeliveredAt": "2026-09-12T10:57:39.271Z",
+        "events": [
+          {
+            "at": "2026-09-12T10:57:39.271Z",
+            "kind": "first-delivery"
+          }
+        ]
+      },
+      "automation": {
+        "bundlePath": "/fixture/bundle",
+        "archive": {
+          "archivePath": "/fixture/a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3/0ea29be8-f9a5-4680-8c40-ff223ea77cac.evidence.tar.gz",
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "files": 1
+        },
+        "delivery": {
+          "value": {
+            "passed": true
+          }
+        },
+        "submission": {
+          "version": "2026-09-10.submission2",
+          "status": "passed",
+          "archivePath": "/fixture/a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3/0ea29be8-f9a5-4680-8c40-ff223ea77cac.submission-synthetic.tar.gz",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "zipArchivePath": "/fixture/a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3/0ea29be8-f9a5-4680-8c40-ff223ea77cac.submission-synthetic.zip",
+          "zipSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "zipBytes": 256,
+          "manifestPath": "/fixture/a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3/0ea29be8-f9a5-4680-8c40-ff223ea77cac.submission-synthetic/manifest.json",
+          "manifestSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "files": 1,
+          "redactions": [],
+          "reviewRequiredFiles": [],
+          "sourceArchiveSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "traceExportSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "verifiedAt": "2026-09-12T10:57:39.323Z",
+          "finalization": {
+            "version": "2026-09-10.terminal-finalization1",
+            "taskId": "a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3",
+            "questionId": "0ea29be8-f9a5-4680-8c40-ff223ea77cac",
+            "runId": "0ea29be8-f9a5-4680-8c40-ff223ea77cac",
+            "sessionId": "records-session-0",
+            "containerId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00",
+            "status": "removed",
+            "commandTransport": "original-mac-terminal",
+            "traceExport": {
+              "verified": true,
+              "path": "/fixture/a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3/0ea29be8-f9a5-4680-8c40-ff223ea77cac.final.traces-synthetic/projects",
+              "manifestPath": "/fixture/a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3/0ea29be8-f9a5-4680-8c40-ff223ea77cac.final.traces-synthetic/manifest.json",
+              "files": 1,
+              "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "exportedAt": "2026-09-12T10:57:39.323Z",
+              "exportKind": "final",
+              "commandTransport": "original-mac-terminal"
+            },
+            "manifestSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "removedAt": "2026-09-12T10:57:39.323Z",
+            "emptyWithoutCalls": false,
+            "receiptPath": "/fixture/a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3/questions/0ea29be8-f9a5-4680-8c40-ff223ea77cac/terminal/finalization.json",
+            "receiptSha256": "2222222222222222222222222222222222222222222222222222222222222222"
+          }
+        }
+      },
+      "requestedPrompt": "__RECORDS_API__0",
+      "review": {
+        "source": "codex",
+        "scores": [1, 2, 3, 4, 5],
+        "descriptions": [
+          "交付观察",
+          "指令观察",
+          "规划观察",
+          "推理观察",
+          "执行观察"
+        ],
+        "other": "联系人 private.person@fixture-email.local",
+        "attested": false,
+        "reviewer": "Codex CLI（AI）"
+      },
+      "promptId": "records-prompt-0",
+      "harnessVersion": "fixture-2.1",
+      "os": "macOS"
+    }
+  ],
+  "automationMode": "codex",
+  "projectName": "nyh-00003",
+  "container": {
+    "questionId": "0ea29be8-f9a5-4680-8c40-ff223ea77cac",
+    "containerId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00",
+    "scaffoldSnapshot": {
+      "manifestPath": "/fixture/scaffold.json",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "files": 1
+    },
+    "terminalIdentity": {
+      "transport": "mac-terminal",
+      "runId": "0ea29be8-f9a5-4680-8c40-ff223ea77cac",
+      "realTerminal": true,
+      "tty": "/dev/fixture"
+    },
+    "taskId": "a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3",
+    "name": "annotation-a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3",
+    "policyVersion": "2026-09-09.docker1",
+    "status": "running",
+    "image": "annotation-pipeline/claude-code:2.1.266-webdeps-cache2-20260910",
+    "imageId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "snapshot": "docker://annotation-pipeline/claude-code:2.1.266-webdeps-cache2-20260910@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "workDir": "/fixture/a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3/workspace"
+  },
+  "workDir": "/fixture/a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3/workspace",
+  "initialCodeSnapshots": {
+    "0ea29be8-f9a5-4680-8c40-ff223ea77cac": {
+      "version": "2026-09-10.initial-code1",
+      "engine": "github-cli-initial-code",
+      "taskId": "a1a0c7b8-2046-4eeb-8fb6-b8be2fa45dc3",
+      "questionId": "0ea29be8-f9a5-4680-8c40-ff223ea77cac",
+      "repository": "fixture/initial-code",
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "url": "https://github.com/fixture/initial-code/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "isPrivate": true,
+      "files": 1,
+      "manifestSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "imageSnapshot": "docker://annotation-pipeline/claude-code:2.1.266-webdeps-cache2-20260910@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "publicationMode": "before-run",
+      "verifiedAt": "2026-09-12T10:57:33.335Z"
+    }
+  },
+  "sessionId": "records-session-0",
+  "harnessVersion": "fixture-2.1",
+  "os": "macOS"
+}

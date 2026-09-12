@@ -198,6 +198,11 @@ async function prepareUnlocked() {
         taskId: row.taskId,
         turnId: row.turnId,
         state: 'prepared',
+        displayIdentity: {
+          sessionId: fields.SessionID,
+          messageUuid: row.nativeIdentity?.messageUuid || '',
+          promptId: fields['TurnID/PromptID'],
+        },
         sourceDigest,
         packetDigest: packet.digest,
         updatedAt: packet.preparedAt,

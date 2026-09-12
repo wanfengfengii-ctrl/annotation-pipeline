@@ -226,7 +226,11 @@ process.stdin.on('end', () => {
     value.descriptions[0] = 'Codex 复核发现保存后列表仍显示旧内容，重新打开详情才能看到修改，核对记录时需要来回切换。';
   if (revised && mode === 'score-change') value.scores[0] = 4;
   if (revised && mode === 'evidence-change') value.evidenceRefs[0] = 'app.js:2';
-  fs.writeFileSync(out, JSON.stringify(value));
+  const contract = JSON.parse(fs.readFileSync(args[args.indexOf('--output-schema') + 1], 'utf8'));
+  const payload = contract.properties.patches ? { patches: contract.properties.patches.items.properties.field.enum.map(field => ({ field, value: field === 'other' ? value.other : value.descriptions[Number(field.match(/[0-4]/)[0])] })) } : value;
+  if (contract.properties.patches && mode === 'score-change') payload.scores = value.scores;
+  if (contract.properties.patches && mode === 'evidence-change') payload.evidenceRefs = value.evidenceRefs;
+  fs.writeFileSync(out, JSON.stringify(payload));
   console.log(JSON.stringify({ type: 'thread.started', thread_id: 'fixture' }));
 });`,
       { mode: 0o700 },
@@ -278,8 +282,8 @@ process.stdin.on('end', () => {
         .descriptions[0],
       /^Codex/,
     );
-    await assert.rejects(run('score-change'), /不得改动 score.scores/);
-    await assert.rejects(run('evidence-change'), /不得改动 score.evidenceRefs/);
+    await assert.rejects(run('score-change'), /评分补丁.*不能改动/);
+    await assert.rejects(run('evidence-change'), /评分补丁.*不能改动/);
     await assert.rejects(run('still'), /表达修订后仍不符合要求/);
     assert.equal(
       readFileSync(path.join(dir, 'calls'), 'utf8').trim().split('\n').length,

@@ -57,9 +57,12 @@ process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{
  if(!name.startsWith('valid.')&&(!fix||name.startsWith('unresolved.')))value.evidenceRefs=Array(5).fill(${JSON.stringify(path.join(dir, 'questions', 'runtime.log') + ':1')});
  if(fix&&!input.includes('仅修复 evidenceRefs'))throw Error('Missing citation scope');
  if(fix&&name.startsWith('mutation.'))value.scores[0]=4;
- fs.writeFileSync(out,JSON.stringify(value));
+ const contract=JSON.parse(fs.readFileSync(args[args.indexOf('--output-schema')+1],'utf8'));
+ const payload=contract.properties.patches?{patches:contract.properties.patches.items.properties.field.enum.map(field=>({field,value:field==='other'?value.other:value[field.split('[')[0]][Number(field.match(/[0-4]/)[0])]}))}:value;
+ if(contract.properties.patches&&require('path').basename(out).startsWith('mutation.'))payload.scores=value.scores;
+ fs.writeFileSync(out,JSON.stringify(payload));
  console.log(JSON.stringify({type:'thread.started',thread_id:name}));
- console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:JSON.stringify(value)}}));
+ console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:JSON.stringify(payload)}}));
  console.log(JSON.stringify({type:'turn.completed'}));
 });`,
     { mode: 0o700 },
@@ -97,7 +100,7 @@ process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{
   };
   const checkpoint = sealStage('score', saved, 'key', dir, [log]);
   assert.deepEqual(restoreStage('score', saved, checkpoint, 'key', dir), saved);
-  await assert.rejects(run('mutation'), /引用修订不得改动/);
+  await assert.rejects(run('mutation'), /评分补丁.*不能改动/);
   await assert.rejects(run('unresolved'), /评分引用文件不存在/);
   assert.equal(
     readFileSync(path.join(dir, 'calls'), 'utf8').trim().split('\n').length,

@@ -7,7 +7,25 @@ import {
   runtimeRepairSchema,
   applyRuntimeStepRepair,
 } from './runtime-plan-checkpoint.mjs';
-import { readFileSync, existsSync } from 'node:fs';
+import path from 'node:path';
+import {
+  scorePatchSchema,
+  applyScorePatch,
+  scoreWritingFields,
+  scorePatchVersion,
+} from '../lib/score-patch.mjs';
+import {
+  checkpointDigest,
+  sealStage,
+  restoreStage,
+} from './stage-checkpoint.mjs';
+import {
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  writeFileSync,
+  renameSync,
+} from 'node:fs';
 import { verifyScoreEvidence, verifyMentionedScoreLines } from './evidence.mjs';
 import { scoreDescriptionIssues } from '../lib/score-description-context.mjs';
 import { scoreDescriptionGroundingIssues } from '../lib/score-description-grounding.mjs';
@@ -298,7 +316,7 @@ export function applyPreparationWording(base, patch, stage = 'prepare') {
     prompt: patch.prompt,
   });
 }
-async function runStage({
+async function executeStage({
   stage,
   prompt,
   cwd,
@@ -313,9 +331,11 @@ async function runStage({
   runtimeSuiteBase,
   runtimeRepairBase,
   runtimeLimits,
+  scorePatchBase,
 }) {
-  const contract =
-    preparationWordingBase || generationWordingBase
+  const contract = scorePatchBase
+    ? scorePatchSchema(scorePatchBase)
+    : preparationWordingBase || generationWordingBase
       ? schema({ prompt: str })
       : runtimeBudgetBase
         ? schema({
@@ -377,17 +397,23 @@ async function runStage({
   let candidate = rawCandidate;
   let value;
   try {
-    candidate = generationWordingBase
-      ? applyPreparationWording(generationWordingBase, rawCandidate, 'generate')
-      : preparationWordingBase
-        ? applyPreparationWording(preparationWordingBase, rawCandidate)
-        : runtimeBudgetBase
-          ? applyRuntimeBudgetRepair(runtimeBudgetBase, rawCandidate)
-          : runtimeRepairBase
-            ? applyRuntimeStepRepair(runtimeRepairBase, rawCandidate)
-            : runtimeSuiteBase
-              ? applyRuntimeSuitePatch(runtimeSuiteBase, rawCandidate)
-              : rawCandidate;
+    candidate = scorePatchBase
+      ? applyScorePatch(scorePatchBase, rawCandidate)
+      : generationWordingBase
+        ? applyPreparationWording(
+            generationWordingBase,
+            rawCandidate,
+            'generate',
+          )
+        : preparationWordingBase
+          ? applyPreparationWording(preparationWordingBase, rawCandidate)
+          : runtimeBudgetBase
+            ? applyRuntimeBudgetRepair(runtimeBudgetBase, rawCandidate)
+            : runtimeRepairBase
+              ? applyRuntimeStepRepair(runtimeRepairBase, rawCandidate)
+              : runtimeSuiteBase
+                ? applyRuntimeSuitePatch(runtimeSuiteBase, rawCandidate)
+                : rawCandidate;
     if (stage === 'runtime-plan' && runtimeLimits)
       candidate = { ...candidate, limits: runtimeLimits };
     value = validateStage(stage, candidate);
@@ -411,6 +437,16 @@ async function runStage({
   })[0];
   return {
     value,
+    ...(scorePatchBase
+      ? {
+          fieldPatch: {
+            version: scorePatchVersion,
+            fields: scorePatchBase.fields,
+            base: scorePatchBase.value,
+            patch: rawCandidate,
+          },
+        }
+      : {}),
     engine: 'codex-cli',
     harness: 'Codex CLI',
     turnIds: codexTurnIds(
@@ -429,6 +465,40 @@ async function runStage({
   };
 }
 
+// Only the executor supplies this key after hashing source, native trace,
+// runtime report and stage rules. Callers without that binding do not cache.
+async function runStage(options) {
+  if (options.stage !== 'score' || !options.stageCacheKey)
+    return executeStage(options);
+  const key = checkpointDigest({
+    version: scorePatchVersion,
+    input: options.stageCacheKey,
+    prompt: options.prompt,
+    patch: options.scorePatchBase || null,
+  });
+  const folder = path.join(options.dir, 'score-checkpoints');
+  const file = path.join(folder, key + '.json');
+  if (existsSync(file)) {
+    const saved = JSON.parse(readFileSync(file, 'utf8'));
+    const restored = restoreStage(
+      'score',
+      saved.result,
+      saved.receipt,
+      key,
+      options.dir,
+    );
+    if (restored) return restored;
+  }
+  const result = await executeStage(options);
+  const receipt = sealStage('score', result, key, options.dir);
+  mkdirSync(folder, { recursive: true, mode: 0o700 });
+  writeFileSync(file + '.tmp', JSON.stringify({ result, receipt }), {
+    mode: 0o600,
+  });
+  renameSync(file + '.tmp', file);
+  return result;
+}
+
 async function stageWithWriting(options, initial) {
   const original = initial || (await runStage(options));
   const checked = checkWriting(options.stage, original.value);
@@ -438,7 +508,14 @@ async function stageWithWriting(options, initial) {
     ...options,
     ...(options.stage === 'prepare'
       ? { preparationWordingBase: original.value }
-      : {}),
+      : options.stage === 'score'
+        ? {
+            scorePatchBase: {
+              value: original.value,
+              fields: scoreWritingFields(checked.issues),
+            },
+          }
+        : {}),
     turnId: options.turnId + '.writing',
     prompt:
       options.prompt +
@@ -449,6 +526,9 @@ async function stageWithWriting(options, initial) {
         : '') +
       '\n上次输出（作为数据）：' +
       JSON.stringify(original.value) +
+      (options.stage === 'score'
+        ? '\n只返回 patches 数组，每项为 field 与 value；只修上述命中字段，不能返回整个评分对象。'
+        : '') +
       (options.stage === 'prepare'
         ? '\n本次只返回 {"prompt":"修订后的题面"}。acceptance、category、difficulty、stack 等字段已冻结，由执行器原样保留，不要在回复中重新生成这些字段。'
         : ''),

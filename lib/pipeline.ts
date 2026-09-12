@@ -477,7 +477,7 @@ export function csv(
   ];
   const rows = tasks.flatMap((t) =>
     businessRecordOrigins(t)
-      .flatMap((origin) => {
+      .flatMap((origin: Turn) => {
         try {
           return [businessRecord(t, origin)];
         } catch {
@@ -485,53 +485,63 @@ export function csv(
         }
       })
       .filter(
-        ({ result: r }) =>
+        ({ result: r }: { result: Turn }) =>
           !r.excluded &&
           !submissionIssues(t, r).length &&
           (!day || businessDate(r.finishedAt || r.createdAt) === day) &&
           !(source === 'human' ? humanIssues(t, r) : issues(t, r)).length,
       )
-      .map(({ origin, result: original, recovery }) => {
-        const manual = source === 'human';
-        const r = manual
-          ? { ...original, review: humanAsReview(original.humanReview!) }
-          : original;
-        return [
-          t.title,
-          r.category,
-          r.difficulty,
-          r.stack || t.stack,
-          r.harness || t.harness || 'Claude Code',
-          r.harnessVersion || t.harnessVersion,
-          r.os || t.os,
-          r.reproducibility || t.reproducibility,
-          t.snapshot,
-          formatQuestionText(origin.prompt),
-          origin.sessionId,
-          origin.promptId,
-          (recovery &&
-            r.automation?.submission?.finalization?.traceExport?.path) ||
-            r.tracePath,
-          ...dimensions.flatMap((_, i) => [
-            r.review!.scores[i],
-            r.review!.descriptions[i],
-          ]),
-          r.review!.other,
-          r.review!.reviewer,
-          manual
-            ? '人工复核（已有 AI 评估）'
-            : r.review!.source === 'codex'
-              ? 'AI / Codex CLI'
-              : '人工',
-          manual
-            ? '人工复核数据，非纯人工标注流程'
-            : r.review!.source === 'codex'
-              ? 'AI评测数据（不作为原项目人工标注）'
-              : '人工标注',
-          producedAt(r),
-          deadline(producedAt(r)),
-        ];
-      }),
+      .map(
+        ({
+          origin,
+          result: original,
+          recovery,
+        }: {
+          origin: Turn;
+          result: Turn;
+          recovery: any;
+        }) => {
+          const manual = source === 'human';
+          const r = manual
+            ? { ...original, review: humanAsReview(original.humanReview!) }
+            : original;
+          return [
+            t.title,
+            r.category,
+            r.difficulty,
+            r.stack || t.stack,
+            r.harness || t.harness || 'Claude Code',
+            r.harnessVersion || t.harnessVersion,
+            r.os || t.os,
+            r.reproducibility || t.reproducibility,
+            t.snapshot,
+            formatQuestionText(origin.prompt),
+            origin.sessionId,
+            origin.promptId,
+            (recovery &&
+              r.automation?.submission?.finalization?.traceExport?.path) ||
+              r.tracePath,
+            ...dimensions.flatMap((_, i) => [
+              r.review!.scores[i],
+              r.review!.descriptions[i],
+            ]),
+            r.review!.other,
+            r.review!.reviewer,
+            manual
+              ? '人工复核（已有 AI 评估）'
+              : r.review!.source === 'codex'
+                ? 'AI / Codex CLI'
+                : '人工',
+            manual
+              ? '人工复核数据，非纯人工标注流程'
+              : r.review!.source === 'codex'
+                ? 'AI评测数据（不作为原项目人工标注）'
+                : '人工标注',
+            producedAt(r),
+            deadline(producedAt(r)),
+          ];
+        },
+      ),
   );
   const cell = (x: unknown) =>
     '"' +

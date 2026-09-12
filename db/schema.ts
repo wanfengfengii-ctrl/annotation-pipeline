@@ -57,3 +57,20 @@ export const projectNames = sqliteTable('project_names', {
   sequence: integer('sequence').primaryKey({ autoIncrement: true }),
   taskId: text('task_id').notNull().unique(),
 });
+
+// Immutable materialized views; original jobs/evidence remain authoritative.
+export const deliveryIndexes = sqliteTable(
+  'delivery_indexes',
+  {
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    version: text('version').notNull(),
+    data: text('data').notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.taskId, t.version] }),
+    index('delivery_indexes_history_idx').on(t.taskId, t.createdAt),
+  ],
+);

@@ -82,10 +82,10 @@ export function summarizeTiming(file) {
     } catch {
       continue;
     }
-    if (e.version !== timingVersion) continue;
+    if (e.version !== timingVersion || !e.attemptId) continue;
     const a = attempts.get(e.attemptId) || {
       attemptId: e.attemptId,
-      stages: [],
+      spans: new Map(),
     };
     if (e.event === 'attempt-start') {
       a.startedAt = e.at;
@@ -96,13 +96,27 @@ export function summarizeTiming(file) {
       a.elapsedMs = e.elapsedMs;
       a.outcome = e.outcome;
     }
-    if (e.event === 'stage-end')
-      a.stages.push({
+    if (e.spanId && e.event.startsWith('stage-')) {
+      const span = a.spans.get(e.spanId) || {
+        spanId: e.spanId,
         stage: e.stage,
-        elapsedMs: e.elapsedMs,
-        outcome: e.outcome,
-      });
+      };
+      if (e.event === 'stage-queued') span.queuedAt = e.at;
+      if (e.event === 'stage-start') {
+        span.startedAt = e.at;
+        span.queueMs = e.queueMs;
+      }
+      if (e.event === 'stage-end') {
+        span.finishedAt = e.at;
+        span.elapsedMs = e.elapsedMs;
+        span.outcome = e.outcome;
+      }
+      a.spans.set(e.spanId, span);
+    }
     attempts.set(e.attemptId, a);
   }
-  return [...attempts.values()];
+  return [...attempts.values()].map(({ spans, ...a }) => ({
+    ...a,
+    stages: [...spans.values()],
+  }));
 }

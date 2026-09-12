@@ -29,6 +29,13 @@
       "when": 1788975643470,
       "tag": "0003_certain_rogue",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1789210328011,
+      "tag": "0004_delivery_index_history",
+      "breakpoints": true
     }
   ]
 }

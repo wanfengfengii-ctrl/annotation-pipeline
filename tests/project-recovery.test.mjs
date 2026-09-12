@@ -23,7 +23,7 @@ import {
   postprocessRetryDue,
   frozenPreparationFailure,
   closedRepairDraft,
-} from '../lib/project-recovery.mjs';
+} from '../lib/project-recovery-server.mjs';
 import {
   canAddTurn,
   projectCounts,

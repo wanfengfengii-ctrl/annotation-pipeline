@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { defaultScheduler, type SchedulerConfig } from '@/lib/scheduler';
+import { ThroughputDetails } from './throughput-details';
 import { OperationsPanel } from './operations-panel';
 export function SchedulerPanel({
   runner,
@@ -108,6 +109,7 @@ export function SchedulerPanel({
         </p>
       )}
       <OperationsPanel local={local} />
+      <ThroughputDetails report={s?.throughput} />
       <details className="scheduler-details">
         <summary>资源与流程详情</summary>
         <p className="sub">

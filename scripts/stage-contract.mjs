@@ -19,6 +19,8 @@ const scoring = [
   'lib/score-description-context.mjs',
   'lib/score-description-grounding.mjs',
   'scripts/score-clarity-repair.mjs',
+  'lib/score-patch.mjs',
+  'scripts/stage-checkpoint.mjs',
   'scripts/score-citation-repair.mjs',
   'scripts/score-retry-context.mjs',
   'scripts/evidence.mjs',

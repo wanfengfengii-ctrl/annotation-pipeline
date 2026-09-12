@@ -1,3 +1,4 @@
+import type { Turn } from '@/lib/pipeline';
 import { db, get, failure, protect, text } from '@/db/store';
 import { saveHumanReview } from '@/db/human-review';
 import {
@@ -124,9 +125,9 @@ export async function POST(
       if (b.allRoundsChecked !== true)
         throw Error('请核对全部有效轮次后登记交付');
       const missing = businessRecordOrigins(item.task)
-        .filter((x) => !x.excluded)
-        .map((x) => businessRecord(item.task, x).result)
-        .filter((x) => !x.excluded && humanIssues(item.task, x).length);
+        .filter((x: Turn) => !x.excluded)
+        .map((x: Turn) => businessRecord(item.task, x).result)
+        .filter((x: Turn) => !x.excluded && humanIssues(item.task, x).length);
       if (missing.length)
         throw Error(`还有 ${missing.length} 个有效轮次未完成人工质检`);
       actor = text(b.actor, '登记人', 100);

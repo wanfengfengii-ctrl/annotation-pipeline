@@ -1,5 +1,18 @@
 import { db, failure, runnerAuth } from '@/db/store';
 import { validateSoloStatusSnapshot } from '@/lib/solo-upload-status.mjs';
+export async function GET() {
+  try {
+    const row = await db()
+      .prepare("SELECT data FROM runners WHERE id='solo-upload'")
+      .first<{ data: string }>();
+    return Response.json(
+      { upload: row ? JSON.parse(row.data) : null },
+      { headers: { 'cache-control': 'no-store' } },
+    );
+  } catch (e) {
+    return failure(e);
+  }
+}
 export async function POST(req: Request) {
   try {
     runnerAuth(req);

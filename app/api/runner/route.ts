@@ -27,7 +27,7 @@ import {
   sentProjectCounts,
   postprocessRetryDue,
   queuedProjectRecovery,
-} from '@/lib/project-recovery.mjs';
+} from '@/lib/project-recovery-server.mjs';
 import { canAddTurn } from '@/lib/project-series.mjs';
 import { serializeTask } from '@/lib/task-storage.mjs';
 import {

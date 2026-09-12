@@ -955,3 +955,29 @@ fieldset.record-filters {
     max-width: 100%;
   }
 }
+
+/* Existing workbench details: preserve table width and readable evidence. */
+.delivery-panel > details,
+.upload-batches-panel > details {
+  border-top: 1px solid var(--border);
+  padding: 1rem 0;
+}
+.delivery-panel p,
+.delivery-panel summary,
+.upload-batches-panel p {
+  overflow-wrap: anywhere;
+}
+.delivery-panel pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.875rem;
+}
+.delivery-panel summary,
+.upload-batches-panel summary {
+  cursor: pointer;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+.delivery-panel .mono {
+  font-size: 0.8125rem;
+}

@@ -1,3 +1,6 @@
+import { applyBatchRecovery } from '../lib/upload-batches.mjs';
+import { recoveryRequests } from './solo-recovery-requests.mjs';
+import { publishSoloStatus } from './solo-status-publish.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -92,7 +95,8 @@ export function dueUpload(now, state) {
   const pending = runs
     .filter(
       ([, r]) =>
-        (r.status === 'waiting_window' ||
+        ((r.recoveryRequestedAt && ['blocked', 'failed'].includes(r.status)) ||
+          r.status === 'waiting_window' ||
           (r.status === 'waiting_login' && loginFailures.has(r.reasonCode))) &&
         Array.isArray(r.members),
     )
@@ -415,35 +419,72 @@ export async function runSchedule(action, file, now = new Date()) {
     fs.existsSync(scheduleFile)
       ? readJSON(scheduleFile)
       : { version: scheduleVersion, runs: {} };
-  if (action === '--due') return dueUpload(now, load());
-  return withSoloLock(path.join(root, 'journal.lock'), async () => {
-    const state = load();
-    let result;
-    if (action === '--login-result')
-      result = recordLogin(state, readJSON(file), now);
-    else if (action === '--claim') {
-      const due = dueUpload(now, state);
-      const plan = due.mode === 'new' && due.due ? loadPlan(file) : null;
-      result = claimUpload(state, { now, members: plan?.packets });
-    } else if (action === '--touch')
-      result = touchUpload(state, readJSON(file), now);
-    else if (action === '--finish')
-      result = finishUpload(state, readJSON(file), now);
-    else if (action === '--batch-plan') {
-      const input = readJSON(file),
-        run = ownedRun(state, input);
-      result = resumePlan(
-        run,
-        loadPlan(input.planPath),
-        fs.existsSync(path.join(root, 'ui-state.json'))
-          ? readJSON(path.join(root, 'ui-state.json'))
-          : { entries: {} },
+  if (action === '--due') {
+    // Remote intent never bypasses the journal lock or the original batch.
+    let requests = [];
+    try {
+      if (!process.env.SOLO_SCHEDULE_ROOT || process.env.PIPELINE_API_URL)
+        requests = await recoveryRequests('read');
+    } catch {
+      /* scheduled work continues */
+    }
+    if (requests.length)
+      await withSoloLock(path.join(root, 'journal.lock'), async () => {
+        const state = load();
+        for (const request of requests) {
+          applyBatchRecovery(state, request, now);
+          savePrivateJSON(scheduleFile, state);
+          try {
+            await recoveryRequests('ack', request.id);
+          } catch {
+            /* idempotent on next check */
+          }
+        }
+      });
+    return dueUpload(now, load());
+  }
+  const result = await withSoloLock(
+    path.join(root, 'journal.lock'),
+    async () => {
+      const state = load();
+      let result;
+      if (action === '--login-result')
+        result = recordLogin(state, readJSON(file), now);
+      else if (action === '--claim') {
+        const due = dueUpload(now, state);
+        const plan = due.mode === 'new' && due.due ? loadPlan(file) : null;
+        result = claimUpload(state, { now, members: plan?.packets });
+      } else if (action === '--touch')
+        result = touchUpload(state, readJSON(file), now);
+      else if (action === '--finish')
+        result = finishUpload(state, readJSON(file), now);
+      else if (action === '--batch-plan') {
+        const input = readJSON(file),
+          run = ownedRun(state, input);
+        result = resumePlan(
+          run,
+          loadPlan(input.planPath),
+          fs.existsSync(path.join(root, 'ui-state.json'))
+            ? readJSON(path.join(root, 'ui-state.json'))
+            : { entries: {} },
+        );
+      } else fail('USAGE_DUE_LOGIN_RESULT_CLAIM_TOUCH_FINISH_BATCH_PLAN');
+      state.version = scheduleVersion;
+      savePrivateJSON(scheduleFile, state);
+      return result;
+    },
+  );
+  if (!process.env.SOLO_SCHEDULE_ROOT) {
+    try {
+      const ledgerFile = path.join(root, 'ui-state.json');
+      await publishSoloStatus(
+        fs.existsSync(ledgerFile) ? readJSON(ledgerFile) : { entries: {} },
       );
-    } else fail('USAGE_DUE_LOGIN_RESULT_CLAIM_TOUCH_FINISH_BATCH_PLAN');
-    state.version = scheduleVersion;
-    savePrivateJSON(scheduleFile, state);
-    return result;
-  });
+    } catch {
+      /* keep durable upload result */
+    }
+  }
+  return result;
 }
 if (
   process.argv[1] &&

@@ -1,4 +1,5 @@
 'use client';
+import { latestRequest } from '@/lib/latest-request.mjs';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -59,10 +60,50 @@ export function RecordsTable({
   const selectedCount = Object.keys(selected).length;
   const pageRows = data?.rows.filter((r) => canExportRecord(r, purpose)) || [];
   const checkedOnPage = pageRows.filter((r) => selected[recordKey(r)]).length;
+  const loadedFilter = useRef('');
+  const requests = useRef(latestRequest()),
+    inFlight = useRef(false);
+  const [initialized, setInitialized] = useState(false);
+  useEffect(() => {
+    const restore = () => {
+      const q = new URLSearchParams(window.location.search);
+      const page = Math.max(1, Number(q.get('page')) || 1),
+        pageSize = Number(q.get('pageSize'));
+      requests.current.invalidate();
+      setFilter((f) => ({
+        ...f,
+        page,
+        ...([10, 20, 50, 100].includes(pageSize) ? { pageSize } : {}),
+      }));
+      setInitialized(true);
+    };
+    restore();
+    window.addEventListener('popstate', restore);
+    const poll = setInterval(() => {
+      if (!inFlight.current) setRefresh((x) => x + 1);
+    }, 15000);
+    return () => {
+      clearInterval(poll);
+      window.removeEventListener('popstate', restore);
+      requests.current.invalidate();
+    };
+  }, []);
+  const navigate = (page: number) => {
+    requests.current.invalidate();
+    setFilter((f) => ({ ...f, page }));
+  };
   const pending = useRef<{ signature: string; id: string } | null>(null);
   useEffect(() => {
+    if (!initialized) return;
+    const signature = JSON.stringify([filter, purpose]);
+    const current = requests.current.begin();
     const controller = new AbortController();
-    setLoading(true);
+    inFlight.current = true;
+    const url = new URL(window.location.href);
+    url.searchParams.set('page', String(filter.page));
+    url.searchParams.set('pageSize', String(filter.pageSize));
+    window.history.replaceState(null, '', url);
+    if (loadedFilter.current !== signature) setLoading(true);
     setError('');
     fetch(
       '/api/records?' +
@@ -78,8 +119,13 @@ export function RecordsTable({
           error?: string;
         };
         if (!r.ok) throw Error(d.error);
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || !current()) return;
+        loadedFilter.current = signature;
         setData(d);
+        if (d.page !== filter.page) {
+          requests.current.invalidate();
+          setFilter((f) => ({ ...f, page: d.page }));
+        }
         setSelected((current) => {
           const next = { ...current };
           for (const r of d.rows)
@@ -88,17 +134,24 @@ export function RecordsTable({
         });
       })
       .catch((e) => {
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && current()) {
           setData(null);
           setError(e.message);
         }
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted && current()) {
+          setLoading(false);
+          inFlight.current = false;
+        }
       });
-    return () => controller.abort();
-  }, [filter, refresh, purpose]);
+    return () => {
+      controller.abort();
+      inFlight.current = false;
+    };
+  }, [filter, refresh, purpose, initialized]);
   const update = (patch: Partial<RecordFilter>, resetSelection = true) => {
+    requests.current.invalidate();
     setLoading(true);
     if (resetSelection) setSelected({});
     setFilter((f) => ({ ...f, ...patch, page: 1 }));
@@ -492,19 +545,15 @@ export function RecordsTable({
         </label>
         <Button
           variant="outline"
-          disabled={busy || loading || !data || data.page <= 1}
-          onClick={() =>
-            setFilter((f) => ({ ...f, page: (data?.page || 1) - 1 }))
-          }
+          disabled={busy || !data || filter.page <= 1}
+          onClick={() => navigate(Math.max(1, filter.page - 1))}
         >
           上一页
         </Button>
         <Button
           variant="outline"
-          disabled={busy || loading || !data || data.page >= data.totalPages}
-          onClick={() =>
-            setFilter((f) => ({ ...f, page: (data?.page || 1) + 1 }))
-          }
+          disabled={busy || !data || filter.page >= data.totalPages}
+          onClick={() => navigate(filter.page + 1)}
         >
           下一页
         </Button>

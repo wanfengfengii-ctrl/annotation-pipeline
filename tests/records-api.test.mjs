@@ -360,6 +360,13 @@ try {
         /会话|修复|10/,
       );
     }
+    // Finished fixture projects must release the project quota before the next
+    // independent project; this does not alter the per-session call test.
+    await api(
+      '/api/tasks/' + task.id,
+      { action: 'close', revision: (await latest(task.id)).revision },
+      'PATCH',
+    );
   }
   let edited = await latest(ids[1]);
   const metadata = {
@@ -542,7 +549,13 @@ try {
   assert.equal((await exportFile({ ...filter, exports: 'never' })).status, 400);
   assert.equal((await records({ exports: 'exact', count: 2 })).total, 10);
   // A subsequent failure contaminates its entire question session, including old batches.
-  const clean = await latest(ids[9]);
+  let clean = await latest(ids[9]);
+  await api(
+    '/api/tasks/' + clean.id,
+    { action: 'resume-project', revision: clean.revision },
+    'PATCH',
+  );
+  clean = await latest(ids[9]);
   await api(
     '/api/tasks/' + clean.id,
     {

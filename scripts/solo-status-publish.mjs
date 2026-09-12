@@ -10,7 +10,16 @@ const project = path.resolve(
 );
 const root = path.join(project, '.runner/solo-upload');
 export async function publishSoloStatus(ledger) {
-  const snapshot = soloStatusSnapshot(ledger, uploadHolds());
+  const schedulePath = path.join(root, 'schedule.json');
+  const schedule = fs.existsSync(schedulePath)
+    ? JSON.parse(fs.readFileSync(schedulePath, 'utf8'))
+    : {};
+  const snapshot = soloStatusSnapshot(
+    ledger,
+    uploadHolds(),
+    new Date().toISOString(),
+    schedule,
+  );
   savePrivateJSON(path.join(root, 'display-status.json'), snapshot);
   const token = fs
     .readFileSync(path.join(project, '.dev.vars'), 'utf8')

@@ -1,5 +1,8 @@
 'use client';
 
+import { DeliveryPanel } from '@/components/pipeline/delivery-panel';
+import { UploadBatchesPanel } from '@/components/pipeline/upload-batches-panel';
+import { latestRequest } from '@/lib/latest-request.mjs';
 import { runtimeRecoveryLabel } from '@/lib/runtime-recovery.mjs';
 import {
   canAddTurn,
@@ -23,7 +26,13 @@ import { rules, difficultyRules } from '@/lib/task-policy.mjs';
 import { HumanReviewPanel } from '@/components/pipeline/human-review-panel';
 import { humanLabel, humanIssues } from '@/lib/human-review';
 import { SchedulerPanel } from '@/components/pipeline/scheduler-panel';
-import { useEffect, useState, useCallback, type ReactNode } from 'react';
+import {
+  useEffect,
+  useState,
+  useCallback,
+  useRef,
+  type ReactNode,
+} from 'react';
 import {
   Workflow,
   Plus,
@@ -192,23 +201,33 @@ export default function Home() {
     [query, setQuery] = useState(''),
     [projectId, setProjectId] = useState(''),
     [filter, setFilter] = useState('全部状态');
-  const reload = useCallback(async () => {
+  const reloadRequests = useRef(latestRequest());
+  const reloadPending = useRef<(() => boolean) | null>(null);
+  const reload = useCallback(async (background: unknown = false) => {
+    if (background === true && reloadPending.current) return;
+    const current = reloadRequests.current.begin();
+    reloadPending.current = current;
     try {
       const d = await request('/api/tasks');
+      if (!current()) return;
       setTasks(d.tasks);
       setRunner(d.runner);
       setError('');
     } catch (e) {
-      setError((e as Error).message);
+      if (current()) setError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (reloadPending.current === current) reloadPending.current = null;
+      if (current()) setLoading(false);
     }
   }, []);
   useEffect(() => {
     setLocal(['localhost', '127.0.0.1'].includes(window.location.hostname));
     void reload();
-    const id = setInterval(reload, 5000);
-    return () => clearInterval(id);
+    const id = setInterval(() => void reload(true), 5000);
+    return () => {
+      clearInterval(id);
+      reloadRequests.current.invalidate();
+    };
   }, [reload]);
   useEffect(() => {
     const context = (document as any).modelContext;
@@ -254,6 +273,7 @@ export default function Home() {
     online =
       runner && Date.now() - new Date(runner.heartbeat).getTime() < 30000;
   const mutate = async (t: RecordTask, body: object) => {
+    reloadRequests.current.invalidate();
     if ('humanAction' in body) {
       const { humanAction, ...rest } = body;
       await request('/api/tasks/' + t.id + '/human-review', {
@@ -590,6 +610,7 @@ export default function Home() {
             </section>
           </TabsContent>
           <TabsContent value="records">
+            <UploadBatchesPanel local={local} onOpen={setSelected} />
             <RecordsTable
               projects={tasks.map((t) => ({
                 id: t.id,
@@ -1034,7 +1055,11 @@ function TaskDetail({
           <TabsTrigger value="turns">交互与自动评分</TabsTrigger>
           <TabsTrigger value="human">人工二次确认</TabsTrigger>
           <TabsTrigger value="environment">环境与快照</TabsTrigger>
+          <TabsTrigger value="delivery">交付追溯</TabsTrigger>
         </TabsList>
+        <TabsContent value="delivery">
+          <DeliveryPanel key={t.id} taskId={t.id} />
+        </TabsContent>
         <TabsContent value="turns">
           {!t.turns.length && (
             <div className="section">

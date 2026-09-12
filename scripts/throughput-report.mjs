@@ -2,6 +2,11 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { summarizeTiming } from './attempt-timing.mjs';
+import {
+  businessRecord,
+  businessRecordOrigins,
+} from '../lib/business-record.mjs';
+import { taskTiming } from '../lib/task-timing.mjs';
 
 const median = (values) => {
   if (!values.length) return null;
@@ -28,13 +33,37 @@ export function throughputReport({
     missingTiming = 0;
   const records = [];
   for (const task of tasks)
-    for (const turn of task.turns) {
-      const timings = summarizeTiming(
-        path.join(workRoot, task.id, turn.id + '.timing.jsonl'),
+    for (const origin of task.businessRecords
+      ? task.businessRecords
+          .map((r) => task.turns.find((t) => t.id === r.originId))
+          .filter(Boolean)
+      : businessRecordOrigins(task)) {
+      let projection;
+      try {
+        const mapped = task.businessRecords?.find(
+          (r) => r.originId === origin.id,
+        );
+        projection = mapped
+          ? {
+              result: task.turns.find((r) => r.id === mapped.resultId),
+              chain: mapped.chainIds
+                .map((id) => task.turns.find((r) => r.id === id))
+                .filter(Boolean),
+            }
+          : businessRecord(task, origin);
+        if (!projection.result) throw Error('缺少结果');
+      } catch {
+        projection = { result: origin, chain: [origin] };
+      }
+      const turn = projection.result;
+      const timings = projection.chain.flatMap((item) =>
+        summarizeTiming(
+          path.join(workRoot, task.id, item.id + '.timing.jsonl'),
+        ),
       );
       attempts += timings.length;
       if (!timings.length) missingTiming++;
-      const upload = ledger.entries?.[task.id + ':' + turn.id];
+      const upload = ledger.entries?.[task.id + ':' + origin.id];
       const scored = !!turn.review?.scores?.length,
         finalized = !!turn.automation?.submission?.finalization;
       const submitted =
@@ -70,13 +99,22 @@ export function throughputReport({
           group.durations.push(timing.elapsedMs);
         } else if (timing.outcome === 'failed') group.failedAttempts++;
         for (const stage of timing.stages) {
-          (group.stageDurations[stage.stage] ||= []).push(stage.elapsedMs);
+          if (Number.isFinite(stage.elapsedMs))
+            (group.stageDurations[stage.stage] ||= []).push(stage.elapsedMs);
         }
       }
       groups.set(groupKey, group);
       records.push({
         taskId: task.id,
-        turnId: turn.id,
+        turnId: origin.id,
+        resultTurnId: turn.id,
+        category: origin.category || task.category,
+        difficulty: origin.difficulty || task.difficulty,
+        logicalTiming: taskTiming(
+          timings,
+          turn.productionHistory?.firstDeliveredAt,
+          now,
+        ),
         scored,
         finalized,
         submitted,
@@ -93,6 +131,34 @@ export function throughputReport({
     replanningAttempts,
     missingTiming,
     note: '累计状态与每次尝试分开统计；历史缺少阶段计时不推算耗时，样本不足不宣称产量提升。',
+    logicalSummary: {
+      records: records.length,
+      firstPass: records.filter(
+        (r) =>
+          r.logicalTiming.firstDeliveredAt &&
+          r.logicalTiming.attempts === 1 &&
+          !r.logicalTiming.stages.some((s) => s.outcome === 'failed'),
+      ).length,
+      recovered: records.filter(
+        (r) =>
+          r.logicalTiming.firstDeliveredAt &&
+          (r.logicalTiming.attempts > 1 ||
+            r.logicalTiming.stages.some((s) => s.outcome === 'failed')),
+      ).length,
+      missingDeliveryTimeline: records.filter(
+        (r) => r.scored && !r.logicalTiming.firstDeliveredAt,
+      ).length,
+      medianDeliveryMs: median(
+        records
+          .filter(
+            (r) =>
+              r.logicalTiming.firstDeliveredAt &&
+              r.logicalTiming.wallMs !== null,
+          )
+          .map((r) => r.logicalTiming.wallMs),
+      ),
+    },
+    bottlenecks: timingBottlenecks(records),
     groups: [...groups.values()].map(({ durations, stageDurations, ...g }) => ({
       ...g,
       medianElapsedMs: median(durations),
@@ -133,6 +199,53 @@ export function throughputReport({
       note: '新增和返修按实际交付事件统计；旧记录缺少首次交付历史时不推算为新产出。',
     },
   };
+}
+
+export function timingBottlenecks(records) {
+  const groups = new Map();
+  for (const r of records)
+    for (const s of r.logicalTiming.stages) {
+      const key = [
+        r.category,
+        r.difficulty,
+        s.release || 'unknown',
+        s.stage,
+      ].join(' / ');
+      const group = groups.get(key) || {
+        group: key,
+        stage: s.stage,
+        execution: [],
+        queue: [],
+        failures: 0,
+        ongoing: 0,
+        records: [],
+      };
+      if (Number.isFinite(s.elapsedMs)) group.execution.push(s.elapsedMs);
+      if (Number.isFinite(s.queueMs)) group.queue.push(s.queueMs);
+      group.failures += Number(s.outcome === 'failed');
+      group.ongoing += Number(s.ongoing);
+      if (
+        !group.records.some(
+          (x) => x.taskId === r.taskId && x.turnId === r.turnId,
+        )
+      )
+        group.records.push({ taskId: r.taskId, turnId: r.turnId });
+      groups.set(key, group);
+    }
+  return [...groups.values()]
+    .map(({ execution, queue, ...g }) => ({
+      ...g,
+      samples: execution.length,
+      queueSamples: queue.length,
+      medianMs: median(execution),
+      queueMedianMs: median(queue),
+    }))
+    .sort(
+      (a, b) =>
+        (b.medianMs || 0) +
+        (b.queueMedianMs || 0) -
+        ((a.medianMs || 0) + (a.queueMedianMs || 0)),
+    );
 }
 
 export async function saveThroughputReport({ base, workRoot }) {
@@ -176,6 +289,26 @@ export async function saveThroughputReport({ base, workRoot }) {
         ),
     ).length,
     groups: report.groups,
+    bottlenecks: report.bottlenecks
+      .slice(0, 30)
+      .map((g) => ({ ...g, records: g.records.slice(0, 5) })),
+    logicalSummary: report.logicalSummary,
+    logicalTimings: [...report.records]
+      .sort((a, b) =>
+        String(b.logicalTiming.startedAt || '').localeCompare(
+          String(a.logicalTiming.startedAt || ''),
+        ),
+      )
+      .slice(0, 30)
+      .map(({ taskId, turnId, category, difficulty, logicalTiming }) => ({
+        taskId,
+        turnId,
+        category,
+        difficulty,
+        ...logicalTiming,
+        stages: logicalTiming.stages.slice(-40),
+        totalStages: logicalTiming.stages.length,
+      })),
   };
   writeFileSync(
     path.join(dir, 'summary.json'),
