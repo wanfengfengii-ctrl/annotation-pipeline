@@ -232,17 +232,15 @@ test('Four verified defects can be split into two audited repair batches while p
     ],
   };
   assert.doesNotThrow(() => assertQuestionAudit(audit));
-  assert.throws(
-    () =>
-      assertQuestionAudit({
-        ...audit,
-        businessDetails: [
-          ...audit.businessDetails,
-          '场景出入口隔离',
-          '连续搬运位置正确',
-        ],
-      }),
-    /businessDetails/,
+  assert.doesNotThrow(() =>
+    assertQuestionAudit({
+      ...audit,
+      businessDetails: [
+        ...audit.businessDetails,
+        '场景出入口隔离',
+        '连续搬运位置正确',
+      ],
+    }),
   );
   const batchOne = repairDecision(task, first, {
     prompt,

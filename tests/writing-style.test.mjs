@@ -212,7 +212,7 @@ test('仅已执行历史题的同会话真实修复继承界面范围，新题�
     assert(policy.includes(category));
 });
 
-test('0-1 题目使用无编号的项目名称和一至两段正文，点评保留独立格式', () => {
+test('0-1 题目使用无编号的项目名称和自然正文，点评保留独立格式', () => {
   const prompt = fixture.question();
   const checked = checkWriting('prepare', {
     prompt: '“' + prompt + '”',
@@ -252,7 +252,6 @@ test('0-1 新题检查项目名称、段落、语气和编排信息', () => {
       fixture.question().replace('网页工作台', '网页工作台，可能需要'),
       fixture.question().replace('网页工作台', '网页工作台，竟然'),
       fixture.question().replace('网页工作台', '网页工作台“联调”'),
-      fixture.question() + '\n第三段',
       fixture.question().replace('为需要', '技术栈：为需要'),
       fixture.question() + '，仅在 /workspace 创建代码。',
     ])
@@ -265,7 +264,10 @@ test('0-1 新题检查项目名称、段落、语气和编排信息', () => {
         }).issues.length,
         stage + ': ' + prompt,
       );
-    assert.match(writingInstructions(stage), /4 至 6/);
+    assert.match(
+      writingInstructions(stage),
+      /不设字数、段落数、关联操作数或业务细节数门槛/,
+    );
     assert.match(writingInstructions(stage), /Feature/);
   }
   for (const n of [1, 180, 260, 268, 1000])
@@ -279,6 +281,35 @@ test('0-1 新题检查项目名称、段落、语气和编排信息', () => {
     }).issues.length,
   );
   assert.ok(proseIssues(fixture.body).length, '点评仍不允许分段');
+});
+
+test('所有题型自然分段不受两段上限限制，空正文仍不通过', () => {
+  for (const category of [
+    '0-1 代码生成',
+    'Feature 迭代',
+    'Bug 修复',
+    '代码理解',
+    '代码重构',
+  ]) {
+    const body =
+      '打开网页查看保存的记录。\n选择一条记录后显示内容。\n修改名称后保存，返回列表能看到新名称。\n输入为空时说明原因并保留原记录。';
+    const prompt = category === '0-1 代码生成' ? '记录整理页\n' + body : body;
+    for (const stage of ['generate', 'prepare', 'next', 'project-next']) {
+      const result = checkWriting(stage, {
+        category,
+        prompt,
+        action: category === 'Bug 修复' ? 'repair' : 'advance',
+        reason: '更新已有记录的名称',
+      });
+      assert.deepEqual(result.issues, [], category + ':' + stage);
+      assert.equal(result.value.prompt, prompt);
+    }
+    assert.ok(
+      questionIssues(category === '0-1 代码生成' ? '只有名称' : '', {
+        category,
+      }).length,
+    );
+  }
 });
 
 test('除 0-1 外所有类型只接受正文，第一段参与段落与语气检查', () => {
@@ -375,8 +406,21 @@ test('Bug 准备和追问直接用口语正文，拒绝项目标题和正式措�
   );
 });
 
-test('业务内容审核逐项留证，不允许数量不符、缺少依据或否决结果通过', () => {
+test('业务内容审核不以操作或细节数量拦截，仍检查证据结构和否决结果', () => {
   assert.doesNotThrow(() => assertQuestionAudit(fixture.questionAudit));
+  for (const count of [0, 1, 3, 7, 12]) {
+    const evidence = Array.from(
+      { length: count },
+      (_, i) => `正文依据${i + 1}`,
+    );
+    assert.doesNotThrow(() =>
+      assertQuestionAudit({
+        ...fixture.questionAudit,
+        workflowFeatures: evidence,
+        businessDetails: evidence,
+      }),
+    );
+  }
   for (const value of [
     { ...fixture.questionAudit, questionCompliant: false },
     { ...fixture.questionAudit, questionChecks: [] },
@@ -386,12 +430,11 @@ test('业务内容审核逐项留证，不允许数量不符、缺少依据或�
         'audience：重复',
       ),
     },
-    { ...fixture.questionAudit, workflowFeatures: ['一', '二', '三'] },
-    {
-      ...fixture.questionAudit,
-      workflowFeatures: ['一', '二', '三', '四', '五', '六', '七'],
-    },
-    { ...fixture.questionAudit, businessDetails: [] },
+    { ...fixture.questionAudit, workflowFeatures: null },
+    { ...fixture.questionAudit, workflowFeatures: [''] },
+    { ...fixture.questionAudit, workflowFeatures: ['重复', ' 重复 '] },
+    { ...fixture.questionAudit, businessDetails: '无' },
+    { ...fixture.questionAudit, businessDetails: [12] },
     { ...fixture.questionAudit, businessDetails: ['重复', '重复'] },
   ])
     assert.throws(() => assertQuestionAudit(value), /题目内容审核/);
