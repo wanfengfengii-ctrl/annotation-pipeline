@@ -18,6 +18,7 @@ import {
   prepareBuildDependencies,
 } from '../scripts/self-heal-release.mjs';
 import { identity } from '../scripts/recovery.mjs';
+import { summarizeNativeEvidence } from '../scripts/self-heal-evidence.mjs';
 
 const at = Date.parse('2026-09-12T02:00:00Z');
 test(
@@ -66,6 +67,29 @@ function snapshot() {
     },
   };
 }
+test('native diagnostic exposes boundary whitespace mismatch without changing source or claiming delivery', () => {
+  const events = [
+    { type: 'user', uuid: 'u', sessionId: 's', message: { content: ' 题目' } },
+    {
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: 'tool' }] },
+    },
+    {
+      type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: 'tool' }] },
+    },
+    { type: 'system', subtype: 'turn_duration' },
+  ];
+  const content = events.map(JSON.stringify).join('\n') + '\n',
+    files = [{ name: 's.jsonl', content }];
+  const r = summarizeNativeEvidence(files, '题目')[0].users[0];
+  assert.equal(r.exactMatch, false);
+  assert.equal(r.boundaryWhitespaceMatch, true);
+  assert.equal(r.durationMarkers, 1);
+  assert.equal(r.pendingTools, 0);
+  assert.equal(files[0].content, content);
+  assert.equal(r.complete, undefined);
+});
 test(
   'published updates wait for the exact old runner without an elapsed-time kill',
   { skip: process.env.SELF_HEAL_TEST === '1' },

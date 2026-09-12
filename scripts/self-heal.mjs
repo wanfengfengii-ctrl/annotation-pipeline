@@ -19,6 +19,7 @@ import {
   ensureServices,
 } from './self-heal-io.mjs';
 import { advanceRelease } from './self-heal-release.mjs';
+import { collectNativeDiagnosis } from './self-heal-evidence.mjs';
 
 export async function selfHealTick(root, { act = false, notify = true } = {}) {
   const dir = path.join(root, '.runner/self-heal'),
@@ -205,7 +206,14 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
           jobFile = path.join(jobDir, 'job.json');
         const task = snapshot.tasks.find((t) => t.id === i.taskId),
           turn = task?.turns.find((r) => r.id === i.turnId);
+        let nativeDiagnosis;
+        try {
+          nativeDiagnosis = collectNativeDiagnosis(root, task, turn);
+        } catch (e) {
+          nativeDiagnosis = { error: e.message };
+        }
         const context = {
+          nativeDiagnosis,
           incident: i,
           health: {
             active: snapshot.health.active,
