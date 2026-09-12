@@ -18,7 +18,7 @@ import {
   launch,
   ensureServices,
 } from './self-heal-io.mjs';
-import { advanceRelease } from './self-heal-release.mjs';
+import { advanceRelease, adoptIdleRunner } from './self-heal-release.mjs';
 import {
   collectNativeDiagnosis,
   nativeDiagnosisVersion,
@@ -38,6 +38,9 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
   if (config.enabled !== true) return { enabled: false };
   if (act) {
     try {
+      await adoptIdleRunner(root).catch((e) => {
+        state.adoptionError = e.message;
+      });
       const services = await ensureServices(root, {
         enabled: state.productionEnabled === true,
       });

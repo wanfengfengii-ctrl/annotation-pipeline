@@ -16,11 +16,36 @@ import { command, saveJSON } from '../scripts/self-heal-io.mjs';
 import {
   advanceRelease,
   prepareBuildDependencies,
+  runnerHasWork,
 } from '../scripts/self-heal-release.mjs';
 import { identity } from '../scripts/recovery.mjs';
 import { summarizeNativeEvidence } from '../scripts/self-heal-evidence.mjs';
 
 const at = Date.parse('2026-09-12T02:00:00Z');
+test('a busy or unknown scheduler keeps admissions while future jobs adopt repairs', () => {
+  const data = {
+    runner: {
+      scheduler: {
+        active: 0,
+        recovering: 0,
+        generating: false,
+        finalizing: 0,
+        stages: { running: [] },
+      },
+    },
+    tasks: [],
+  };
+  assert.equal(Boolean(runnerHasWork(data)), false);
+  for (const key of ['active', 'recovering', 'generating', 'finalizing']) {
+    const busy = structuredClone(data);
+    busy.runner.scheduler[key] = 1;
+    assert.equal(Boolean(runnerHasWork(busy)), true, key);
+  }
+  const observed = structuredClone(data);
+  observed.tasks.push({ turns: [{ status: 'running' }] });
+  assert.equal(Boolean(runnerHasWork(observed)), true);
+  assert.equal(Boolean(runnerHasWork({})), true);
+});
 test(
   'Mac repair checks cannot write outside the tree or read copied credentials',
   { skip: process.platform !== 'darwin' || process.env.SELF_HEAL_TEST === '1' },

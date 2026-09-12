@@ -14,6 +14,46 @@ import {
 import { runCheck } from './self-heal-repair.mjs';
 
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+export function runnerHasWork(data) {
+  const s = data?.runner?.scheduler;
+  return (
+    !s ||
+    !Number.isFinite(s.active) ||
+    s.active > 0 ||
+    s.recovering > 0 ||
+    s.generating ||
+    s.finalizing > 0 ||
+    s.stages?.running?.length > 0 ||
+    data.tasks?.some((t) => t.turns?.some((r) => r.status === 'running'))
+  );
+}
+export async function adoptIdleRunner(root) {
+  const work = path.join(root, '.runner'),
+    file = path.join(work, 'self-heal/runner-adoption.json'),
+    pending = readJSON(file);
+  if (!pending || pending.completedAt) return;
+  const current = verifyJobRelease(
+    readJSON(path.join(work, 'job-release-current.json')),
+    work,
+  );
+  const pid = readJSON(path.join(work, 'runner.lock'));
+  if (!pid || !identity(pid)) return; // ensureServices starts the latest release.
+  if (exactProcess(pid, current.root, 'scripts/runner.mjs')) {
+    saveJSON(file, { ...pending, completedAt: new Date().toISOString() });
+    return;
+  }
+  if (pending.signaledIdentity === identity(pid)) return;
+  const data = await localAPI('/api/tasks');
+  if (runnerHasWork(data) || data.runner?.scheduler?.draining) return;
+  if (!exactProcess(pid, pending.oldRoot, 'scripts/runner.mjs'))
+    throw Error('待更新执行器归属不一致');
+  saveJSON(file, {
+    ...pending,
+    signaledIdentity: identity(pid),
+    signaledAt: new Date().toISOString(),
+  });
+  process.kill(pid, 'SIGUSR2');
+}
 export function prepareBuildDependencies(releaseRoot, sourceRoot) {
   if (path.dirname(releaseRoot) !== path.join(sourceRoot, '.runner/releases'))
     throw Error('只允许准备独立候选版本');
@@ -171,24 +211,37 @@ export async function advanceRelease(root, job, jobFile) {
     if (state.phase === 'drain') {
       const pid = readJSON(path.join(work, 'runner.lock'));
       if (pid && identity(pid)) {
-        const { runner } = await localAPI('/api/tasks');
-        save({ oldRunnerPid: pid, oldRunnerIdentity: identity(pid) });
-        if (!runner?.scheduler?.draining) {
-          const oldRoot = state.oldPointer.root;
-          if (
-            !exactProcess(pid, oldRoot, 'scripts/runner.mjs') &&
-            !exactProcess(pid, root, 'scripts/runner.mjs')
-          )
-            throw Error('执行器归属不一致，保留现场');
-          // Persist identity before the signal so a restarted controller won't
-          // mistake a reused PID for the old runner.
+        const data = await localAPI('/api/tasks'),
+          { runner } = data;
+        if (runnerHasWork(data) && !runner?.scheduler?.draining) {
+          // Future claims already load the verified release. Do not stop all
+          // admissions behind one stuck old observer just to refresh the scheduler.
+          saveJSON(path.join(work, 'self-heal/runner-adoption.json'), {
+            jobId: job.id,
+            oldRoot: state.oldPointer.root,
+            requestedAt: new Date().toISOString(),
+          });
+          job.runnerAdoption = 'waiting-idle';
+          saveJSON(jobFile, job);
+          save({ phase: 'push' });
+        } else {
           save({ oldRunnerPid: pid, oldRunnerIdentity: identity(pid) });
-          process.kill(pid, 'SIGUSR2');
+          if (!runner?.scheduler?.draining) {
+            const oldRoot = state.oldPointer.root;
+            if (
+              !exactProcess(pid, oldRoot, 'scripts/runner.mjs') &&
+              !exactProcess(pid, root, 'scripts/runner.mjs')
+            )
+              throw Error('执行器归属不一致，保留现场');
+            // Persist identity before the signal so a restarted controller won't
+            // mistake a reused PID for the old runner.
+            save({ oldRunnerPid: pid, oldRunnerIdentity: identity(pid) });
+            process.kill(pid, 'SIGUSR2');
+          }
+          save({ phase: 'waiting-runner' });
+          return { waiting: true };
         }
-        save({ phase: 'waiting-runner' });
-        return { waiting: true };
-      }
-      save({ phase: 'start-runner' });
+      } else save({ phase: 'start-runner' });
     }
     if (state.phase === 'waiting-runner') {
       if (
