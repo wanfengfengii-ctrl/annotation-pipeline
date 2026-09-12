@@ -1,3 +1,4 @@
+import { upgradeHandoffReady } from '../lib/observer-handoff.mjs';
 import { supplyCredentialsRevision } from './supply-recovery.mjs';
 import { PilotGate } from './pilot-gate.mjs';
 import { saveThroughputReport } from './throughput-report.mjs';
@@ -458,12 +459,13 @@ try {
       });
       // Component releases are adopted between operations. A main-process
       // upgrade must never stop filling free slots while a slow task is alive.
-      draining =
-        upgradeRequested &&
-        active.size === 0 &&
-        orphans.length === 0 &&
-        !generating &&
-        !finalizations.active.size;
+      draining = upgradeHandoffReady(upgradeRequested, {
+        active: active.size,
+        recovering: orphans.length,
+        generating: !!generating,
+        finalizing: finalizations.active.size,
+        running: budget.snapshot().running,
+      });
       schedulerStatus = {
         ...resource,
         stages: budget.snapshot(),

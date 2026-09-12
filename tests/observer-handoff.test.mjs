@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { handoffTerminalObservers } from '../scripts/observer-handoff.mjs';
-import { queueObserverHandoff } from '../lib/observer-handoff.mjs';
+import {
+  queueObserverHandoff,
+  upgradeHandoffReady,
+} from '../lib/observer-handoff.mjs';
 import { DockerRuntime } from '../scripts/docker-runtime.mjs';
 import { saveJSON, readJSON } from '../scripts/self-heal-io.mjs';
 
@@ -122,5 +125,40 @@ test('resumed observer refuses a missing sent receipt before touching the sessio
   await assert.rejects(
     runtime.ensure({ id: 'task', turns: [turn] }, turn),
     /禁止重发/,
+  );
+});
+
+test('busy upgrades keep free slots open until every active job is a transferable observer', () => {
+  const state = {
+    active: 3,
+    recovering: 0,
+    generating: false,
+    finalizing: 0,
+    running: [{ kind: 'claude' }, { kind: 'codex' }, { kind: 'claude' }],
+  };
+  assert.equal(upgradeHandoffReady(true, state), false);
+  assert.equal(
+    upgradeHandoffReady(true, {
+      ...state,
+      active: 1,
+      running: [{ kind: 'codex' }],
+    }),
+    false,
+  );
+  const observers = {
+    ...state,
+    running: [{ kind: 'claude' }, { kind: 'claude' }, { kind: 'claude' }],
+  };
+  assert.equal(upgradeHandoffReady(true, observers), true);
+  assert.equal(upgradeHandoffReady(false, observers), false);
+  for (const busy of [
+    { recovering: 1 },
+    { generating: true },
+    { finalizing: 1 },
+  ])
+    assert.equal(upgradeHandoffReady(true, { ...observers, ...busy }), false);
+  assert.equal(
+    upgradeHandoffReady(true, { ...state, active: 0, running: [] }),
+    true,
   );
 });

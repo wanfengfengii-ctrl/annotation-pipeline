@@ -58,6 +58,22 @@ export async function adoptIdleRunner(root) {
     return;
   }
   if (pending.signaledIdentity === identity(pid)) return;
+  // New coordinators request a safe observer boundary without starving slots
+  // while an evaluator or generator is still running.
+  if (
+    data.runner?.scheduler?.upgradeRequested === false &&
+    runnerHasWork(data)
+  ) {
+    const oldRoot = ownedRunnerRoot(root, pid);
+    saveJSON(file, {
+      ...pending,
+      oldRoot,
+      signaledIdentity: identity(pid),
+      signaledAt: new Date().toISOString(),
+    });
+    process.kill(pid, 'SIGUSR2');
+    return;
+  }
   if (
     boundary?.protocol === '2026-09-12.boundaries1' &&
     boundary.pid === pid &&
