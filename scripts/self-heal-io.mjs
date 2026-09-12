@@ -52,6 +52,36 @@ export async function observe(root, previous = {}) {
     previous,
     progress,
   });
+  const external = readJSON(
+    path.join(root, '.runner/self-heal/external-events.json'),
+    {},
+  );
+  const uploads = Object.keys(external).length
+    ? readJSON(path.join(root, '.runner/solo-upload/ui-state.json'), {
+        entries: {},
+      }).entries
+    : {};
+  health.externalResolvedIds = [];
+  for (const [key, event] of Object.entries(external)) {
+    if (event.source !== 'solo-upload' || !Array.isArray(event.keys)) continue;
+    if (
+      event.keys.length &&
+      event.keys.every(
+        (k) => uploads[k]?.remoteId && uploads[k].receiptVerified === true,
+      )
+    )
+      health.externalResolvedIds.push(key);
+    else {
+      health.incidents.push({
+        id: 'external:' + key,
+        externalKey: key,
+        stage: 'upload',
+        state: 'open',
+        reason: event.reason,
+      });
+      health.needsAction = true;
+    }
+  }
   return { ...data, config: scheduler.config, health };
 }
 export async function guardedRetry(root, incident, action) {

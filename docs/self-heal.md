@@ -17,3 +17,5 @@
 运行记录在 `.runner/self-heal/state.json`，逐次诊断、补丁、测试日志、发布结果在 `.runner/self-heal/jobs/`，发布交接在 deploy.json。原生轨迹从不复制改写后冒充原件，也不随维护提交进入 Git。修复过程使用现有 Codex CLI 的[非交互执行与结构化输出](https://learn.chatgpt.com/docs/non-interactive-mode)。
 
 SOLO 浏览器上传仍由独立的上传定时任务负责，每天北京时间 08、10、12、14、16、18、20、22 点执行，现场确认登录，按原始 JSONL、查重、先标记再单次提交和真实回执规则完成。新后台进程不控制 SOLO 浏览器，不与上传者竞争。每日凌晨暂停上传，生产和后台自愈照常运行。
+
+上传者发现新的程序故障时，将 `{ "source": "solo-upload", "id": "批次或故障标识", "reason": "实际错误与私有诊断文件路径", "keys": ["taskId:turnId"] }` 保存为私有 JSON，运行 `node scripts/self-heal-event.mjs --report 文件路径`。后台据此启动诊断，不需要再等巡检。事件只接收数据，不执行其中的命令；对应全部记录在本地上传台账存在远端编号且 receiptVerified=true 后，才确认上传故障恢复。身份、原件与权限类拦截保留，不以程序故障名义放行。

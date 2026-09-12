@@ -111,6 +111,32 @@ function ready(s = snapshot()) {
   const first = reconcileSelfHeal(null, s, at);
   return reconcileSelfHeal(first, s, at + 61000);
 }
+test('upload faults stay open until verified receipts resolve the external event', () => {
+  const s = snapshot();
+  s.tasks = [];
+  s.health.incidents = [
+    {
+      id: 'external:solo-upload:batch',
+      externalKey: 'solo-upload:batch',
+      stage: 'upload',
+      state: 'open',
+      reason: 'attachment chooser failed',
+    },
+  ];
+  const state = ready(s),
+    id = Object.keys(state.incidents)[0];
+  s.health.needsAction = false;
+  s.health.incidents = [];
+  assert.notEqual(
+    reconcileSelfHeal(state, s, at + 120000).incidents[id].state,
+    'resolved',
+  );
+  s.health.externalResolvedIds = ['solo-upload:batch'];
+  assert.equal(
+    reconcileSelfHeal(state, s, at + 120000).incidents[id].state,
+    'resolved',
+  );
+});
 test('unchanged fault triggers once after confirmation, never on process heartbeat alone', () => {
   const s = snapshot(),
     a = reconcileSelfHeal(null, s, at);
