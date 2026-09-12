@@ -283,7 +283,7 @@ export function validateAllocation(stage, value, allocation) {
     );
   return value;
 }
-export function applyPreparationWording(base, patch) {
+export function applyPreparationWording(base, patch, stage = 'prepare') {
   if (
     !patch ||
     typeof patch !== 'object' ||
@@ -293,7 +293,7 @@ export function applyPreparationWording(base, patch) {
     !patch.prompt.trim()
   )
     throw Error('准备阶段表达修订只能返回 prompt 字段');
-  return validateStage('prepare', {
+  return validateStage(stage, {
     ...structuredClone(base),
     prompt: patch.prompt,
   });
@@ -378,7 +378,7 @@ async function runStage({
   let value;
   try {
     candidate = generationWordingBase
-      ? applyPreparationWording(generationWordingBase, rawCandidate)
+      ? applyPreparationWording(generationWordingBase, rawCandidate, 'generate')
       : preparationWordingBase
         ? applyPreparationWording(preparationWordingBase, rawCandidate)
         : runtimeBudgetBase

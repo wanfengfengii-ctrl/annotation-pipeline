@@ -192,3 +192,26 @@ test('AI ratings require delivery verification and retain provenance in export',
   assert.match(csv([t]), /不作为原项目人工标注/);
   assert.equal(review.attested, false);
 });
+
+test('generation wording preserves its generation schema without preparation-only acceptance', () => {
+  const base = {
+    title: '项目',
+    prompt: '原题',
+    category: '0-1 代码生成',
+    difficulty: '中等',
+    stack: 'JavaScript',
+  };
+  assert.deepEqual(
+    applyPreparationWording(base, { prompt: '修订后的题目' }, 'generate'),
+    { ...base, prompt: '修订后的题目' },
+  );
+  assert.throws(
+    () =>
+      applyPreparationWording(
+        base,
+        { prompt: 'x', category: 'Bug 修复' },
+        'generate',
+      ),
+    /只能返回 prompt/,
+  );
+});
