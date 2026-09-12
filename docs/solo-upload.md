@@ -59,7 +59,7 @@
 3. 对每条记录，先在我的提交通过原生 SessionID 和 TurnID/PromptID 核对有无远端记录。两者均一致才能认为同一条；打开详情核对全部字段和附件。已有记录保存回执并跳过，内容不一致则保留原记录并报告，不创建副本或自动覆盖。
 4. 如果本地状态为 submitting/uncertain，只查远端结果，不再次点击提交。没有明确结果时留在待核对状态。普通 prepared 记录且未找到远端匹配，才填写新表单。相同会话前序记录无法确认已提交时，暂停该会话后续记录，继续其他会话。
 5. 读取 packetPath 文件，照 fields 填写表单。User Prompt、五维分数和描述来自本地原始记录，不为了平台查重改写题目或评分。任务类型的 `feature迭代` 对应表单 `Feature迭代`。当前对话轮次排序是数值 1–10，Excel 的第一轮等显示不直接填到数字控件。填写后失焦并读取实际 value；该网站数字控件 fill 后可能显示空值，可使用可见增减按钮调整至目标数值，并再次确认。
-6. 轨迹文件只选 packet.attachment.path。CUA 先注册 filechooser 等待并捕获异常，再点击轨迹文件组内的可见选择轨迹文件按钮，使用 chooser.setFiles；隐藏 input 点击无法可靠打开选择器。等上传结束，检查附件名和大小。只使用当前 prepare 生成的原样 JSONL，不能手选主会话替代包含多个文件的完整导出，也不能手动换附件绕过旧批次摘要绑定。
+6. 轨迹文件只选 packet.attachment.path。在 CUA 中调用 `scripts/solo-browser-upload.mjs` 的 `attachSoloTrace({ tab, uploadButton, packet })`：tab 为当前 SOLO 标签页，uploadButton 为根据实际页面定位的单个可见轨迹选择按钮，packet 为本批刚刚核验的提交包。辅助函数先注册 filechooser 等待并捕获异常，再点击按钮，核对原件摘要后使用 chooser.setFiles。不要先点击再等待，也不要通过 Object.keys 或原型枚举判断代理式浏览器 API 是否存在；先读取 file-uploads 文档并使用其中的实际接口。隐藏 input 点击无法可靠打开选择器。函数返回 verification_required 仅表示文件选择调用完成，还要查看页面确认上传结束、附件名和大小正确且没有错误，不能据此记为已上传或直接跳过字段核对。文件选择异常时先检查页面状态，不自动重复点击；单条附件问题记入诊断后继续其他独立会话。只使用当前 prepare 生成的原样 JSONL，不能手选主会话替代包含多个文件的完整导出，也不能手动换附件绕过旧批次摘要绑定。
 7. 核对 23 个必填字段（若平台增减字段，重新按实际页面核对；未知必填字段停止本条，不能编造值）、全部输入、五维评分和附件。提交人、提交时间、质检结果、父记录、审核备注等管理字段由平台维护。项目名称和本地选择序号不提交。
 8. 最终点击前运行 `node scripts/solo-ui-queue.mjs --mark-sending TASK_ID:TURN_ID`；它重新确认当前准入、数据和附件未变，并先持久化 submitting。命令失败则不要点击。成功后只点击一次提交并质检。
 9. 等待提交回执，打开数据详情，核对平台记录编号、原生 ID、轮次、全部文本、分数和附件。保存私有 JSON 回执后运行 `node scripts/solo-ui-queue.mjs --receipt TASK_ID:TURN_ID RECEIPT_JSON_PATH`。回执格式见下节。网络中断或结果不明时保留 submitting，下次仅查询确认。

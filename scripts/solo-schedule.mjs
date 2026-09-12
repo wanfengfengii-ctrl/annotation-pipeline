@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { savePrivateJSON, SOLO_ORIGIN } from './solo-client.mjs';
 import { withSoloLock } from './solo-lock.mjs';
+import { uploadAllowed } from './solo-upload-window.mjs';
+export { uploadAllowed, assertUploadWindow } from './solo-upload-window.mjs';
 
 export const scheduleVersion = '2026-09-11.daytime-two-hour1';
 const uploadHours = Array.from({ length: 8 }, (_, i) =>
@@ -57,12 +59,6 @@ function shanghai(now) {
   );
 }
 const slotFor = (p, hour) => `${p.year}-${p.month}-${p.day}T${hour}:00+08:00`;
-export function uploadAllowed(now = new Date()) {
-  return Number(shanghai(now).hour) >= 8;
-}
-export function assertUploadWindow(now = new Date()) {
-  if (!uploadAllowed(now)) fail('UPLOAD_PAUSED_UNTIL_08_SHANGHAI');
-}
 export function uploadSlot(now = new Date()) {
   const p = shanghai(now);
   return uploadHours.includes(p.hour) && Number(p.minute) < 30
