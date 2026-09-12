@@ -13,6 +13,7 @@ import {
 } from '@/lib/question-history.mjs';
 import {
   projectRecoveryDue,
+  projectRecoveryReady,
   projectRecoveryVersion,
   projectQuotaComplete,
   replacementCategories,
@@ -459,6 +460,21 @@ export async function POST(req: Request) {
             r.traceExport?.verified &&
             r.permissionAudit?.passed,
         );
+      // A successful same-project replanning receipt appends a new, independent
+      // queued turn. It is neither a runtime retry nor a fresh auto-generated
+      // candidate, so claim it only after verifying the exact parent linkage.
+      const projectContinuation = (t: Task) => {
+        const next = t.turns.at(-1),
+          previous = t.turns.at(-2);
+        return !!(
+          next &&
+          previous &&
+          next.status === 'queued' &&
+          next.projectSource?.turnId === previous.id &&
+          projectRecoveryReady(previous) &&
+          previous.projectRecovery?.nextTurnId === next.id
+        );
+      };
       const unfinishedEstablished = tasks.filter(
         (t) =>
           t.projectSeries &&
@@ -471,6 +487,7 @@ export async function POST(req: Request) {
         .sort(
           (a, b) =>
             Number(validationRecovery(b)) - Number(validationRecovery(a)) ||
+            Number(projectContinuation(b)) - Number(projectContinuation(a)) ||
             Number(residents.includes(b.id)) - Number(residents.includes(a.id)),
         );
       for (const item of ordered) {
@@ -515,6 +532,7 @@ export async function POST(req: Request) {
               r.status === 'queued' &&
               runtimeRecoveryDue(r, Date.now(), recoveryRevision),
           ) ||
+          (projectContinuation(item) ? item.turns.at(-1) : undefined) ||
           (recoverProject || retryStage ? item.turns.at(-1) : undefined);
         if (!r) continue;
         if (retryStage)

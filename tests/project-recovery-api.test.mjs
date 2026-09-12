@@ -199,6 +199,13 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     2,
     'duplicate finish must not generate another question',
   );
+  const continuation = (await (await post({ action: 'claim', capacity: 3 })).json())
+    .job;
+  assert.equal(
+    continuation.turn.id,
+    next.id,
+    'a verified same-project continuation must be claimable',
+  );
 
   // A planner crash restores the original record; it never clears native IDs.
   const later = {
