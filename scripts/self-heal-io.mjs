@@ -24,7 +24,7 @@ export function saveJSON(file, value) {
 export async function localAPI(route, options = {}) {
   const response = await fetch('http://127.0.0.1:3000' + route, {
     ...options,
-    headers: { 'content-type': 'application/json' },
+    headers: { ...options.headers, 'content-type': 'application/json' },
     redirect: 'error',
     signal: AbortSignal.timeout(15000),
   });
@@ -39,7 +39,10 @@ export async function localAPI(route, options = {}) {
 }
 export async function observe(root, previous = {}) {
   const [data, scheduler] = await Promise.all([
-    localAPI('/api/tasks'),
+    localAPI('/api/operations/source').catch((e) => {
+      if (e.message.startsWith('本地接口 404:')) return localAPI('/api/tasks');
+      throw e;
+    }),
     localAPI('/api/scheduler'),
   ]);
   const progress = collectPatrolProgress(

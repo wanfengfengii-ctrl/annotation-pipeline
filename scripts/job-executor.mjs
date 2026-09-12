@@ -1,3 +1,5 @@
+export { FinalizationQueue } from './finalization-queue.mjs';
+export { createReplenisher } from './supply-worker.mjs';
 import { runtimeSettings } from './runtime-settings.mjs';
 import {
   loadProjectRuntimeSuite,

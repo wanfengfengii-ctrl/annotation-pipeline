@@ -29,6 +29,8 @@ import {
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
+// Keep production CLI settings out of the synthetic end-to-end fixture.
+os.homedir = () => path.join(process.env.FIXTURE_BIN, '..', 'home');
 runtimeBrowserCache.ensure = async ({ imageId, cacheRoot }) => {
   const root = path.join(cacheRoot, 'fixture-browser-tools');
   mkdirSync(root, { recursive: true });

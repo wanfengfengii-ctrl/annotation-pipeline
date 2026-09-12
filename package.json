@@ -17,7 +17,8 @@
     "context:check": "node scripts/context-check.mjs",
     "db:local": "node scripts/init-db.mjs",
     "setup:mac": "node scripts/setup-mac.mjs",
-    "check:mac": "node scripts/setup-mac.mjs --check"
+    "check:mac": "node scripts/setup-mac.mjs --check",
+    "check:recovery": "node --test tests/closed-loop.test.mjs tests/project-recovery-api.test.mjs tests/project-recovery.test.mjs tests/self-heal.test.mjs tests/recovery-files.test.mjs tests/job-api-release.test.mjs tests/throughput.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "1.7.0",

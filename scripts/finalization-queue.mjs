@@ -160,7 +160,13 @@ export class FinalizationQueue {
           const attempts =
             previous?.conditionsKey === after ? previous.attempts + 1 : 1;
           const waitForChange =
-            failureKind(error.message) !== 'transport' || attempts >= 2;
+            (failureKind(error.message) !== 'transport' &&
+              !(
+                this.runtime.load(task.id)?.status === 'removed' &&
+                this.runtime.load(task.id)?.traceExport?.verified &&
+                /原终端尚未确认最终完成/.test(error.message)
+              )) ||
+            attempts >= 2;
           this.failures[task.id] = {
             plan,
             conditionsKey: after,

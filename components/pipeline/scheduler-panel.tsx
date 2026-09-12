@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { defaultScheduler, type SchedulerConfig } from '@/lib/scheduler';
+import { OperationsPanel } from './operations-panel';
 export function SchedulerPanel({
   runner,
   local,
@@ -78,7 +79,8 @@ export function SchedulerPanel({
           阶段执行 {s.stages.running.length} / {s.stages.capacity} · 等待{' '}
           {s.stages.waiting.length} · 归档中 {s.finalizing || 0} · 候选题{' '}
           {s.queuedCandidates || 0} / {s.candidateBuffer || 2}。 Claude 最多 3
-          个，重型验收 1 个，Codex 准备与评分共用 1 个额度。
+          个，重型验收最多 {s.stages.limits?.heavy ?? 3} 个，Codex 阶段最多{' '}
+          {s.stages.limits?.codex ?? 3} 个，并受共享资源预算约束。
         </p>
       )}
       {s?.pilot?.status === 'pilot' && (
@@ -105,6 +107,7 @@ export function SchedulerPanel({
           模型服务出现连续错误，新会话正在退避；现有会话继续保留，恢复时先运行一个新任务核实。
         </p>
       )}
+      <OperationsPanel local={local} />
       <details className="scheduler-details">
         <summary>资源与流程详情</summary>
         <p className="sub">

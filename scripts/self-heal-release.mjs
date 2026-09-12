@@ -44,7 +44,25 @@ export async function adoptIdleRunner(root) {
     return;
   }
   if (pending.signaledIdentity === identity(pid)) return;
-  const data = await localAPI('/api/tasks');
+  const data = await localAPI('/api/operations/source').catch((error) => {
+    if (!error.message.startsWith('本地接口 404:')) throw error;
+    return localAPI('/api/tasks');
+  });
+  const boundary = readJSON(path.join(work, 'boundary-release.json'));
+  if (
+    boundary?.protocol === '2026-09-12.boundaries1' &&
+    boundary.pid === pid &&
+    boundary.pidIdentity === identity(pid) &&
+    boundary.finalization === current.commit &&
+    boundary.availableSupply === current.commit &&
+    pending.componentsCommit !== current.commit
+  ) {
+    Object.assign(pending, {
+      componentsAdoptedAt: new Date().toISOString(),
+      componentsCommit: current.commit,
+    });
+    saveJSON(file, pending);
+  }
   if (runnerHasWork(data) || data.runner?.scheduler?.draining) return;
   const oldRoot = ownedRunnerRoot(root, pid);
   saveJSON(file, {

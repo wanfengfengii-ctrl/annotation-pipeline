@@ -82,6 +82,7 @@ export function throughputReport({
         submitted,
         qcPassed,
         attempts: timings,
+        productionHistory: turn.productionHistory || null,
       });
     }
   return {
@@ -103,13 +104,45 @@ export function throughputReport({
       ),
     })),
     records,
+    flow: {
+      firstDeliveries24h: records.reduce(
+        (n, r) =>
+          n +
+          (r.productionHistory?.events || []).filter(
+            (e) =>
+              e.kind === 'first-delivery' &&
+              Date.parse(now) - Date.parse(e.at) >= 0 &&
+              Date.parse(now) - Date.parse(e.at) < 86400000,
+          ).length,
+        0,
+      ),
+      revalidations24h: records.reduce(
+        (n, r) =>
+          n +
+          (r.productionHistory?.events || []).filter(
+            (e) =>
+              e.kind === 'revalidation' &&
+              Date.parse(now) - Date.parse(e.at) >= 0 &&
+              Date.parse(now) - Date.parse(e.at) < 86400000,
+          ).length,
+        0,
+      ),
+      historicalWithoutTimeline: records.filter(
+        (r) => r.scored && !r.productionHistory,
+      ).length,
+      note: '新增和返修按实际交付事件统计；旧记录缺少首次交付历史时不推算为新产出。',
+    },
   };
 }
 
 export async function saveThroughputReport({ base, workRoot }) {
-  const response = await fetch(base + '/api/tasks', {
+  let response = await fetch(base + '/api/operations/source', {
     signal: AbortSignal.timeout(10000),
   });
+  if (response.status === 404)
+    response = await fetch(base + '/api/tasks', {
+      signal: AbortSignal.timeout(10000),
+    });
   if (!response.ok) throw Error('读取产量指标失败');
   const tasks = (await response.json()).tasks;
   const ledgerPath = path.join(workRoot, 'solo-upload/ui-state.json');
@@ -130,6 +163,7 @@ export async function saveThroughputReport({ base, workRoot }) {
   const summary = {
     observedAt: report.observedAt,
     counts: report.counts,
+    flow: report.flow,
     attempts: report.attempts,
     missingTiming: report.missingTiming,
     observationHours: Math.max(0, hours),

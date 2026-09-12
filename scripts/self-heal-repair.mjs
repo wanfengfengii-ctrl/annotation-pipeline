@@ -187,6 +187,10 @@ export async function repairJob(jobFile) {
       'tests/project-recovery.test.mjs',
       'tests/recovery-files.test.mjs',
       'tests/solo-schedule.test.mjs',
+      'tests/closed-loop.test.mjs',
+      'tests/project-recovery-api.test.mjs',
+      'tests/job-api-release.test.mjs',
+      'tests/throughput.test.mjs',
     ].filter((p) => fs.existsSync(path.join(tree, p)));
     if (
       (await runCheck(

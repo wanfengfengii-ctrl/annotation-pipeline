@@ -844,3 +844,114 @@ fieldset.record-filters {
   background: #fff1cd;
   color: #795214;
 }
+/* Keep operational state readable alongside the existing scheduler controls. */
+.operations-panel {
+  margin: 1.5rem 0;
+  padding: 1.25rem;
+  border: 1px solid #d6dfe9;
+  border-radius: 12px;
+  background: #fff;
+}
+.operations-panel h3 {
+  font-size: 1.15rem;
+  margin: 0;
+}
+.operations-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1rem 0;
+}
+.operations-metrics > div {
+  padding: 1rem;
+  border: 1px solid #dfe5ee;
+  border-radius: 8px;
+  background: #f7f9fc;
+}
+.operations-metrics span {
+  display: block;
+  font-size: 0.875rem;
+  color: #45556c;
+}
+.operations-metrics strong {
+  display: block;
+  font-size: 1.6rem;
+  margin-top: 0.4rem;
+  color: #1b304e;
+}
+.operations-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+.operations-filters label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.875rem;
+}
+.operations-filters select {
+  min-height: 2.5rem;
+  max-width: 24rem;
+  padding: 0.4rem;
+  border: 1px solid #bac7d7;
+  border-radius: 6px;
+  background: white;
+}
+.operations-table {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.operations-table table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 900px;
+  font-size: 0.875rem;
+}
+.operations-table th,
+.operations-table td {
+  padding: 0.8rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid #dfe5ee;
+}
+.operations-table th {
+  background: #f1f5fa;
+  color: #35445b;
+  white-space: nowrap;
+}
+.operations-table td:first-child {
+  min-width: 10rem;
+}
+.operations-table td:last-child {
+  min-width: 21rem;
+  max-width: 32rem;
+  overflow-wrap: anywhere;
+}
+.operations-table p {
+  margin: 0 0 0.4rem;
+  line-height: 1.6;
+}
+.operations-panel .tag[data-tone='warning'] {
+  background: #fff0d5;
+  color: #814000;
+}
+.operations-repairs {
+  padding-left: 1.3rem;
+  font-size: 0.875rem;
+}
+.operations-repairs li {
+  margin: 0.8rem 0;
+}
+@media (max-width: 700px) {
+  .operations-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .operations-panel {
+    padding: 0.75rem;
+  }
+  .operations-filters select {
+    max-width: 100%;
+  }
+}

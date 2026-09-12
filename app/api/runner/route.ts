@@ -1,3 +1,5 @@
+import { recordDeliveryHistory } from '@/lib/production-history.mjs';
+import { validateOperations } from '@/lib/operations-status.mjs';
 import {
   retryBudgets,
   retryPolicyVersion,
@@ -284,6 +286,16 @@ export async function POST(req: Request) {
           }),
           new Date().toISOString(),
         )
+        .run();
+      return Response.json({ ok: true });
+    }
+    if (b.action === 'operations') {
+      const value = validateOperations(b.value);
+      await db()
+        .prepare(
+          "INSERT INTO runners(id,data,heartbeat) VALUES('operations',?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,heartbeat=excluded.heartbeat",
+        )
+        .bind(JSON.stringify(value), new Date().toISOString())
         .run();
       return Response.json({ ok: true });
     }
@@ -866,6 +878,7 @@ export async function POST(req: Request) {
           r.permissionAudit = b.permissionAudit;
         }
       }
+      r.productionHistory = recordDeliveryHistory(r, b);
       r.status = b.success ? 'review' : 'failed';
       if (r.stageRecovery?.retrying)
         r.stageRecovery = {

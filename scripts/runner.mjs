@@ -1,8 +1,4 @@
-import {
-  supplyFailure,
-  supplyCredentialsRevision,
-  wordingRepairAllowed,
-} from './supply-recovery.mjs';
+import { supplyCredentialsRevision } from './supply-recovery.mjs';
 import { PilotGate } from './pilot-gate.mjs';
 import { saveThroughputReport } from './throughput-report.mjs';
 import * as defaultExecutor from './job-executor.mjs';
@@ -15,10 +11,7 @@ import { checkpointVersion } from './stage-checkpoint.mjs';
 
 import { createRunnerApi } from './runner-api.mjs';
 
-import { seriesVersion } from '../lib/project-series.mjs';
 import { workflow } from '../lib/workflow.mjs';
-
-import { questionRules } from '../lib/question-writing.mjs';
 
 import { DockerRuntime } from './docker-runtime.mjs';
 
@@ -31,18 +24,17 @@ import {
   queueFinalSubmission,
   flushFinalSubmissions,
 } from './final-submissions.mjs';
-import { acquireLock, livingChildren, recoveryFiles } from './recovery.mjs';
 import {
-  rules,
-  policyInstructions,
-  candidateDigest,
-  assertPolicyAudit,
-} from '../lib/task-policy.mjs';
+  acquireLock,
+  livingChildren,
+  recoveryFiles,
+  identity,
+} from './recovery.mjs';
+import { rules } from '../lib/task-policy.mjs';
 import { githubStatus } from './github-snapshot.mjs';
 import { InitialCodePublisher } from './initial-code-snapshot.mjs';
 import {
   resources,
-  fingerprint,
   supplyDecision,
   createLoadAdmission,
   readConcurrencyMode,
@@ -50,7 +42,9 @@ import {
   heavyMemoryBudget,
   projectCapacityWithVerifier,
 } from './scheduler.mjs';
-import { codexStage as runCodexStage } from './codex-stages.mjs';
+import { createReplenisher } from './supply-worker.mjs';
+import { BoundaryFinalizer } from './boundary-finalizer.mjs';
+import { saveJSON } from './self-heal-io.mjs';
 
 import { runtimeVersion } from '../lib/runtime-verification.mjs';
 import { execFileSync } from 'node:child_process';
@@ -63,7 +57,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { randomUUID, createHash } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const token =
@@ -207,13 +201,45 @@ const execute = async (job) => {
     if (jobContainers !== containers) jobContainers.detach();
   }
 };
-const finalizations = new FinalizationQueue({
-  runtime: containers,
+const boundaryState = {
+  protocol: '2026-09-12.boundaries1',
+  pid: process.pid,
+  pidIdentity: identity(process.pid),
+  coordinator: root,
+};
+const saveBoundaryState = () =>
+  saveJSON(path.join(workRoot, 'boundary-release.json'), {
+    ...boundaryState,
+    checkedAt: new Date().toISOString(),
+  });
+const finalizations = new BoundaryFinalizer({
+  load: () => loadJobRelease(workRoot, { root, module: defaultExecutor }),
+  create: (selected) => {
+    const runtime = (
+      selected.module.createJobRuntime || defaultExecutor.createJobRuntime
+    )(
+      workRoot,
+      (container) =>
+        api({ action: 'container', taskId: container.taskId, container }),
+      () => stopping,
+      undefined,
+      undefined,
+      (state) => queueFinalSubmission(workRoot, state),
+    );
+    const Queue = selected.module.FinalizationQueue || FinalizationQueue;
+    return new Queue({ ...finalizationOptions, runtime });
+  },
+  adopted: (selected) => {
+    boundaryState.finalization = selected.commit || selected.root;
+    saveBoundaryState();
+  },
+});
+const finalizationOptions = {
   refresh: async () =>
     (await api({ action: 'supply-context' })).containerTasks || [],
   onError: (error) => console.error('会话归档待重试：' + error.reason),
   onComplete: (taskId, state) => pilot.finalized(taskId, state),
-});
+};
 async function deliver(result, receipt) {
   await api(result);
   if (result.success === false) wakeSelfHeal(workRoot);
@@ -322,155 +348,24 @@ try {
     );
   }
   async function replenish(context) {
-    const codexStage = (options) =>
-      budget.run('codex', 'supply', options.stage, () =>
-        runCodexStage(options),
-      );
-    try {
-      // Reuse an undelivered generation across a network failure or restart.
-      let payload = supplyState.pending;
-      if (!payload) {
-        let draft = supplyState.draft;
-        if (!draft) {
-          const index = (supplyState.cursor || 0) % context.repos.length;
-          const repoPath = context.repos[index];
-          const projectSeries = {
-            version: seriesVersion,
-            directory: 'projects/p-' + randomUUID(),
-          };
-          const history = context.history.slice(0, 200);
-          draft = {
-            repoPath,
-            projectSeries,
-            history,
-            requestId: randomUUID(),
-            prompt: `Codex 负责先生成通用项目骨架，再设计该项目首个全新功能，Claude 在可见终端中实现该功能。首题 category 必须为 0-1 代码生成。只读分析当前仓库，仅将其作为出题参考，Claude 在新容器 /workspace 中已准备好的最小骨架上工作，容器不可访问参考仓库。在相对目录 ${projectSeries.directory} 的项目骨架内设计此前不存在的全新功能，不修改该目录外业务。完整首题描述能运行的全新功能及用户操作，正文不包含浏览器验收或编排步骤，后续在同项目继续出全新功能、Feature 迭代、真实 Bug 修复、理解和重构题，目标比例 7:7:10:1:1；0-1 与 Feature 各最多十题。出题范围：${context.config.scope}\n今日已完成及排队题型分布：${JSON.stringify(context.mix)}。新项目首题始终为 0-1；类型分布在同项目的后续题中调节。\n${policyInstructions()}\n不要重复或改写已有题目：${JSON.stringify(history)}\n禁止依赖其他自动任务的改动。不要提出需要外部付费、发布、推送或外部消息的任务。不执行此任务，只返回具体任务目标和验收要求。title 使用简洁项目名称，最多 200 字；prompt 从项目名称开始，不加编号，正文按内容自然分段，按真实需求决定篇幅；stack 最多 300 字，只记录适合业务的建议，不把实现偏好强加为题目限制。`,
-          };
-          supplyState.cursor = index + 1;
-          supplyState.draft = draft;
-          saveSupply();
-        }
-        const { repoPath, projectSeries } = draft;
-        const history = context.history.slice(0, 200);
-        if (!draft.generated) {
-          draft.generated = await codexStage({
-            stage: 'generate',
-            cwd: repoPath,
-            dir: supplyDir,
-            turnId: draft.requestId,
-            onChild: track,
-            prompt: draft.prompt,
-          });
-          saveSupply();
-        }
-        const generated = draft.generated;
-        const rejectDraft = (message) => {
-          supplyState.rejectedDrafts = [
-            ...(supplyState.rejectedDrafts || []),
-            { ...draft, reason: message },
-          ].slice(-20);
-          delete supplyState.draft;
-          saveSupply();
-          throw Error(message);
-        };
-        if (generated.value.category !== '0-1 代码生成')
-          rejectDraft('自动新项目首题必须是 0-1 代码生成');
-        if (existsSync(path.join(repoPath, projectSeries.directory)))
-          rejectDraft('新项目目标目录已存在');
-        if (
-          history.some(
-            (t) =>
-              fingerprint(repoPath, t.title) ===
-              fingerprint(repoPath, generated.value.title),
-          )
-        )
-          rejectDraft('Codex 生成了重复标题');
-        if (draft.wordingRepair && !draft.wordingRepair.result) {
-          draft.wordingRepair.result = await codexStage({
-            stage: 'generate',
-            cwd: repoPath,
-            dir: supplyDir,
-            turnId: draft.requestId + '.wording',
-            onChild: track,
-            generationWordingBase: generated.value,
-            prompt:
-              '仅修订下列题目的口语表达和格式，保留原业务对象、主要功能和验收范围，不能削弱难度或换题。只返回 prompt，其他字段由系统冻结。\n' +
-              JSON.stringify({
-                original: generated.value,
-                feedback: draft.wordingRepair.feedback,
-              }),
-          });
-          saveSupply();
-        }
-        const candidate = draft.wordingRepair?.result || generated;
-        payload = {
-          action: 'enqueue-auto',
-          projectSeries,
-          repoPath,
-          ...candidate.value,
-          tracePath: candidate.tracePath,
-          fingerprint: fingerprint(repoPath, candidate.value.prompt),
-        };
-        const auditPrompt = `${policyInstructions()}\n这是首轮自动新任务，没有后续简单修复例外。独立审核候选题：${JSON.stringify(candidate.value)}\n全仓库最近历史：${JSON.stringify(history)}\n逐类检查并在 checkedGroups 返回所有组 ID。只有核心功能不落入禁出范围、无实质雷同且难度合格时 allowed=true。matchedRuleIds 和 duplicateTaskIds 必须与结论一致；reason 给出依据。${draft.wordingRepair ? '\n此外核对修订前后的主要业务目标、功能和验收范围未减少：' + JSON.stringify(generated.value) : ''}`;
-        const audit = await codexStage({
-          stage: 'policy',
-          cwd: repoPath,
-          dir: supplyDir,
-          turnId: draft.requestId + (draft.wordingRepair ? '.repaired' : ''),
-          onChild: track,
-          prompt: auditPrompt,
-        });
-        audit.proposedDifficulty = payload.difficulty;
-        payload.difficulty = audit.value.assessedDifficulty;
-        audit.ruleVersion = rules.version;
-        audit.questionRuleVersion = questionRules.version;
-        audit.candidateDigest = await candidateDigest(payload);
-        supplyState.lastAudit = audit;
-        try {
-          assertPolicyAudit(audit, audit.candidateDigest, {
-            requireQuestionStyle: true,
-          });
-        } catch (error) {
-          if (wordingRepairAllowed(audit, draft)) {
-            draft.wordingRepair = { feedback: audit.value.reason };
-            saveSupply();
-            return replenish(context);
-          }
-          rejectDraft(error.message);
-        }
-        payload.policyAudit = audit;
-        supplyState.pending = payload;
-        saveSupply();
-      }
-      if (stopping) return;
-      if (
-        payload.policyAudit?.ruleVersion !== rules.version ||
-        payload.policyAudit?.questionRuleVersion !== questionRules.version ||
-        payload.projectSeries?.version !== seriesVersion
-      ) {
-        delete supplyState.pending;
-        delete supplyState.draft;
-        saveSupply();
-        throw Error('出题规则已更新，将重新生成并审核');
-      }
-      const res = await api(payload);
-      delete supplyState.pending;
-      delete supplyState.draft;
-      delete supplyState.failure;
-      delete supplyState.authPause;
-      supplyState.failures = 0;
-      supplyState.lastError = '';
-      supplyState.nextAt = Date.now() + 60000;
-      supplyState.lastResult =
-        res.skipped ||
-        (res.duplicate ? '重复任务已跳过' : '已自动补充一个任务');
-      saveSupply();
-    } catch (e) {
-      supplyFailure(supplyState, e);
-      saveSupply();
-      console.error('自动补充失败：' + e.message);
-    }
+    const selected = await loadJobRelease(workRoot, {
+      root,
+      module: defaultExecutor,
+    });
+    const factory = selected.module.createReplenisher || createReplenisher;
+    boundaryState.supply = selected.commit || root;
+    saveBoundaryState();
+    return factory({
+      budget,
+      supplyState,
+      saveSupply,
+      supplyDir,
+      track,
+      api,
+      isStopping: () => stopping,
+    })(context);
   }
+
   while (!stopping) {
     try {
       if (orphans.length) await recoverOrphans();
@@ -497,6 +392,11 @@ try {
         githubChecked = Date.now();
       }
       providerHealth.reconcile(context.runningTaskIds);
+      await finalizations.adopt();
+      if (finalizations.selected?.module.createReplenisher) {
+        boundaryState.availableSupply = finalizations.revision;
+        saveBoundaryState();
+      }
       finalizations.enqueue(
         context.containerTasks || [],
         new Set(active.keys()),
@@ -681,5 +581,6 @@ try {
   ]);
 } finally {
   clearInterval(heartbeat);
+  finalizations.detach();
   containers.detach();
 }

@@ -15,6 +15,8 @@ import {
   isExternalBlock,
 } from '../lib/self-heal.mjs';
 import { createWakeSignal, wakeProtocol } from './self-heal-wakeup.mjs';
+import { knownRecovery, knownRecoveryDue } from './known-recovery.mjs';
+import { reportOperations } from './report-operations.mjs';
 import {
   readJSON,
   saveJSON,
@@ -237,106 +239,137 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
           i.state = 'needs_input';
         }
       } else {
-        const id = randomUUID(),
-          jobDir = path.join(dir, 'jobs', id),
-          jobFile = path.join(jobDir, 'job.json');
-        const task = snapshot.tasks.find((t) => t.id === i.taskId),
-          turn = task?.turns.find((r) => r.id === i.turnId);
-        let nativeDiagnosis;
+        let fixed;
         try {
-          nativeDiagnosis = collectNativeDiagnosis(root, task, turn);
+          fixed = knownRecovery(root, i, snapshot);
         } catch (e) {
-          nativeDiagnosis = { error: e.message };
+          i.fixedRecoveryError = e.message;
         }
-        if (turn?.stage === 'claude')
-          i.nativeEvidenceVersion = nativeDiagnosisVersion;
-        const context = {
-          mode: next.mode,
-          previousDiagnoses: state.jobs
-            .filter((j) => j.signature === i.signature && j.state !== 'running')
-            .slice(-2)
-            .map((j) => ({
-              id: j.id,
-              state: j.state,
-              reason: j.reason,
-              directory: path.join(dir, 'jobs', j.id),
-            })),
-          availableRecoveryAction: recoveryAction(task, turn),
-          nativeDiagnosis,
-          incident: i,
-          health: {
-            active: snapshot.health.active,
-            effective: snapshot.health.effective,
-            status: snapshot.health.status,
-          },
-          task: task
-            ? {
-                id: task.id,
-                title: task.title,
-                revision: task.revision,
-                turns: task.turns.map((r) => ({
-                  id: r.id,
-                  status: r.status,
-                  stage: r.stage,
-                  error: r.error,
-                  executionOutcome: r.executionOutcome,
-                  projectRecovery: r.projectRecovery
+        if (knownRecoveryDue(i, fixed)) {
+          const entry = {
+            ...fixed,
+            conditionsKey: i.conditionsKey,
+            at: new Date().toISOString(),
+            state: 'intent',
+          };
+          (i.fixedRecoveries ||= []).push(entry);
+          save(); // An uncertain request must not be resent after a restart.
+          try {
+            entry.result = await guardedRetry(root, i, fixed.action);
+            entry.state = entry.result.state;
+            i.state = entry.state === 'queued' ? 'verifying' : 'ready';
+            i.result = fixed.reason;
+            i.repairedAt = entry.at;
+          } catch (e) {
+            entry.state = 'uncertain';
+            entry.reason = e.message;
+            i.state = 'needs_input';
+            i.result = '恢复请求的回执不确定，保留现场核对：' + e.message;
+          }
+        } else {
+          const id = randomUUID(),
+            jobDir = path.join(dir, 'jobs', id),
+            jobFile = path.join(jobDir, 'job.json');
+          const task = snapshot.tasks.find((t) => t.id === i.taskId),
+            turn = task?.turns.find((r) => r.id === i.turnId);
+          let nativeDiagnosis;
+          try {
+            nativeDiagnosis = collectNativeDiagnosis(root, task, turn);
+          } catch (e) {
+            nativeDiagnosis = { error: e.message };
+          }
+          if (turn?.stage === 'claude')
+            i.nativeEvidenceVersion = nativeDiagnosisVersion;
+          const context = {
+            mode: next.mode,
+            previousDiagnoses: state.jobs
+              .filter(
+                (j) => j.signature === i.signature && j.state !== 'running',
+              )
+              .slice(-2)
+              .map((j) => ({
+                id: j.id,
+                state: j.state,
+                reason: j.reason,
+                directory: path.join(dir, 'jobs', j.id),
+              })),
+            availableRecoveryAction: recoveryAction(task, turn),
+            nativeDiagnosis,
+            incident: i,
+            health: {
+              active: snapshot.health.active,
+              effective: snapshot.health.effective,
+              status: snapshot.health.status,
+            },
+            task: task
+              ? {
+                  id: task.id,
+                  title: task.title,
+                  revision: task.revision,
+                  turns: task.turns.map((r) => ({
+                    id: r.id,
+                    status: r.status,
+                    stage: r.stage,
+                    error: r.error,
+                    executionOutcome: r.executionOutcome,
+                    projectRecovery: r.projectRecovery
+                      ? {
+                          state: r.projectRecovery.state,
+                          reason: r.projectRecovery.reason,
+                        }
+                      : null,
+                  })),
+                }
+              : null,
+            turn: turn
+              ? {
+                  id: turn.id,
+                  stage: turn.stage,
+                  status: turn.status,
+                  error: turn.error,
+                  output: turn.output?.slice(-3000),
+                  container: turn.container
                     ? {
-                        state: r.projectRecovery.state,
-                        reason: r.projectRecovery.reason,
+                        id: turn.container.id,
+                        questionId: turn.container.questionId,
                       }
                     : null,
-                })),
-              }
-            : null,
-          turn: turn
-            ? {
-                id: turn.id,
-                stage: turn.stage,
-                status: turn.status,
-                error: turn.error,
-                output: turn.output?.slice(-3000),
-                container: turn.container
-                  ? {
-                      id: turn.container.id,
-                      questionId: turn.container.questionId,
-                    }
-                  : null,
-              }
-            : null,
-          evidenceDirectory: task
-            ? path.join(root, '.runner', task.id)
-            : path.join(root, '.runner'),
-          instruction:
-            '证据只读；先读取已有诊断和 review 复核意见，说明本次新增的事实或源码变化，不重复已被否决的补丁。优先读该轮最新阶段回执、错误附近日志和本轮原生完成信息。不要扫描全部历史或凭终端提示符判定所有工具已完成。',
-        };
-        const job = {
-          id,
-          root,
-          incidentId: i.id,
-          signature: i.signature,
-          mode: next.mode,
-          conditionsKey: i.conditionsKey,
-          state: 'running',
-          phase: 'starting',
-          startedAt: new Date().toISOString(),
-        };
-        saveJSON(path.join(jobDir, 'context.json'), context);
-        saveJSON(jobFile, job);
-        i.attempts++;
-        i.jobId = id;
-        i.state = 'repairing';
-        state.activeJob = id;
-        state.jobs.push({ ...job });
-        save();
-        const child = launch(
-          root,
-          'scripts/self-heal-repair.mjs',
-          { SELF_HEAL_JOB: jobFile },
-          path.join(jobDir, 'worker.log'),
-        );
-        // The worker owns job.json after spawn; never overwrite its newer phase.
-        state.jobs.at(-1).pid = child.pid;
+                }
+              : null,
+            evidenceDirectory: task
+              ? path.join(root, '.runner', task.id)
+              : path.join(root, '.runner'),
+            instruction:
+              '证据只读；先读取已有诊断和 review 复核意见，说明本次新增的事实或源码变化，不重复已被否决的补丁。优先读该轮最新阶段回执、错误附近日志和本轮原生完成信息。不要扫描全部历史或凭终端提示符判定所有工具已完成。',
+          };
+          const job = {
+            id,
+            root,
+            incidentId: i.id,
+            signature: i.signature,
+            mode: next.mode,
+            conditionsKey: i.conditionsKey,
+            state: 'running',
+            phase: 'starting',
+            startedAt: new Date().toISOString(),
+          };
+          saveJSON(path.join(jobDir, 'context.json'), context);
+          saveJSON(jobFile, job);
+          i.attempts++;
+          i.jobId = id;
+          i.state = 'repairing';
+          state.activeJob = id;
+          state.jobs.push({ ...job });
+          save();
+          const child = launch(
+            root,
+            'scripts/self-heal-repair.mjs',
+            { SELF_HEAL_JOB: jobFile },
+            path.join(jobDir, 'worker.log'),
+          );
+          // The worker owns job.json after spawn; never overwrite its newer phase.
+          state.jobs.at(-1).pid = child.pid;
+        }
       }
     }
   }
@@ -419,6 +452,14 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
   }
   state.pid = process.pid;
   state.pidIdentity = identity(process.pid);
+  if (act) {
+    try {
+      await reportOperations(root, state, snapshot, config);
+      delete state.operationsError;
+    } catch (e) {
+      state.operationsError = e.message;
+    }
+  }
   save();
   return {
     version: state.version,

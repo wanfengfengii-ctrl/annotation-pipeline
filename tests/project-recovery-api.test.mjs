@@ -17,6 +17,7 @@ import {
   dockerSnapshot,
 } from '../lib/container-policy.mjs';
 import { permissionAuditVersion } from '../lib/permission-audit.mjs';
+import { operationsVersion } from '../lib/operations-status.mjs';
 
 test('real claim/finish routes reserve one recovery and append one audited independent question without altering the old record', async (t) => {
   const tmp = mkdtempSync(path.join(os.tmpdir(), 'project-recovery-api-'));
@@ -43,7 +44,7 @@ test('real claim/finish routes reserve one recovery and append one audited indep
     out = path.join(tmp, 'api.mjs');
   await build({
     stdin: {
-      contents: `export { POST } from './app/api/runner/route.ts'; export { PATCH } from './app/api/tasks/[id]/route.ts';`,
+      contents: `export { POST } from './app/api/runner/route.ts'; export { PATCH } from './app/api/tasks/[id]/route.ts'; export {GET as operations} from './app/api/operations/route.ts'; export {GET as source} from './app/api/operations/source/route.ts';`,
       resolveDir: repo,
       loader: 'ts',
     },
@@ -199,8 +200,9 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     2,
     'duplicate finish must not generate another question',
   );
-  const continuation = (await (await post({ action: 'claim', capacity: 3 })).json())
-    .job;
+  const continuation = (
+    await (await post({ action: 'claim', capacity: 3 })).json()
+  ).job;
   assert.equal(
     continuation.turn.id,
     next.id,
@@ -967,5 +969,90 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     (await (await post({ action: 'claim', capacity: 3 })).json()).job,
     null,
     'an old queued new project cannot bypass existing unfinished project slots',
+  );
+  const report = {
+    version: operationsVersion,
+    checkedAt: new Date().toISOString(),
+    projects: [{ taskId: 'project', status: 'repairing', next: '等待验证' }],
+  };
+  assert.equal(
+    (await post({ action: 'operations', value: report })).status,
+    200,
+  );
+  assert.deepEqual(
+    (await (await routes.operations()).json()).operations,
+    report,
+  );
+  assert.equal(
+    (
+      await post({
+        action: 'operations',
+        value: { ...report, checkedAt: 'bad' },
+      })
+    ).status,
+    400,
+  );
+  const statsTask = {
+    ...task,
+    id: 'statistics',
+    closed: true,
+    turns: [
+      {
+        id: 'stat-turn',
+        status: 'running',
+        stage: 'delivery',
+        jobToken: 'stat-job',
+        prompt: '原题',
+        questionRootId: 'stat-turn',
+      },
+    ],
+  };
+  db.prepare('INSERT INTO tasks(id,data,created_at) VALUES(?,?,?)').run(
+    statsTask.id,
+    serializeTask(statsTask),
+    '2026-09-12',
+  );
+  const result = {
+    action: 'finish',
+    taskId: statsTask.id,
+    turnId: 'stat-turn',
+    jobToken: 'stat-job',
+    success: true,
+    automation: { delivery: { value: { passed: true } } },
+  };
+  assert.equal((await post(result)).status, 200);
+  assert.equal((await post(result)).status, 200); // lost HTTP acknowledgement
+  let savedStats = parseTask(
+    db.prepare('SELECT data FROM tasks WHERE id=?').get('statistics').data,
+  );
+  assert.deepEqual(
+    savedStats.turns[0].productionHistory.events.map((e) => e.kind),
+    ['first-delivery'],
+  );
+  Object.assign(savedStats.turns[0], {
+    status: 'running',
+    jobToken: 'revalidation-job',
+  });
+  db.prepare('UPDATE tasks SET data=? WHERE id=?').run(
+    serializeTask(savedStats),
+    'statistics',
+  );
+  assert.equal(
+    (await post({ ...result, jobToken: 'revalidation-job' })).status,
+    200,
+  );
+  savedStats = parseTask(
+    db.prepare('SELECT data FROM tasks WHERE id=?').get('statistics').data,
+  );
+  assert.deepEqual(
+    savedStats.turns[0].productionHistory.events.map((e) => e.kind),
+    ['first-delivery', 'revalidation'],
+  );
+  assert.equal(savedStats.turns[0].productionHistory.revalidationCount, 1);
+  const compact = (await (await routes.source()).json()).tasks;
+  assert.ok(
+    compact.every((t) =>
+      t.turns.every((r) => r.jobToken === undefined && r.prompt === undefined),
+    ),
   );
 });

@@ -22,6 +22,7 @@ import {
   wasSent,
   replacementCategories,
   closedRepairDraft,
+  archivedPredecessor,
 } from '../lib/project-recovery.mjs';
 import {
   seriesPrompt,
@@ -368,10 +369,11 @@ export async function planFailedProject({
   };
   try {
     const state = containers.load(task.id);
+    const predecessor = archivedPredecessor(task, original, state);
     if (
       !state ||
       state.taskId !== task.id ||
-      state.questionId !== questionRoot(task, turn)
+      (state.questionId !== questionRoot(task, turn) && !predecessor)
     )
       throw Error('当前项目容器身份不符，不能自动重出题');
     const checkIdle = () => {
@@ -404,7 +406,7 @@ export async function planFailedProject({
             .filter(Boolean),
         );
         if (
-          !archivedRepair ||
+          (!archivedRepair && !predecessor) ||
           idle.completedPromptIds.some((id) => !known.has(id))
         )
           throw Error('声称未发送的草稿存在真实原生输入');
@@ -425,7 +427,11 @@ export async function planFailedProject({
     });
     // Release the old question's resources, not the project. Its original Mac
     // Terminal performs export and cleanup, under the runner's existing lock.
-    if (state.status !== 'removed') {
+    if (
+      state.status !== 'removed' ||
+      state.terminalFinalization?.runId !== state.terminal?.runId ||
+      !state.terminalFinalization?.completedAt
+    ) {
       if (state.terminal?.terminalProtocolVersion !== terminalProtocolVersion)
         throw Error('旧终端协议需保留原容器，项目继续保留，不自动改成后台导出');
       await containers.close(task.id, {

@@ -108,6 +108,15 @@ export type Review = {
   artifactFindings?: string;
 };
 export type Turn = {
+  productionHistory?: {
+    version: string;
+    firstObservedAt: string;
+    firstDeliveredAt: string | null;
+    historicalBaseline: boolean;
+    revalidationCount: number;
+    lastDeliveredAt: string;
+    events: { at: string; kind: string }[];
+  };
   reproducibility?: string;
   sessionFinished?: boolean;
   questionRootId?: string;
