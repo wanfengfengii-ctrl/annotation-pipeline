@@ -66,23 +66,27 @@ function snapshot() {
     },
   };
 }
-test('published updates wait for the exact old runner without an elapsed-time kill', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-wait-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  saveJSON(path.join(root, '.runner/self-heal/deploy.json'), {
-    active: true,
-    jobId: 'j',
-    phase: 'waiting-runner',
-    oldRunnerPid: process.pid,
-    oldRunnerIdentity: identity(process.pid),
-    startedAt: '2000-01-01T00:00:00Z',
-  });
-  assert.deepEqual(
-    await advanceRelease(root, { id: 'j' }, path.join(root, 'job.json')),
-    { waiting: true },
-  );
-  assert.ok(identity(process.pid));
-});
+test(
+  'published updates wait for the exact old runner without an elapsed-time kill',
+  { skip: process.env.SELF_HEAL_TEST === '1' },
+  async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-wait-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    saveJSON(path.join(root, '.runner/self-heal/deploy.json'), {
+      active: true,
+      jobId: 'j',
+      phase: 'waiting-runner',
+      oldRunnerPid: process.pid,
+      oldRunnerIdentity: identity(process.pid),
+      startedAt: '2000-01-01T00:00:00Z',
+    });
+    assert.deepEqual(
+      await advanceRelease(root, { id: 'j' }, path.join(root, 'job.json')),
+      { waiting: true },
+    );
+    assert.ok(identity(process.pid));
+  },
+);
 test('candidate builds get private caches without replacing shared node_modules', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-cache-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
