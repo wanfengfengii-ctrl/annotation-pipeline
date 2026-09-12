@@ -36,6 +36,7 @@ import {
 } from '../lib/question-history.mjs';
 import {
   retainRecoverySource,
+  recoverySourceContext,
   planFailedProject,
 } from '../scripts/failed-project-plan.mjs';
 import { DockerRuntime } from '../scripts/docker-runtime.mjs';
@@ -565,6 +566,57 @@ test('safe failed draft retains code, closes only its container and prepares a d
     'changed',
   );
   assert.throws(() => retainRecoverySource(f), /摘要不符/);
+});
+
+test('same-project replan supplies bounded verified source to both read-only stages without exposing credentials', async (t) => {
+  const f = setup(t);
+  const source = retainRecoverySource(f);
+  const sourceFile = path.join(path.dirname(source.manifestPath), 'workspace', f.task.projectSeries.directory, 'app.js');
+  const context = JSON.parse(recoverySourceContext(source));
+  assert.equal(context.charactersIncluded, 'export const value = 1;\n'.length);
+  assert.match(context.files.find((file) => file.path.endsWith('/app.js')).content, /export const value/);
+  writeFileSync(sourceFile, 'const API_KEY = "secret-value-should-not-leak";\n');
+  assert.throws(() => recoverySourceContext(source), /摘要不符/);
+
+  // Use a fresh verified snapshot for the actual planner flow; its stage mock
+  // proves the context reaches project-next and the independent policy audit.
+  const g = setup(t), prompts = {};
+  writeFileSync(
+    path.join(g.workDir, g.task.projectSeries.directory, 'private.js'),
+    'const API_KEY = "secret-value-should-not-leak";\n',
+  );
+  const result = await planFailedProject({
+    ...g,
+    turn: {
+      ...g.turn,
+      status: 'running',
+      jobToken: 'job',
+      projectRetry: { originalStatus: 'failed', originalStage: 'policy' },
+    },
+    api: async () => ({ config, history: questionHistory([g.task]), mix: {} }),
+    stage: async ({ stage, allocation, prompt }) => {
+      prompts[stage] = prompt;
+      return stage === 'policy'
+        ? audit()
+        : {
+            value: {
+              action: 'advance',
+              prompt: fixture.question('有依据的独立功能'),
+              category: allocation.categories[0],
+              difficulty: '中等',
+              projectEvidence: 'app.js 是当前网页入口',
+              baseComplete: false,
+            },
+          };
+    },
+  });
+  assert.equal(result.result.projectRecovery.state, 'planned');
+  assert.match(prompts['project-next'], /recovery-source-context2/);
+  assert.match(prompts['project-next'], /export const value = 1/);
+  assert.doesNotMatch(prompts['project-next'], /secret-value-should-not-leak/);
+  assert.match(prompts.policy, /recovery-source-context2/);
+  assert.match(prompts.policy, /export const value = 1/);
+  assert.doesNotMatch(prompts.policy, /secret-value-should-not-leak/);
 });
 
 test('unconfirmed native input neither closes the terminal nor calls the model to make a replacement', async (t) => {
