@@ -312,7 +312,7 @@ test('finalization has one global export and then advances past completed record
     calls = [];
   const q = new FinalizationQueue({
     runtime: {
-      load: () => ({ terminal: { terminalProtocolVersion } }),
+      load: (id) => ({ questionId: id, terminal: { terminalProtocolVersion } }),
       close: async (id) => {
         calls.push(id);
         if (id === 'a') await gate.promise;
@@ -476,7 +476,7 @@ test('finalization queue owns lock before awaiting, revalidates before exit, and
   const gate = deferred();
   let calls = 0;
   const runtime = {
-    load: () => ({ status: 'running', terminal: { terminalProtocolVersion } }),
+    load: () => ({ ...t.container, terminal: { terminalProtocolVersion } }),
     close: async (_id, opts) => {
       await opts.beforeExit();
       calls++;
@@ -517,6 +517,74 @@ test('changed finalization decision backs off without sending exit', async () =>
   q.enqueue([t], new Set());
   assert.equal(q.active.size, 0);
   assert.equal(q.retryAt.get(t.id), 60100);
+});
+
+test('finalization blocks unchanged failures across restarts and retries after real receipt changes', async (t) => {
+  const root = temp(t),
+    item = task();
+  item.finalization = sessionFinalization(item);
+  const state = { ...item.container, terminal: { terminalProtocolVersion } };
+  let calls = 0,
+    fail = true,
+    completed = 0;
+  const runtime = {
+    root,
+    load: () => state,
+    close: async () => {
+      calls++;
+      if (fail) throw Error('原终端尚未确认最终完成，保留窗口');
+    },
+  };
+  const options = {
+    runtime,
+    refresh: async () => [item],
+    now: () => 1000000,
+    onComplete: async () => {
+      completed++;
+    },
+  };
+  let q = new FinalizationQueue(options);
+  q.enqueue([item], new Set());
+  await Promise.all(q.active.values());
+  q = new FinalizationQueue({ ...options, now: () => 9000000 });
+  q.enqueue([item], new Set());
+  await Promise.all(q.active.values());
+  assert.equal(calls, 1);
+  assert.equal(completed, 0);
+  assert.equal(q.failures[item.id].waitForChange, true);
+  state.terminalFinalization = { completedAt: '2026-09-12T00:00:00Z' };
+  fail = false;
+  q.enqueue([item], new Set());
+  await Promise.all(q.active.values());
+  assert.equal(calls, 2);
+  assert.equal(completed, 1);
+  assert.deepEqual(
+    JSON.parse(readFileSync(path.join(root, 'finalization-queue.json'))),
+    {},
+  );
+});
+
+test('stale finalization plan cannot close a different current question', async () => {
+  const item = task();
+  item.finalization = sessionFinalization(item);
+  let calls = 0;
+  const q = new FinalizationQueue({
+    refresh: async () => [item],
+    runtime: {
+      load: () => ({
+        ...item.container,
+        questionId: 'different',
+        terminal: { terminalProtocolVersion },
+      }),
+      close: async () => {
+        calls++;
+      },
+    },
+  });
+  q.enqueue([item], new Set());
+  await Promise.all(q.active.values());
+  assert.equal(calls, 0);
+  assert.match(q.failures[item.id].reason, /身份不一致/);
 });
 test('two qualified candidates buffer is bounded; generation can use an idle phase without a fourth project', () => {
   const c = {

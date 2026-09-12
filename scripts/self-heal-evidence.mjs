@@ -4,7 +4,51 @@ import { createHash } from 'node:crypto';
 import { DockerRuntime } from './docker-runtime.mjs';
 import { isNativeUserMessage } from '../lib/native-user-message.mjs';
 import { readJSON } from './self-heal-io.mjs';
-export const nativeDiagnosisVersion = '2026-09-12.native-diagnosis1';
+export const nativeDiagnosisVersion = '2026-09-12.native-diagnosis2';
+
+// The pending digest binds what Terminal sent. API turn.prompt may still be the
+// earlier draft. Never normalize text or borrow a different question's prompt.
+export function sentPromptEvidence(dir, turnId, pending) {
+  if (
+    pending?.turnId !== turnId ||
+    !/^[a-f0-9]{64}$/.test(pending.promptHash || '')
+  )
+    throw Error('待发送记录缺少本轮题面摘要，不能推断实际题目');
+  const candidates = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (
+      !name.startsWith(turnId + '.attempt-') ||
+      !/^\d+(?:\.writing)?\.prepare\.json$/.test(
+        name.slice((turnId + '.attempt-').length),
+      )
+    )
+      continue;
+    const file = path.join(dir, name);
+    if (!fs.lstatSync(file).isFile()) continue;
+    try {
+      const bytes = fs.readFileSync(file),
+        value = JSON.parse(bytes);
+      if (
+        typeof value.prompt === 'string' &&
+        createHash('sha256').update(value.prompt).digest('hex') ===
+          pending.promptHash
+      )
+        candidates.push({
+          prompt: value.prompt,
+          path: file,
+          sha256: createHash('sha256').update(bytes).digest('hex'),
+        });
+    } catch {
+      /* An unfinished preparation is not sent-prompt evidence. */
+    }
+  }
+  if (!candidates.length || new Set(candidates.map((c) => c.prompt)).size !== 1)
+    throw Error('找不到与本轮发送摘要一致的准备题面，保留原生会话等待核对');
+  return {
+    ...candidates.sort((a, b) => a.path.localeCompare(b.path))[0],
+    promptSha256: pending.promptHash,
+  };
+}
 
 // Read-only diagnosis. A similarity observation is never a completion receipt
 // and does not authorize replay, terminal input or mutation of original JSONL.
@@ -70,6 +114,7 @@ export function collectNativeDiagnosis(root, task, turn) {
     s.pending?.turnId !== turn.id
   )
     return { error: '当前容器与本轮绑定不一致，未读取其他会话' };
+  const sent = sentPromptEvidence(path.join(work, task.id), turn.id, s.pending);
   const runtime = new DockerRuntime(work);
   runtime.owned(s);
   const files = runtime.native(s);
@@ -101,7 +146,12 @@ export function collectNativeDiagnosis(root, task, turn) {
     containerId: s.containerId,
     questionId: s.questionId,
     pending: s.pending,
-    native: summarizeNativeEvidence(files, turn.prompt, s.pending.previousIds),
+    sentPrompt: {
+      path: sent.path,
+      sha256: sent.sha256,
+      promptSha256: sent.promptSha256,
+    },
+    native: summarizeNativeEvidence(files, sent.prompt, s.pending.previousIds),
     screenTail: screen,
     notice:
       '终端提示符和边界空白相同仅用于定位问题，不替代原生身份、完整归档与所有工具返回核验。原件未修改。',

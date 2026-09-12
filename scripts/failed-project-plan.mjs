@@ -1,4 +1,4 @@
-import { retryBudgets, retryCount } from '../lib/retry-policy.mjs';
+import { retryBudgets, retryCount, failureKind } from '../lib/retry-policy.mjs';
 import {
   readFileSync,
   writeFileSync,
@@ -41,6 +41,7 @@ import {
 } from '../lib/task-policy.mjs';
 import { questionRules } from '../lib/question-writing.mjs';
 import { questionIssues } from '../lib/writing-style.mjs';
+import { projectRecoveryConditions } from '../lib/recovery-conditions.mjs';
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const recoverySourceContextVersion = '2026-09-12.recovery-source-context2';
 // The bound is in Unicode code points (rather than bytes), so CJK source
@@ -48,26 +49,56 @@ const recoverySourceContextVersion = '2026-09-12.recovery-source-context2';
 const recoverySourceContextLimit = 180000;
 const recoverySourceFileLimit = 24000;
 const sourceTextExtensions = new Set([
-  '.c', '.cc', '.cpp', '.css', '.go', '.h', '.html', '.java', '.js', '.jsx',
-  '.json', '.mjs', '.py', '.rb', '.rs', '.sh', '.sql', '.ts', '.tsx', '.vue',
-  '.yaml', '.yml', '.md', '.txt',
+  '.c',
+  '.cc',
+  '.cpp',
+  '.css',
+  '.go',
+  '.h',
+  '.html',
+  '.java',
+  '.js',
+  '.jsx',
+  '.json',
+  '.mjs',
+  '.py',
+  '.rb',
+  '.rs',
+  '.sh',
+  '.sql',
+  '.ts',
+  '.tsx',
+  '.vue',
+  '.yaml',
+  '.yml',
+  '.md',
+  '.txt',
 ]);
 const sourceTextNames = new Set([
-  'workspace/Dockerfile', 'workspace/Makefile', 'workspace/README',
-  'workspace/README.md', 'workspace/package.json', 'workspace/pyproject.toml',
+  'workspace/Dockerfile',
+  'workspace/Makefile',
+  'workspace/README',
+  'workspace/README.md',
+  'workspace/package.json',
+  'workspace/pyproject.toml',
   'workspace/requirements.txt',
 ]);
-const sensitiveSource = /(?:-----BEGIN [A-Z ]*PRIVATE KEY-----|(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret)\s*[:=]\s*['\"][^'\"\r\n]{8,}|AKIA[0-9A-Z]{16})/i;
+const sensitiveSource =
+  /(?:-----BEGIN [A-Z ]*PRIVATE KEY-----|(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret)\s*[:=]\s*['"][^'"\r\n]{8,}|AKIA[0-9A-Z]{16})/i;
 const unicodeLength = (value) => Array.from(value).length;
 const textSourceName = (name) =>
-  sourceTextNames.has(name) || sourceTextExtensions.has(path.extname(name).toLowerCase());
+  sourceTextNames.has(name) ||
+  sourceTextExtensions.has(path.extname(name).toLowerCase());
 
 // Project-next can be a read-only model surface. Supply only a bounded,
 // digest-verified source excerpt; sensitive or non-text files stay represented
 // by their digest but are never injected into a model request.
 export function recoverySourceContext(
   snapshot,
-  { limit = recoverySourceContextLimit, perFileLimit = recoverySourceFileLimit } = {},
+  {
+    limit = recoverySourceContextLimit,
+    perFileLimit = recoverySourceFileLimit,
+  } = {},
 ) {
   if (
     !snapshot?.verified ||
@@ -76,8 +107,10 @@ export function recoverySourceContext(
   )
     throw Error('续题源码快照未验证');
   if (
-    !Number.isSafeInteger(limit) || limit < 1 ||
-    !Number.isSafeInteger(perFileLimit) || perFileLimit < 1
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    !Number.isSafeInteger(perFileLimit) ||
+    perFileLimit < 1
   )
     throw Error('续题源码上下文大小无效');
   const root = path.dirname(snapshot.manifestPath);
@@ -86,9 +119,12 @@ export function recoverySourceContext(
     throw Error('续题源码清单摘要不符');
   const manifest = JSON.parse(manifestBytes);
   if (!Array.isArray(manifest.files)) throw Error('续题源码清单文件无效');
-  const files = [], seen = new Set();
+  const files = [],
+    seen = new Set();
   let used = 0;
-  for (const entry of [...manifest.files].sort((a, b) => String(a.name).localeCompare(String(b.name)))) {
+  for (const entry of [...manifest.files].sort((a, b) =>
+    String(a.name).localeCompare(String(b.name)),
+  )) {
     const name = evidenceRelativeName(entry?.name);
     if (seen.has(name) || !/^[a-f0-9]{64}$/.test(entry?.sha256 || ''))
       throw Error('续题源码清单字段无效或重复');
@@ -472,6 +508,17 @@ export async function planFailedProject({
     };
   } catch (e) {
     recovery.reason = e.message;
+    // A new candidate cannot fix missing/changed source or an unclosed native
+    // session. Wait for prerequisites or a new release before spending again.
+    if (
+      !recovery.plan &&
+      !['transport', 'timeout'].includes(failureKind(e.message))
+    )
+      recovery.blockedOnInputs = projectRecoveryConditions(
+        task,
+        original,
+        turn.projectRetry.recoveryRevision,
+      );
     recovery.retryAt = new Date(
       Date.now() +
         60000 *

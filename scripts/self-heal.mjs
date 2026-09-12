@@ -238,6 +238,15 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
         if (turn?.stage === 'claude')
           i.nativeEvidenceVersion = nativeDiagnosisVersion;
         const context = {
+          previousDiagnoses: state.jobs
+            .filter((j) => j.signature === i.signature && j.state !== 'running')
+            .slice(-2)
+            .map((j) => ({
+              id: j.id,
+              state: j.state,
+              reason: j.reason,
+              directory: path.join(dir, 'jobs', j.id),
+            })),
           availableRecoveryAction: recoveryAction(task, turn),
           nativeDiagnosis,
           incident: i,
@@ -285,13 +294,14 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
             ? path.join(root, '.runner', task.id)
             : path.join(root, '.runner'),
           instruction:
-            '证据只读；优先读该轮最新阶段回执、错误附近日志和本轮原生完成信息。不要扫描全部历史或凭终端提示符判定所有工具已完成。',
+            '证据只读；先读取已有诊断和 review 复核意见，说明本次新增的事实或源码变化，不重复已被否决的补丁。优先读该轮最新阶段回执、错误附近日志和本轮原生完成信息。不要扫描全部历史或凭终端提示符判定所有工具已完成。',
         };
         const job = {
           id,
           root,
           incidentId: i.id,
           signature: i.signature,
+          conditionsKey: i.conditionsKey,
           state: 'running',
           phase: 'starting',
           startedAt: new Date().toISOString(),

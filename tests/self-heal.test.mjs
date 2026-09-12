@@ -19,9 +19,76 @@ import {
   runnerHasWork,
 } from '../scripts/self-heal-release.mjs';
 import { identity } from '../scripts/recovery.mjs';
-import { summarizeNativeEvidence } from '../scripts/self-heal-evidence.mjs';
+import {
+  summarizeNativeEvidence,
+  sentPromptEvidence,
+} from '../scripts/self-heal-evidence.mjs';
+import { selfHealConditions } from '../lib/recovery-conditions.mjs';
 
 const at = Date.parse('2026-09-12T02:00:00Z');
+test('native diagnosis binds the sent preparation hash rather than the API draft', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sent-prompt-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const prompt = '实际发送的网页需求',
+    pending = { turnId: 'turn', promptHash: digest(prompt) };
+  saveJSON(path.join(dir, 'turn.attempt-1.prepare.json'), {
+    prompt: '早期草稿',
+  });
+  saveJSON(path.join(dir, 'turn.attempt-2.writing.prepare.json'), { prompt });
+  saveJSON(path.join(dir, 'other.attempt-2.prepare.json'), {
+    prompt: '其他题',
+  });
+  const sent = sentPromptEvidence(dir, 'turn', pending);
+  const content =
+    JSON.stringify({ type: 'user', uuid: 'u', message: { content: prompt } }) +
+    '\n';
+  assert.equal(
+    summarizeNativeEvidence([{ name: 'native.jsonl', content }], sent.prompt)[0]
+      .users[0].exactMatch,
+    true,
+  );
+  assert.match(sent.path, /attempt-2.writing.prepare/);
+  assert.throws(
+    () =>
+      sentPromptEvidence(dir, 'turn', {
+        ...pending,
+        promptHash: digest(' ' + prompt),
+      }),
+    /找不到/,
+  );
+  assert.throws(() => sentPromptEvidence(dir, 'other', pending), /缺少本轮/);
+  fs.rmSync(sent.path);
+  fs.symlinkSync(path.join(dir, 'other.attempt-2.prepare.json'), sent.path);
+  assert.throws(() => sentPromptEvidence(dir, 'turn', pending), /找不到/);
+});
+
+test('failed self-heal waits for real conditions, retaining history across ticks', () => {
+  const snap = snapshot();
+  snap.recoveryRevision = 'release-a';
+  let s = reconcileSelfHeal(null, snap, at);
+  s = reconcileSelfHeal(s, snap, at + 61000);
+  const i = Object.values(s.incidents)[0];
+  i.attempts = 1;
+  s.jobs.push({
+    id: 'prior',
+    incidentId: i.id,
+    signature: i.signature,
+    state: 'failed',
+    startedAt: new Date(at).toISOString(),
+    conditionsKey: selfHealConditions(i, snap),
+  });
+  s = reconcileSelfHeal(s, snap, at + 120000);
+  assert.equal(s.incidents[i.id].state, 'waiting_conditions');
+  assert.equal(nextSelfHealAction(s, snap, at + 30 * 60000), null);
+  snap.tasks[0].revision = 999; // API heartbeat does not count as new evidence.
+  s = reconcileSelfHeal(s, snap, at + 31 * 60000);
+  assert.equal(s.incidents[i.id].state, 'waiting_conditions');
+  snap.recoveryRevision = 'release-b';
+  s = reconcileSelfHeal(s, snap, at + 32 * 60000);
+  assert.equal(nextSelfHealAction(s, snap, at + 32 * 60000)?.kind, 'repair');
+  assert.equal(s.incidents[i.id].attempts, 1);
+  assert.equal(s.jobs.length, 1);
+});
 test('a busy or unknown scheduler keeps admissions while future jobs adopt repairs', () => {
   const data = {
     runner: {

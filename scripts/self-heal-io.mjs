@@ -56,6 +56,30 @@ export async function observe(root, previous = {}) {
     path.join(root, '.runner/self-heal/external-events.json'),
     {},
   );
+  const finalizations = readJSON(
+    path.join(root, '.runner/finalization-queue.json'),
+    {},
+  );
+  for (const [taskId, failure] of Object.entries(finalizations)) {
+    const task = data.tasks.find((t) => t.id === taskId);
+    if (
+      !task ||
+      !failure.plan?.turnId ||
+      task.container?.questionId !== failure.plan.questionId ||
+      task.container?.containerId !== failure.plan.containerId
+    )
+      continue;
+    health.incidents.push({
+      id: taskId + ':' + failure.plan.turnId,
+      taskId,
+      turnId: failure.plan.turnId,
+      stage: 'finalization',
+      state: 'open',
+      reason: failure.reason,
+      evidenceKey: failure.conditionsKey,
+    });
+    health.needsAction = true;
+  }
   const uploads = Object.keys(external).length
     ? readJSON(path.join(root, '.runner/solo-upload/ui-state.json'), {
         entries: {},
@@ -82,7 +106,14 @@ export async function observe(root, previous = {}) {
       health.needsAction = true;
     }
   }
-  return { ...data, config: scheduler.config, health };
+  return {
+    ...data,
+    config: scheduler.config,
+    health,
+    recoveryRevision: readJSON(
+      path.join(root, '.runner/job-release-current.json'),
+    )?.manifestSha256,
+  };
 }
 export async function guardedRetry(root, incident, action) {
   const { recoveryAction } = await import('../lib/self-heal.mjs');

@@ -16,6 +16,60 @@ import {
   codexStage,
 } from '../scripts/codex-stages.mjs';
 import { issues, csv } from '../lib/pipeline.ts';
+test('score checks inconsistent facts before wording and does not rerun acceptance', async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'score-facts-first-')),
+    bin = path.join(dir, 'bin');
+  mkdirSync(bin);
+  writeFileSync(path.join(dir, 'app.js'), 'export const checked = true;\n');
+  const previousPath = process.env.PATH;
+  t.after(() => {
+    process.env.PATH = previousPath;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const base = {
+    scores: [5, 5, 5, 5, 5],
+    descriptions: [
+      '填写登记内容后能保存，刷新页面后仍能看到刚才的记录。',
+      '表单提供了原题要求的登记项，必填内容未填时会提示补充。',
+      '先检查已有页面和保存方式，再补齐登记操作，收尾核对保存结果。',
+      '根据保存后的返回内容确认记录状态，判断与页面显示一致。',
+      '修改后检查了输入和保存过程，页面能显示提交的内容。',
+    ],
+    other: '无',
+    when: Array(5).fill('本轮完成时'),
+    behavior: Array(5).fill('核对登记操作'),
+    impact: Array(5).fill('记录正常保存'),
+    expected: Array(5).fill('可查看保存的记录'),
+    evidenceRefs: Array(5).fill('app.js:1'),
+    processFindings: '按本轮实际记录核对',
+    artifactFindings: '源码保留登记操作',
+  };
+  writeFileSync(path.join(dir, 'fixture.json'), JSON.stringify(base));
+  writeFileSync(
+    path.join(bin, 'codex'),
+    `#!${process.execPath}\nconst fs=require('fs'),path=require('path');const args=process.argv.slice(2),file=args[args.indexOf('--output-last-message')+1];const label=path.basename(file);fs.appendFileSync('calls.log',label+'\\n');if(label.includes('.writing.'))process.exit(23);const v=JSON.parse(fs.readFileSync('fixture.json'));if(!label.includes('.consistency.'))v.descriptions[0]='AI 浏览器发现错误，保存登记内容后页面为空。';fs.writeFileSync(file,JSON.stringify(v));console.log(JSON.stringify({type:'thread.started',thread_id:'score-fixture'}));`,
+    { mode: 0o755 },
+  );
+  process.env.PATH = bin + path.delimiter + previousPath;
+  const result = await codexStage({
+    stage: 'score',
+    prompt: '只读核对本轮记录',
+    cwd: dir,
+    dir,
+    turnId: 'fixture',
+    onChild: () => {},
+  });
+  assert.deepEqual(result.value.scores, base.scores);
+  assert.equal(result.value.descriptions[0], base.descriptions[0]);
+  assert.deepEqual(
+    readFileSync(path.join(dir, 'calls.log'), 'utf8').trim().split('\n'),
+    ['fixture.score.json', 'fixture.consistency.score.json'],
+  );
+  assert.equal(
+    readFileSync(path.join(dir, 'app.js'), 'utf8'),
+    'export const checked = true;\n',
+  );
+});
 test('the budget-only CLI contract returns a preserved full plan without requesting business text again', async (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'runtime-budget-cli-'));
   const bin = path.join(dir, 'bin');

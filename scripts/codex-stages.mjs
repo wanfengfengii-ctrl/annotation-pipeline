@@ -429,8 +429,8 @@ async function runStage({
   };
 }
 
-async function stageWithWriting(options) {
-  const original = await runStage(options);
+async function stageWithWriting(options, initial) {
+  const original = initial || (await runStage(options));
   const checked = checkWriting(options.stage, original.value);
   if (!checked.issues.length) return { ...original, value: checked.value };
   // A single wording retry is independent of Claude's ten-call budget.
@@ -475,9 +475,7 @@ async function stageWithWriting(options) {
   };
 }
 
-export async function codexStage(options) {
-  const original = await stageWithWriting(options);
-  if (options.stage !== 'score') return original;
+function scoreReviewIssues(original, options) {
   const issues = scoreConsistencyIssues(
     original.value.scores,
     original.value.descriptions,
@@ -492,7 +490,20 @@ export async function codexStage(options) {
   } catch (e) {
     issues.push(e.message);
   }
-  if (!issues.length) return original;
+  return issues;
+}
+
+export async function codexStage(options) {
+  if (options.stage !== 'score') return stageWithWriting(options);
+  // Check facts and evidence before spending a call polishing an invalid score.
+  // Reuse the first result; no extra model call and no rerun of acceptance tests.
+  let original = await runStage(options);
+  let issues = scoreReviewIssues(original, options);
+  if (!issues.length) {
+    original = await stageWithWriting(options, original);
+    issues = scoreReviewIssues(original, options);
+    if (!issues.length) return original;
+  }
   // One independent evidence review may re-score; wording-only retries may not.
   let revised = await stageWithWriting({
     ...options,

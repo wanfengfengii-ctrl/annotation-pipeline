@@ -162,7 +162,7 @@ export function scoreRetryContext(cached, { dir, taskId, turnId, workDir }) {
           new RegExp(
             '^' +
               turnId +
-              '\\.attempt-([1-9][0-9]*)(?:\\.consistency)?(?:\\.writing|\\.citations)?$',
+              '\\.attempt-([1-9][0-9]*)(?:\\.consistency)?(?:\\.writing|\\.clarity|\\.citations)?$',
           ),
         );
       if (!attempt || !Number.isSafeInteger(Number(attempt[1])))

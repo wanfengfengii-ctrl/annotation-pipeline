@@ -1,4 +1,5 @@
 import { retryBudgets } from '../lib/retry-policy.mjs';
+import { projectRecoveryConditions } from '../lib/recovery-conditions.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -63,6 +64,31 @@ const taskOf = (turn) => ({
     directory: 'projects/p-' + randomUUID(),
   },
   turns: [turn],
+});
+
+test('blocked replanning waits for changed source/session prerequisites, not a heartbeat', () => {
+  const turn = draft(),
+    task = taskOf(turn),
+    cfg = { ...config, recoveryRevision: 'v1' };
+  assert.equal(projectRecoveryDue(task, cfg), true);
+  turn.projectRecovery = {
+    state: 'blocked',
+    blockedOnInputs: projectRecoveryConditions(task, turn, 'v1'),
+  };
+  assert.equal(projectRecoveryDue(task, cfg), false);
+  task.revision = 999;
+  turn.projectRecovery.checkedAt = new Date().toISOString();
+  assert.equal(projectRecoveryDue(task, cfg), false);
+  assert.equal(
+    projectRecoveryDue(task, { ...cfg, recoveryRevision: 'v2' }),
+    true,
+  );
+  task.container = {
+    questionId: turn.id,
+    status: 'removed',
+    traceExport: { verified: true, sha256: 'new' },
+  };
+  assert.equal(projectRecoveryDue(task, cfg), true);
 });
 
 test('only sent business questions consume the 10+10 quota; queued roots reserve a place', () => {
@@ -571,16 +597,28 @@ test('safe failed draft retains code, closes only its container and prepares a d
 test('same-project replan supplies bounded verified source to both read-only stages without exposing credentials', async (t) => {
   const f = setup(t);
   const source = retainRecoverySource(f);
-  const sourceFile = path.join(path.dirname(source.manifestPath), 'workspace', f.task.projectSeries.directory, 'app.js');
+  const sourceFile = path.join(
+    path.dirname(source.manifestPath),
+    'workspace',
+    f.task.projectSeries.directory,
+    'app.js',
+  );
   const context = JSON.parse(recoverySourceContext(source));
   assert.equal(context.charactersIncluded, 'export const value = 1;\n'.length);
-  assert.match(context.files.find((file) => file.path.endsWith('/app.js')).content, /export const value/);
-  writeFileSync(sourceFile, 'const API_KEY = "secret-value-should-not-leak";\n');
+  assert.match(
+    context.files.find((file) => file.path.endsWith('/app.js')).content,
+    /export const value/,
+  );
+  writeFileSync(
+    sourceFile,
+    'const API_KEY = "secret-value-should-not-leak";\n',
+  );
   assert.throws(() => recoverySourceContext(source), /摘要不符/);
 
   // Use a fresh verified snapshot for the actual planner flow; its stage mock
   // proves the context reaches project-next and the independent policy audit.
-  const g = setup(t), prompts = {};
+  const g = setup(t),
+    prompts = {};
   writeFileSync(
     path.join(g.workDir, g.task.projectSeries.directory, 'private.js'),
     'const API_KEY = "secret-value-should-not-leak";\n',

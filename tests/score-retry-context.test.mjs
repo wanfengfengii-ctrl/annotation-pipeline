@@ -328,6 +328,27 @@ test('consistency-reviewed score remains resumable and its earlier scoring evide
   assert.equal(scoreRetryContext(f.cached, f.context), null);
 });
 
+test('clarified score reuses verified facts and rejection without rewriting native evidence', (t) => {
+  const f = fixture(t);
+  const native = readFileSync(f.nativePath);
+  const original = f.cached.score.tracePath;
+  const clarified = original.replace('.score.', '.consistency.clarity.score.');
+  writeFileSync(clarified, readFileSync(original));
+  writeFileSync(
+    clarified.replace('.events.jsonl', '.json'),
+    readFileSync(original.replace('.events.jsonl', '.json')),
+  );
+  f.cached.score.tracePath = clarified;
+  f.cached.score.consistencyRevision = { originalTracePaths: [original] };
+  f.receipt.automation.score = clone(f.cached.score);
+  bindScoreCheckpoint(f);
+  moveDelivery(f, 4);
+  assert.ok(scoreRetryContext(f.cached, f.context));
+  assert.deepEqual(readFileSync(f.nativePath), native);
+  writeFileSync(original, '{}\n');
+  assert.equal(scoreRetryContext(f.cached, f.context), null);
+});
+
 test('cross-attempt feedback requires matching checkpoint receipts and every cited file hash', (t) => {
   const f = fixture(t);
   moveDelivery(f, 4);
