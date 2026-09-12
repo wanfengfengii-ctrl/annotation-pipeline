@@ -1,4 +1,5 @@
 import { db, failure, protect, runnerAuth } from '@/db/store';
+import { canRequestBatchRecovery } from '@/lib/upload-batches.mjs';
 export async function GET(req: Request) {
   try {
     runnerAuth(req);
@@ -43,7 +44,7 @@ export async function POST(req: Request) {
       JSON.parse(row.data).batches?.find(
         (r: any) => r.slot === b.slot && r.revision === b.revision,
       );
-    if (!batch?.canRequestRecovery)
+    if (!batch?.rows?.length || !canRequestBatchRecovery(batch))
       throw Error('批次已变化或正在执行，请刷新后核对');
     const digest = await crypto.subtle.digest(
       'SHA-256',

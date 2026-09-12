@@ -349,6 +349,7 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
             signature: i.signature,
             mode: next.mode,
             conditionsKey: i.conditionsKey,
+            evidenceKey: i.evidenceKey,
             state: 'running',
             phase: 'starting',
             startedAt: new Date().toISOString(),

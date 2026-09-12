@@ -99,6 +99,18 @@
 
 running 批次不会被自动抢占，租期为 45 分钟。`--due` 返回 active 时不要重新 claim；leaseExpired=false 表示已有执行正在持有该批。leaseExpired=true 仅授权核对原 attempt：先确认前一次浏览器操作已结束，再核对其全部远端回执，不能重发状态不明的提交。确认登录过期时对原 attempt 执行 --finish waiting_login；确认已结束则以 completed/blocked/failed 如实收尾。仍在执行则继续原 attempt 并 --touch。没有充分证据时提示待核对，不能通过改台账或删除运行状态制造新批次。历史版本没有 attemptId 的 running 需要单独人工核对，不自动迁移放行。
 
+## 每次浏览器任务结束时收尾
+
+提交一条后不能直接结束任务并保留 running。应继续处理本批其余可提交成员；本轮确实需要结束但还有剩余时，先完成已点击提交的回执核对，确认浏览器操作已停止，再把以下内容保存到私有 JSON，并执行 `node scripts/solo-schedule.mjs --yield JSON路径`：
+
+```json
+{"slot":"原批次 slot","attemptId":"原 attemptId","browserWorkEnded":true,"reason":"本轮浏览器操作已结束，余项待续传"}
+```
+
+程序按已核验回执计算剩余数量：还有成员时记为 waiting_resume，全部已有核验回执时记为 completed；保留原成员、包摘要、原 attempt 历史和 submitting/uncertain 状态。下一次允许的上传运行优先 claim 这个原批次，生成新的执行 attempt，再通过 --batch-plan 跳过已提交项、只查询不明确项。不能用 --yield 接管仍在操作的上传者，browserWorkEnded 必须来自实际执行者或已经核对的原任务结束事实。
+
+登录过期仍用 waiting_login，跨午夜仍用 waiting_window，材料或字段阻塞仍如实记录 blocked。--yield 不把这些原因伪装成成功，也不记录虚假登录。每次最终回复前核对本 attempt 已收尾；异常退出未能收尾的 running 到期后页面显示“租期已过，待核对”，仅允许排队核对，不能自动重发。新的 --touch 会使旧核对请求失效。
+
 ## 回执格式
 
 ```json
@@ -125,7 +137,7 @@ running 批次不会被自动抢占，租期为 45 分钟。`--due` 返回 activ
 
 验证：`node --test tests/solo-upload.test.mjs tests/solo-upload-holds.test.mjs tests/solo-native-attachment.test.mjs`。测试覆盖字段映射、消息 UUID 与原生 PromptID 区分、原生目录完整性、内部证据隔离、原件不变、禁止上传、分页查重、断网与不明确回执、重复启动、资格变化、附件摘要和大小、服务端拒绝、字段回读、浏览器回执、台账锁及会话连续性。
 
-这是本机 Codex 定时任务，需要电脑开机、Codex 运行、本地流水线可访问；自动登录还需要本机钥匙串可读取。复用现有每 30 分钟巡检，调度对齐整点和半点。错过双数整点的新批次窗口不补造批次；已经固定成员且因登录暂停的批次，会在之后的巡检中检查登录，恢复后仅在 08:00 至 24:00 续传原批，跨日也保留同一清单。跨午夜暂停记为 waiting_window，不伪装为登录失败或上传完成；状态不明的提交只能查询回执。首批 08:00 当场检查登录，其余白天批次提前半小时预检，不提前提交。
+这是本机 Codex 定时任务，需要电脑开机、Codex 运行、本地流水线可访问；自动登录还需要本机钥匙串可读取。沿用现有每天八个双数整点的上传定时任务，登录在实际开始时检查，不新增半点模型巡检。错过的新批次窗口不补造批次；已经固定成员的 waiting_resume、waiting_window 或登录暂停批次，在后续允许的运行中优先恢复，跨日保留同一清单。跨午夜暂停不伪装成登录失败或上传完成；状态不明的提交只能查询回执。
 
 ## 页面上传状态与题目去重（2026-09-10）
 

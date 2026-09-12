@@ -12,13 +12,19 @@ test('remote outcomes, holds and pending work stay distinct, without private led
         state: 'submitted',
         remoteId: 1,
         remoteStatus: 'PENDING_FIX',
+        receiptVerified: true,
         remoteReason: '原题ID不一致',
         privateToken: 'secret',
         updatedAt: at,
       },
       't:b': { state: 'prepared' },
       't:c': { state: 'uncertain' },
-      't:d': { state: 'submitted', remoteId: 2, remoteStatus: 'QC_PASSED' },
+      't:d': {
+        state: 'submitted',
+        remoteId: 2,
+        remoteStatus: 'QC_PASSED',
+        receiptVerified: true,
+      },
       't:e': { state: 'prepared' },
     },
     lastPlan: { blocked: [{ key: 't:e', reason: '前序缺失' }] },
@@ -35,6 +41,16 @@ test('remote outcomes, holds and pending work stay distinct, without private led
   assert.equal(s.entries['t:a'].remoteId, 1);
   assert.ok(!JSON.stringify(s).includes('secret'));
   assert.equal(ledger.entries['t:b'].state, 'prepared');
+});
+test('an unverified remote number cannot claim an outcome or quality pass', () => {
+  for (const remoteStatus of ['SUBMITTED', 'QC_PASSED', 'PENDING_FIX']) {
+    const s = soloStatusSnapshot(
+      { entries: { 't:a': { state: 'submitted', remoteId: 1, remoteStatus } } },
+      { entries: {} },
+      at,
+    );
+    assert.equal(s.entries['t:a'].status, 'uncertain');
+  }
 });
 test('status validation rejects unknown states and invalid links, strips unsolicited fields', () => {
   const s = soloStatusSnapshot(

@@ -2,8 +2,14 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { soloStatusLabels } from '@/lib/solo-upload-status.mjs';
+import {
+  batchNeedsReconciliation,
+  canRequestBatchRecovery,
+} from '@/lib/upload-batches.mjs';
 const labels: Record<string, string> = {
   running: '正在上传',
+  awaiting_reconcile: '租期已过，待核对',
+  waiting_resume: '等待续传本批',
   waiting_login: '等待登录',
   waiting_window: '等待上传窗口',
   completed: '批次已处理',
@@ -74,9 +80,14 @@ export function UploadBatchesPanel({
       setBusy(null);
     }
   }
-  const rows = (data?.batches || []).filter(
-      (b: any) => filter === 'all' || b.status === filter,
-    ),
+  const rows = (data?.batches || [])
+      .map((b: any) => ({
+        ...b,
+        displayStatus: batchNeedsReconciliation(b)
+          ? 'awaiting_reconcile'
+          : b.status,
+      }))
+      .filter((b: any) => filter === 'all' || b.displayStatus === filter),
     pages = Math.max(1, Math.ceil(rows.length / 5));
   return (
     <section className="section upload-batches-panel">
@@ -110,12 +121,19 @@ export function UploadBatchesPanel({
       {rows.slice((page - 1) * 5, page * 5).map((b: any) => (
         <details key={b.slot}>
           <summary>
-            {b.slot} · {labels[b.status] || b.status} · {b.rows.length} 条
+            {b.slot} · {labels[b.displayStatus] || b.displayStatus} ·{' '}
+            {b.rows.length} 条
           </summary>
           <p>
             处理尝试 {b.attempts} 次 {b.reasonCode ? `· ${b.reasonCode}` : ''}
           </p>
-          {local && b.canRequestRecovery && (
+          {b.pauseReason && <p>{b.pauseReason}</p>}
+          {b.displayStatus === 'awaiting_reconcile' && (
+            <p>
+              需要原上传任务核对是否仍在执行及远端回执，确认后续传；租期到期不会自动重发。
+            </p>
+          )}
+          {local && b.rows.length > 0 && canRequestBatchRecovery(b) && (
             <Button
               variant="outline"
               disabled={!!busy}

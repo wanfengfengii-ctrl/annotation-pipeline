@@ -240,7 +240,10 @@ test('a diagnostic external block notifies immediately and changed evidence can 
   assert.equal(s.incidents[i.id].state, 'needs_input');
   assert.match(s.incidents[i.id].result, /恢复本轮原始文件/);
   assert.equal(nextSelfHealAction(s, snap, at + 61001), null);
-  snap.recoveryRevision = 'evidence-reader-fixed';
+  snap.tasks[0].turns[0].traceExport = {
+    verified: true,
+    sha256: 'restored-original-evidence',
+  };
   s = reconcileSelfHeal(s, snap, at + 61002);
   assert.equal(nextSelfHealAction(s, snap, at + 61002)?.mode, 'repair');
 });

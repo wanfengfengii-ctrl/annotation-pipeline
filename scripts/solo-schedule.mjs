@@ -97,6 +97,7 @@ export function dueUpload(now, state) {
       ([, r]) =>
         ((r.recoveryRequestedAt && ['blocked', 'failed'].includes(r.status)) ||
           r.status === 'waiting_window' ||
+          r.status === 'waiting_resume' ||
           (r.status === 'waiting_login' && loginFailures.has(r.reasonCode))) &&
         Array.isArray(r.members),
     )
@@ -257,6 +258,7 @@ export function claimUpload(
   run.startedAt = now.toISOString();
   run.leaseUntil = new Date(now.getTime() + attemptLeaseMs).toISOString();
   delete run.reasonCode;
+  delete run.pauseReason;
   run.attempts ||= [];
   run.attempts.push({ attemptId, startedAt: run.startedAt, mode: due.mode });
   return {
@@ -296,6 +298,7 @@ export function finishUpload(state, input, now = new Date()) {
       'completed',
       'waiting_login',
       'waiting_window',
+      'waiting_resume',
       'blocked',
       'failed',
     ].includes(input.status)
@@ -334,6 +337,40 @@ export function finishUpload(state, input, now = new Date()) {
       : {}),
   });
   return { slot: input.slot, attemptId: input.attemptId, status: run.status };
+}
+
+// Called by the original browser owner before ending an incomplete turn. This
+// releases only that attempt; fixed members and uncertain submissions survive.
+export function yieldUpload(state, input, ledger, now = new Date()) {
+  const run = ownedRun(state, input);
+  if (
+    input.browserWorkEnded !== true ||
+    typeof input.reason !== 'string' ||
+    !input.reason.trim() ||
+    input.reason.length > 500
+  )
+    fail('BATCH_YIELD_REASON_REQUIRED');
+  const counts = { existing: 0, uncertain: 0 };
+  for (const member of run.members) {
+    const e = ledger.entries?.[member.key];
+    if (e?.remoteId && e.receiptVerified === true) counts.existing++;
+    else if (e?.remoteId || ['submitting', 'uncertain'].includes(e?.state))
+      counts.uncertain++;
+  }
+  const remaining = run.members.length - counts.existing;
+  const result = finishUpload(
+    state,
+    {
+      slot: input.slot,
+      attemptId: input.attemptId,
+      status: remaining ? 'waiting_resume' : 'completed',
+      counts,
+    },
+    now,
+  );
+  run.pauseReason = input.reason.trim();
+  run.attempts.at(-1).pauseReason = run.pauseReason;
+  return { ...result, remaining, uncertain: counts.uncertain };
 }
 
 export function resumePlan(run, plan, ledger) {
@@ -456,6 +493,15 @@ export async function runSchedule(action, file, now = new Date()) {
         result = claimUpload(state, { now, members: plan?.packets });
       } else if (action === '--touch')
         result = touchUpload(state, readJSON(file), now);
+      else if (action === '--yield')
+        result = yieldUpload(
+          state,
+          readJSON(file),
+          fs.existsSync(path.join(root, 'ui-state.json'))
+            ? readJSON(path.join(root, 'ui-state.json'))
+            : { entries: {} },
+          now,
+        );
       else if (action === '--finish')
         result = finishUpload(state, readJSON(file), now);
       else if (action === '--batch-plan') {
@@ -468,7 +514,7 @@ export async function runSchedule(action, file, now = new Date()) {
             ? readJSON(path.join(root, 'ui-state.json'))
             : { entries: {} },
         );
-      } else fail('USAGE_DUE_LOGIN_RESULT_CLAIM_TOUCH_FINISH_BATCH_PLAN');
+      } else fail('USAGE_DUE_LOGIN_RESULT_CLAIM_TOUCH_YIELD_FINISH_BATCH_PLAN');
       state.version = scheduleVersion;
       savePrivateJSON(scheduleFile, state);
       return result;
