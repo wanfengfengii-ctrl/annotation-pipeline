@@ -222,7 +222,6 @@ test('0-1 题目使用无编号的项目名称和一至两段正文，点评保�
   assert.equal(checked.value.prompt, formatQuestionText(prompt));
   assert.deepEqual(checked.value.acceptance, ['原值']);
   assert.equal(questionParts(prompt).paragraphs.length, 2);
-  assert.ok(questionParts(prompt).bodyLength <= 260);
   assert.ok(!checked.value.prompt.includes('projects/'));
   assert.deepEqual(
     checkWriting('next', {
@@ -235,7 +234,7 @@ test('0-1 题目使用无编号的项目名称和一至两段正文，点评保�
   assert.match(writingInstructions('score'), /一段/);
 });
 
-test('0-1 新题检查项目名称、长度、段落、语气和编排信息', () => {
+test('0-1 新题检查项目名称、段落、语气和编排信息', () => {
   for (const stage of ['generate', 'prepare', 'next', 'project-next']) {
     assert.deepEqual(
       checkWriting(stage, {
@@ -250,8 +249,6 @@ test('0-1 新题检查项目名称、长度、段落、语气和编排信息', (
       '1、' + fixture.question(),
       '第十二题 ' + fixture.question(),
       '只有一个概念',
-      '项目\n短需求',
-      '项目\n' + '需'.repeat(261),
       fixture.question().replace('网页工作台', '网页工作台，可能需要'),
       fixture.question().replace('网页工作台', '网页工作台，竟然'),
       fixture.question().replace('网页工作台', '网页工作台“联调”'),
@@ -271,7 +268,7 @@ test('0-1 新题检查项目名称、长度、段落、语气和编排信息', (
     assert.match(writingInstructions(stage), /4 至 6/);
     assert.match(writingInstructions(stage), /Feature/);
   }
-  for (const n of [180, 260])
+  for (const n of [1, 180, 260, 268, 1000])
     assert.deepEqual(questionIssues('测试\n' + '需'.repeat(n)), []);
   assert.deepEqual(questionIssues(fixture.question('3D 展示方案对照台')), []);
   assert.ok(
@@ -284,7 +281,7 @@ test('0-1 新题检查项目名称、长度、段落、语气和编排信息', (
   assert.ok(proseIssues(fixture.body).length, '点评仍不允许分段');
 });
 
-test('除 0-1 外所有类型只接受正文，第一段参与长度与语气检查', () => {
+test('除 0-1 外所有类型只接受正文，第一段参与段落与语气检查', () => {
   for (const category of [
     'Feature 迭代',
     'Bug 修复',
@@ -315,8 +312,6 @@ test('除 0-1 外所有类型只接受正文，第一段参与长度与语气检
         '项目名称\n' + prompt.replace(/\n+/g, ''),
         '可能需要' + prompt,
         '1、' + prompt,
-        '短正文。',
-        '需'.repeat(261),
       ])
         assert.ok(
           checkWriting(stage, { ...value, prompt: invalid }).issues.length,
@@ -356,7 +351,6 @@ test('Bug 准备和追问直接用口语正文，拒绝项目标题和正式措�
       prompt.replace('现在', '现在可能'),
       prompt.replace('现在', '现在竟然'),
       prompt.replace('现在', '现在“事件”'),
-      '需要修复。',
     ])
       assert.ok(
         checkWriting(stage, {
@@ -371,7 +365,6 @@ test('Bug 准备和追问直接用口语正文，拒绝项目标题和正式措�
   assert.equal(parts.title, '');
   assert.equal(parts.paragraphs.length, 2);
   assert.match(parts.body, /^现在事件/);
-  assert.ok(parts.bodyLength >= 180 && parts.bodyLength <= 260);
   assert.match(
     policyInstructions({ category: 'Bug 修复' }),
     /audience：沿用原题的实际使用场景/,
