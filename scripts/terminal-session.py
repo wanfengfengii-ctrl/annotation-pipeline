@@ -254,7 +254,8 @@ def verified_finalization(cid):
         for record in (json.loads(p.read_text()) for p in operations.glob('*.json') if not p.is_symlink()))
     return (copied_here and hashlib.sha256(data).hexdigest() == final.get('manifestSha256') and
             manifest.get('containerId') == cid and
-            sorted(manifest.get('files', []), key=lambda f: f['name']) == inventory(dest))
+            sorted(manifest.get('files', []), key=lambda f: f['name']) ==
+            sorted(inventory(dest), key=lambda f: f['name']))
 
 
 def handle_command(request):

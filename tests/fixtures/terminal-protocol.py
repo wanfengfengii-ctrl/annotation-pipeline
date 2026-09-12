@@ -172,12 +172,15 @@ class TerminalProtocolTests(unittest.TestCase):
 
     def test_original_tty_stays_open_until_whole_export_remove_and_complete(self):
         self.assertFalse(self.command('cp', destination=str(self.destination()))['ok'])
+        nested = self.root / 'remote-projects' / '-workspace' / 'session' / 'tool-results'
+        nested.mkdir(parents=True)
+        (nested / 'large-output.txt').write_text('original tool output')
         stopped = self.stop_claude()
         self.assertIsNone(self.process.poll())
         self.assertFalse(self.request({'op': 'input', 'data': 'BA=='})['ok'])
         copied = self.command('cp', op='copy-one', destination=str(self.destination()))
         self.assertTrue(copied['ok'], copied)
-        self.assertEqual(len(copied['manifest']), 3)
+        self.assertEqual(len(copied['manifest']), 4)
         request = json.loads(Path(copied['receiptPath']).read_text())['request']
         self.assertEqual(self.request(request), copied)
         self.assertEqual(len(self.calls('cp')), 1)

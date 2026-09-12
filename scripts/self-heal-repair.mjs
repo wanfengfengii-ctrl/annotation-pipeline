@@ -194,6 +194,7 @@ export async function repairJob(jobFile) {
       'tests/solo-schedule.test.mjs',
       'tests/closed-loop.test.mjs',
       'tests/observer-handoff.test.mjs',
+      'tests/terminal-finalization.test.mjs',
       'tests/native-user-message.test.mjs',
       'tests/runtime-retry-context.test.mjs',
       'tests/project-recovery-api.test.mjs',

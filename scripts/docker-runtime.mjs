@@ -30,7 +30,10 @@ import {
   terminalCommand,
   completeTerminal,
 } from './mac-terminal.mjs';
-import { writeTerminalFinalization } from './terminal-finalization.mjs';
+import {
+  writeTerminalFinalization,
+  verifyFinalizationOrderCompatibility,
+} from './terminal-finalization.mjs';
 import { sessionLimits } from '../lib/project-series.mjs';
 import { disputeContinuationReady } from '../lib/disputed-continuation.mjs';
 import { projectRecoveryReady } from '../lib/project-recovery.mjs';
@@ -1344,7 +1347,31 @@ export class DockerRuntime {
         operationId: 'complete-' + s.containerId,
         containerId: s.containerId,
       });
-      if (!completed.ok) throw Error('原终端尚未确认最终完成，保留窗口');
+      if (!completed.ok) {
+        const compatibility = verifyFinalizationOrderCompatibility({
+          taskDir: path.dirname(this.file(s.taskId)),
+          questionId: s.questionId,
+          terminal: s.terminal,
+          result: completed,
+          isChildAlive: (pid) => {
+            try {
+              process.kill(pid, 0);
+              return true;
+            } catch (error) {
+              return error.code !== 'ESRCH';
+            }
+          },
+        });
+        if (!compatibility) throw Error('原终端尚未确认最终完成，保留窗口');
+        s.terminalFinalization = {
+          runId: s.terminal.runId,
+          completedAt: new Date().toISOString(),
+          ...compatibility,
+        };
+        this.save(s);
+        await this.onFinalized(s);
+        return;
+      }
     }
     s.terminalFinalization = {
       runId: s.terminal.runId,

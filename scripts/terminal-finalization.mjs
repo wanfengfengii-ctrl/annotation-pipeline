@@ -1,5 +1,6 @@
 import {
   readFileSync,
+  readdirSync,
   writeFileSync,
   renameSync,
   realpathSync,
@@ -119,4 +120,108 @@ export function writeTerminalFinalization(state, taskDir) {
   });
   renameSync(temp, file);
   return value;
+}
+
+// Old running bridges sorted Path objects component-by-component, but compared
+// that inventory with a list sorted by full filename. Their successful original
+// cp/rm receipts remain valid. Verify them independently without rewriting a
+// receipt, inventing a successful bridge acknowledgement, or changing a trace.
+export function verifyFinalizationOrderCompatibility({
+  taskDir,
+  questionId,
+  terminal,
+  result,
+  isChildAlive,
+}) {
+  try {
+    if (
+      !result?.operationId ||
+      result.runId !== terminal.runId ||
+      result?.status !== 'failed' ||
+      !/Verified export and original-container removal must finish before closing/.test(
+        result.error || '',
+      )
+    )
+      return null;
+    const final = verifyTerminalFinalization({ taskDir, questionId, terminal });
+    if (!final || final.commandTransport !== 'original-mac-terminal')
+      return null;
+    const state = JSON.parse(readFileSync(terminal.statePath, 'utf8'));
+    if (
+      state.runId !== terminal.runId ||
+      state.containerId !== final.containerId ||
+      state.status !== 'postprocessing' ||
+      !state.realTerminal ||
+      state.exitCode !== 0 ||
+      !Number.isInteger(state.childPid) ||
+      isChildAlive(state.childPid)
+    )
+      return null;
+    const directory = path.join(path.dirname(terminal.statePath), 'operations');
+    const records = readdirSync(directory)
+      .filter((n) => n.endsWith('.json'))
+      .map((name) => {
+        const file = inside(path.join(directory, name), realpathSync(taskDir)),
+          bytes = readFileSync(file);
+        return { file, sha256: digest(bytes), value: JSON.parse(bytes) };
+      })
+      .filter(
+        ({ value: r }) =>
+          r.runId === terminal.runId &&
+          r.request?.runId === terminal.runId &&
+          r.request.containerId === final.containerId &&
+          r.result?.runId === terminal.runId &&
+          r.tty === state.tty,
+      );
+    const cp = records.find(
+      ({ value: r }) =>
+        r.request.action === 'cp' &&
+        r.request.destination === final.traceExport.path &&
+        r.result.action === 'cp' &&
+        r.result.status === 'succeeded' &&
+        r.result.exitCode === 0,
+    );
+    const rm = records.find(
+      ({ value: r }) =>
+        r.request.action === 'rm' &&
+        r.result.action === 'rm' &&
+        r.result.status === 'succeeded' &&
+        r.result.removed === true &&
+        r.result.exitCode === 0,
+    );
+    const failed = records.find(
+      ({ value: r }) =>
+        r.request.action === 'complete' &&
+        r.result.operationId === result.operationId &&
+        r.result.status === 'failed' &&
+        r.result.error === result.error,
+    );
+    if (!cp || !rm || !failed) return null;
+    const files = JSON.parse(
+      readFileSync(final.traceExport.manifestPath, 'utf8'),
+    ).files;
+    const ordered = (list) =>
+      list
+        .map(({ name, bytes, sha256 }) => ({ name, bytes, sha256 }))
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    if (
+      JSON.stringify(ordered(files)) !==
+        JSON.stringify(ordered(cp.value.result.manifest)) ||
+      JSON.stringify(files.map((f) => f.name).sort()) ===
+        JSON.stringify(cp.value.result.manifest.map((f) => f.name))
+    )
+      return null;
+    const receipt = (r) => ({ path: r.file, sha256: r.sha256 });
+    return {
+      version: '2026-09-12.final-order1',
+      source: 'verified-original-mac-terminal-operations',
+      terminalWindowPending: true,
+      finalizationSha256: final.receiptSha256,
+      copyReceipt: receipt(cp),
+      removalReceipt: receipt(rm),
+      failedAcknowledgement: receipt(failed),
+    };
+  } catch {
+    return null;
+  }
 }
