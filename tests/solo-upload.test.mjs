@@ -403,6 +403,17 @@ test('browser queue preserves genuine rounds and holds gaps, changed environment
     ...extra,
   });
   assert.equal(sequenceIssues([make(1), make(2), make(3)], hs).size, 0);
+  const held = sequenceIssues(
+    [
+      make(1, { eligible: false, uploadHold: { reason: '人工明确禁止上传' } }),
+      make(2),
+      make(3),
+    ],
+    hs,
+  );
+  assert.equal(held.size, 2);
+  assert.match(held.get('t:q2'), /首轮已被用户禁止上传/);
+  assert.match(held.get('t:q3'), /不能越序提交/);
   assert.equal(sequenceIssues([make(1), make(3)], hs).has('t:q3'), true);
   assert.equal(
     sequenceIssues([make(1), make(2, { eligible: false }), make(3)], hs).has(

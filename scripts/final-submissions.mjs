@@ -81,6 +81,45 @@ export function queueRecoveredFinalSubmission(
     });
 }
 
+// Replanning has its own finish message, with no assessment fields. The
+// preserved evaluation is still the source of the original submission.
+function submissionResult(dir, turnId) {
+  const file = path.join(dir, turnId + '.result.json');
+  if (!existsSync(file)) throw Error('评分结果尚未保存');
+  const result = JSON.parse(readFileSync(file, 'utf8'));
+  if (
+    result.projectRecovery &&
+    (!result.automation?.archive || !result.review)
+  ) {
+    const original = path.join(dir, turnId + '.pre-replan-result.json');
+    if (existsSync(original)) return JSON.parse(readFileSync(original, 'utf8'));
+  }
+  return result;
+}
+
+function delivered(receiptPath) {
+  return (
+    existsSync(receiptPath) &&
+    existsSync(receiptPath + '.delivered') &&
+    readFileSync(receiptPath + '.delivered', 'utf8') ===
+      hash(readFileSync(receiptPath))
+  );
+}
+
+// Older consumers marked an unscored replan message done. Completion of that
+// scan is not an acknowledgement of the assessment's submission receipt.
+function hasPendingAssessment(dir, item) {
+  return item.turnIds.some((turnId) => {
+    if (!existsSync(path.join(dir, turnId + '.result.json'))) return false;
+    const result = submissionResult(dir, turnId);
+    return (
+      result.automation?.archive &&
+      result.review &&
+      !delivered(path.join(dir, turnId + '.final-submission.json'))
+    );
+  });
+}
+
 // This durable queue outlives container replacement. Only submission metadata
 // is delivered separately; original result and assessment receipts stay intact.
 export async function flushFinalSubmissions({
@@ -90,14 +129,15 @@ export async function flushFinalSubmissions({
   onError = () => {},
   createPackage = createSubmissionPackage,
   verifyPackage = verifySubmissionPackage,
+  queueNames,
 }) {
   const directory = path.join(workRoot, 'final-submissions');
   if (!existsSync(directory)) return;
   for (const name of readdirSync(directory).filter((name) =>
     name.endsWith('.json'),
   )) {
+    if (queueNames && !queueNames.includes(name)) continue;
     const file = path.join(directory, name);
-    if (existsSync(file + '.done')) continue;
     let retry = {};
     try {
       retry = JSON.parse(readFileSync(file + '.retry', 'utf8'));
@@ -114,6 +154,8 @@ export async function flushFinalSubmissions({
       )
         throw Error('最终提交队列身份无效');
       const dir = path.join(workRoot, item.taskId);
+      if (existsSync(file + '.done') && !hasPendingAssessment(dir, item))
+        continue;
       const terminal = JSON.parse(
         readFileSync(
           path.join(dir, 'questions', item.questionId, 'terminal/launch.json'),
@@ -127,9 +169,7 @@ export async function flushFinalSubmissions({
       });
       if (!finalization) throw Error('最终原生导出尚未通过核验');
       for (const turnId of item.turnIds) {
-        const resultPath = path.join(dir, turnId + '.result.json');
-        if (!existsSync(resultPath)) throw Error('评分结果尚未保存');
-        const result = JSON.parse(readFileSync(resultPath, 'utf8'));
+        const result = submissionResult(dir, turnId);
         const archive = result.automation?.archive;
         if (!archive || !result.review) continue;
         if (
@@ -188,7 +228,10 @@ export async function flushFinalSubmissions({
         await api(request);
         writeFileSync(receiptPath + '.delivered', digest, { mode: 0o600 });
       }
-      writeFileSync(file + '.done', new Date().toISOString(), { mode: 0o600 });
+      if (!existsSync(file + '.done'))
+        writeFileSync(file + '.done', new Date().toISOString(), {
+          mode: 0o600,
+        });
     } catch (error) {
       // A failed submission copy retries independently of project execution.
       const attempts = (retry.attempts || 0) + 1;

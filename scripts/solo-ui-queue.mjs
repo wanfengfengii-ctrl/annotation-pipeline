@@ -110,7 +110,9 @@ async function prepareUnlocked() {
     if (!row.eligible) {
       blocked.push({
         key: recordKey(row),
-        reason: '尚未通过原终端归档和交付校验，或记录存在审核异议',
+        reason: row.exportIssues?.length
+          ? row.exportIssues.join('；')
+          : '尚未通过原终端归档和交付校验，或记录存在审核异议',
       });
       continue;
     }

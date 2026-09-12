@@ -28,6 +28,20 @@ export function sequenceIssues(rows, headers) {
       }
     }
     const first = roundRows.get(1);
+    const heldFirst =
+      !first &&
+      rows.some((row) => {
+        if (
+          !row.uploadHold ||
+          field(row, 'SessionID') !== field(group[0], 'SessionID')
+        )
+          return false;
+        try {
+          return coveredRecordRounds(row, headers).includes(1);
+        } catch {
+          return false;
+        }
+      });
     const consistency = [
       '初始环境快照',
       'Harness',
@@ -37,7 +51,12 @@ export function sequenceIssues(rows, headers) {
     ];
     for (const [round, row] of roundRows) {
       if (!first || field(first, '任务难度') === '简单') {
-        issues.set(recordKey(row), '会话缺少可提交的中等及以上难度首轮');
+        issues.set(
+          recordKey(row),
+          heldFirst
+            ? '会话首轮已被用户禁止上传，后续轮次不能越序提交'
+            : '会话缺少可提交的中等及以上难度首轮',
+        );
         continue;
       }
       if (

@@ -217,3 +217,113 @@ test('missing finalization cannot publish, and failure stays in the queue indepe
     ),
   );
 });
+
+for (const premarkedDone of [false, true])
+  test(`replanning preserves the scored submission after ${premarkedDone ? 'an old false completion' : 'a lost acknowledgement'}`, async (t) => {
+    const root = realpathSync(
+      mkdtempSync(path.join(tmpdir(), 'replan-submission-')),
+    );
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const taskId = randomUUID(),
+      questionId = randomUUID();
+    const dir = path.join(root, taskId),
+      terminalDir = path.join(dir, 'questions', questionId, 'terminal');
+    mkdirSync(terminalDir, { recursive: true });
+    const terminal = {
+      runId: randomUUID(),
+      statePath: path.join(terminalDir, 'state.json'),
+      launchPath: path.join(terminalDir, 'question.command'),
+    };
+    writeFileSync(
+      path.join(terminalDir, 'launch.json'),
+      JSON.stringify(terminal),
+    );
+    const f = finalizationFixture(dir, terminal, questionId);
+    f.state.results = { [questionId]: { success: true } };
+    queueFinalSubmission(root, f.state);
+    const resultPath = path.join(dir, questionId + '.result.json');
+    const original = JSON.stringify({
+      taskId,
+      turnId: questionId,
+      success: true,
+      container: { containerId: f.state.containerId },
+      review: { source: 'codex', scores: [3, 4, 3, 4, 3] },
+      automation: { archive: { sha256: 'e'.repeat(64) } },
+    });
+    writeFileSync(resultPath, original);
+    let calls = 0,
+      builds = 0;
+    const options = {
+      workRoot: root,
+      createPackage: ({ archive, finalization }) => {
+        builds++;
+        return {
+          status: 'passed',
+          sourceArchiveSha256: archive.sha256,
+          finalization,
+        };
+      },
+      verifyPackage: () => {},
+      api: async () => {
+        if (++calls === 1) throw Error('lost acknowledgement');
+      },
+    };
+    await flushFinalSubmissions(options);
+    assert.equal(calls, 1);
+    const queue = path.join(
+      root,
+      'final-submissions',
+      taskId + '.' + questionId + '.json',
+    );
+    const requestPath = path.join(dir, questionId + '.final-submission.json');
+    const request = readFileSync(requestPath, 'utf8');
+    const replan = JSON.stringify({
+      taskId,
+      turnId: questionId,
+      success: true,
+      projectRecovery: { state: 'planned' },
+    });
+    writeFileSync(
+      path.join(dir, questionId + '.pre-replan-result.json'),
+      original,
+    );
+    writeFileSync(resultPath, replan);
+    rmSync(queue + '.retry');
+    if (premarkedDone) writeFileSync(queue + '.done', 'historical completion');
+    await flushFinalSubmissions({ ...options, queueNames: ['unrelated.json'] });
+    assert.equal(calls, 1);
+    await flushFinalSubmissions(options);
+    assert.equal(calls, 2);
+    assert.equal(builds, 1, 'reuse the existing immutable submission request');
+    assert(existsSync(requestPath + '.delivered'));
+    await flushFinalSubmissions(options);
+    assert.equal(calls, 2, 'acknowledged submission is not sent again');
+    assert.equal(readFileSync(resultPath, 'utf8'), replan);
+    assert.equal(
+      readFileSync(
+        path.join(dir, questionId + '.pre-replan-result.json'),
+        'utf8',
+      ),
+      original,
+    );
+    assert.equal(readFileSync(requestPath, 'utf8'), request);
+    if (premarkedDone)
+      assert.equal(
+        readFileSync(queue + '.done', 'utf8'),
+        'historical completion',
+      );
+
+    // Reopened completion must still validate the saved evaluation's identity.
+    rmSync(requestPath + '.delivered');
+    writeFileSync(
+      path.join(dir, questionId + '.pre-replan-result.json'),
+      JSON.stringify({ ...JSON.parse(original), taskId: randomUUID() }),
+    );
+    const errors = [];
+    await flushFinalSubmissions({
+      ...options,
+      onError: (e) => errors.push(e.reason),
+    });
+    assert.equal(calls, 2);
+    assert.match(errors.join(), /身份不符/);
+  });
