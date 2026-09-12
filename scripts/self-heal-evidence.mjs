@@ -4,11 +4,12 @@ import { createHash } from 'node:crypto';
 import { DockerRuntime } from './docker-runtime.mjs';
 import { isNativeUserMessage } from '../lib/native-user-message.mjs';
 import { readJSON } from './self-heal-io.mjs';
-export const nativeDiagnosisVersion = '2026-09-12.native-diagnosis2';
+import { isGatewayContinuation } from '../lib/gateway-continuation.mjs';
+export const nativeDiagnosisVersion = '2026-09-12.native-diagnosis3';
 
 // The pending digest binds what Terminal sent. API turn.prompt may still be the
 // earlier draft. Never normalize text or borrow a different question's prompt.
-export function sentPromptEvidence(dir, turnId, pending) {
+export function sentPromptEvidence(dir, turnId, pending, turn) {
   if (
     pending?.turnId !== turnId ||
     !/^[a-f0-9]{64}$/.test(pending.promptHash || '')
@@ -40,6 +41,31 @@ export function sentPromptEvidence(dir, turnId, pending) {
         });
     } catch {
       /* An unfinished preparation is not sent-prompt evidence. */
+    }
+  }
+  // Gateway recovery inherits the original preparation instead of invoking a
+  // second prepare stage. Read the already-saved current-turn value and bind it
+  // to Terminal's exact send hash; do not borrow the parent's original prompt.
+  if (turn?.id === turnId && isGatewayContinuation(turn)) {
+    const file = path.join(dir, turnId + '.stages.json');
+    try {
+      if (fs.lstatSync(file).isFile()) {
+        const bytes = fs.readFileSync(file),
+          saved = JSON.parse(bytes).prepare;
+        if (
+          saved?.inheritedFrom?.turnId === turn.continuationOf &&
+          saved.value?.prompt === '继续' &&
+          createHash('sha256').update(saved.value.prompt).digest('hex') ===
+            pending.promptHash
+        )
+          candidates.push({
+            prompt: saved.value.prompt,
+            path: file,
+            sha256: createHash('sha256').update(bytes).digest('hex'),
+          });
+      }
+    } catch {
+      /* Missing, partial or linked records are not evidence. */
     }
   }
   if (!candidates.length || new Set(candidates.map((c) => c.prompt)).size !== 1)
@@ -114,7 +140,18 @@ export function collectNativeDiagnosis(root, task, turn) {
     s.pending?.turnId !== turn.id
   )
     return { error: '当前容器与本轮绑定不一致，未读取其他会话' };
-  const sent = sentPromptEvidence(path.join(work, task.id), turn.id, s.pending);
+  if (
+    turn.gatewayContinuation &&
+    (turn.gatewayContinuation.sessionId !== s.sessionId ||
+      turn.gatewayContinuation.containerId !== s.containerId)
+  )
+    return { error: '504 继续与当前原生会话身份不一致，保留原件' };
+  const sent = sentPromptEvidence(
+    path.join(work, task.id),
+    turn.id,
+    s.pending,
+    turn,
+  );
   const runtime = new DockerRuntime(work);
   runtime.owned(s);
   const files = runtime.native(s);

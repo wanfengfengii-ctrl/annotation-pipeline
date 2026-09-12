@@ -36,6 +36,7 @@ import {
   sentPromptEvidence,
 } from '../scripts/self-heal-evidence.mjs';
 import { selfHealConditions } from '../lib/recovery-conditions.mjs';
+import { gatewayContinuationVersion } from '../lib/gateway-continuation.mjs';
 
 const at = Date.parse('2026-09-12T02:00:00Z');
 test(
@@ -122,6 +123,61 @@ test('native diagnosis binds the sent preparation hash rather than the API draft
   fs.rmSync(sent.path);
   fs.symlinkSync(path.join(dir, 'other.attempt-2.prepare.json'), sent.path);
   assert.throws(() => sentPromptEvidence(dir, 'turn', pending), /找不到/);
+});
+
+test('native diagnosis reads an existing 504 continuation checkpoint without rewriting history', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'continuation-prompt-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const turn = {
+    id: 'next',
+    prompt: '继续',
+    continuationOf: 'previous',
+    gatewayContinuation: {
+      version: gatewayContinuationVersion,
+      failedTurnId: 'previous',
+      failedPromptId: 'p',
+      sessionId: 's',
+      containerId: 'c',
+      traceSha256: digest('trace'),
+    },
+  };
+  const pending = { turnId: turn.id, promptHash: digest('继续') };
+  const file = path.join(dir, 'next.stages.json');
+  const stage = {
+    prepare: {
+      value: { prompt: '继续' },
+      inheritedFrom: { turnId: 'previous' },
+    },
+  };
+  saveJSON(file, stage);
+  const original = fs.readFileSync(file);
+  assert.equal(sentPromptEvidence(dir, turn.id, pending, turn).prompt, '继续');
+  assert.deepEqual(fs.readFileSync(file), original);
+  assert.throws(() => sentPromptEvidence(dir, turn.id, pending), /找不到/);
+  assert.throws(
+    () =>
+      sentPromptEvidence(
+        dir,
+        turn.id,
+        { ...pending, promptHash: digest('继续 ') },
+        turn,
+      ),
+    /找不到/,
+  );
+  saveJSON(file, {
+    prepare: { ...stage.prepare, inheritedFrom: { turnId: 'unrelated' } },
+  });
+  assert.throws(
+    () => sentPromptEvidence(dir, turn.id, pending, turn),
+    /找不到/,
+  );
+  fs.rmSync(file);
+  saveJSON(path.join(dir, 'other.json'), stage);
+  fs.symlinkSync(path.join(dir, 'other.json'), file);
+  assert.throws(
+    () => sentPromptEvidence(dir, turn.id, pending, turn),
+    /找不到/,
+  );
 });
 
 test('failed repair immediately escalates once, retaining evidence and avoiding identical loops', () => {
