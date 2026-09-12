@@ -1180,4 +1180,43 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
   assert.equal(resumed.job.turn.observerHandoff.promptHash, handoff.promptHash);
   await post({ ...handoff, action: 'finish', result: { success: false } });
   assert.equal(current().turns[0].jobToken, resumed.job.turn.jobToken);
+  task.turns = [
+    {
+      id: 'stopped',
+      questionRootId: 'stopped',
+      status: 'failed',
+      stage: 'context',
+      claudeAttempts: ['sent'],
+      error: '此题容器已停止，只能导出归档，不能重启旧任务',
+    },
+  ];
+  task.container = {
+    containerId: 'stopped-container',
+    questionId: 'stopped',
+    status: 'running',
+  };
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(task),
+    task.id,
+  );
+  const stopRetry = await routes.PATCH(
+    new Request('http://localhost/api/tasks/project', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        action: 'retry',
+        turnId: 'stopped',
+        revision: db
+          .prepare('SELECT revision FROM tasks WHERE id=?')
+          .get(task.id).revision,
+      }),
+    }),
+    { params: Promise.resolve({ id: task.id }) },
+  );
+  assert.equal(stopRetry.status, 200);
+  assert.equal(
+    current().turns[0].stoppedCompletionRecovery.containerId,
+    'stopped-container',
+  );
+  assert.equal(current().turns[0].projectRetry, undefined);
+  assert.deepEqual(current().turns[0].claudeAttempts, ['sent']);
 });

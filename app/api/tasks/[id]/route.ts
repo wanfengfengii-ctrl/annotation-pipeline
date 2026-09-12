@@ -11,6 +11,7 @@ import {
   frozenPreparationFailure,
   closedRepairDraft,
   blockedProjectRetryAllowed,
+  stoppedCompletionRetryAllowed,
 } from '@/lib/project-recovery.mjs';
 import { submissionIssues } from '@/lib/submission-policy.mjs';
 import {
@@ -105,6 +106,12 @@ export async function PATCH(
         throw new Error('此轮不能重试');
       if (t.turns.at(-1)?.id !== r.id)
         throw Error('后续轮次已存在，不能重跑历史轮次覆盖原始证据');
+      if (stoppedCompletionRetryAllowed(t, r))
+        r.stoppedCompletionRecovery = {
+          containerId: t.container!.containerId!,
+          questionId: r.questionRootId || r.id,
+          requestedAt: new Date().toISOString(),
+        };
       if (canPlanDisputedTurn(t, r)) r.planRetry = true;
       const archivedRepair = closedRepairDraft(t, r);
       const repairPreparation =

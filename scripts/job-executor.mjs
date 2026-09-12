@@ -596,6 +596,19 @@ export function createJobExecutor({
         // it never starts the container or sends a replacement interaction.
         const stoppedState = containers.load(task.id);
         if (
+          turn.stoppedCompletionRecovery &&
+          !cached.claude?.success &&
+          (stoppedState?.containerId !==
+            turn.stoppedCompletionRecovery.containerId ||
+            stoppedState.questionId !==
+              turn.stoppedCompletionRecovery.questionId ||
+            stoppedState.status === 'removed' ||
+            containers.owned(stoppedState).State.Running)
+        )
+          throw Error(
+            '停止容器完成恢复的环境已变化，只能核验原件，禁止启动或重发',
+          );
+        if (
           !cached.claude?.success &&
           stoppedState?.status === 'stopped' &&
           stoppedState.results?.[turn.id]?.stoppedCompletion &&

@@ -158,6 +158,11 @@ export type Turn = {
   jobToken?: string;
   completedJobToken?: string;
   recoveryToken?: string;
+  stoppedCompletionRecovery?: {
+    containerId: string;
+    questionId: string;
+    requestedAt: string;
+  };
   observerHandoff?: {
     version: string;
     previousJobTokenHash: string;

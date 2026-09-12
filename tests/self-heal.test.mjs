@@ -796,3 +796,44 @@ test('compact patches require unique original text and an unchanged baseline', (
   fs.writeFileSync(path.join(root, 'lib/value.mjs'), before + '// changed');
   assert.throws(() => materializeRepair(root, proposal), /基线不一致/);
 });
+
+test('stopped completion failures expose only a bound recovery of the original container', () => {
+  const turn = {
+    id: 'turn',
+    questionRootId: 'turn',
+    status: 'failed',
+    stage: 'context',
+    claudeAttempts: ['once'],
+    error: '此题容器已停止，只能导出归档，不能重启旧任务',
+  };
+  const task = {
+    id: 'task',
+    turns: [turn],
+    container: {
+      containerId: 'container',
+      questionId: 'turn',
+      status: 'running',
+    },
+  };
+  assert.equal(recoveryAction(task, turn), 'retry');
+  for (const changed of [
+    { excluded: true },
+    { receipt: 'submitted' },
+    { claudeAttempts: [] },
+    { error: 'different fault' },
+  ])
+    assert.equal(
+      recoveryAction(
+        { ...task, turns: [{ ...turn, ...changed }] },
+        { ...turn, ...changed },
+      ),
+      null,
+    );
+  assert.equal(
+    recoveryAction(
+      { ...task, container: { ...task.container, questionId: 'later' } },
+      turn,
+    ),
+    null,
+  );
+});
