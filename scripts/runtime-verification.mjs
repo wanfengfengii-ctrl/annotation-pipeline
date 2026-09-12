@@ -8,7 +8,10 @@ import {
   readRuntimePlan,
   saveRuntimePlan,
 } from './runtime-plan-checkpoint.mjs';
-import { runtimeSuiteInstructions } from '../lib/runtime-suite.mjs';
+import {
+  runtimeSuiteInstructions,
+  runtimeSuiteVersion,
+} from '../lib/runtime-suite.mjs';
 import {
   mkdirSync,
   readdirSync,
@@ -39,6 +42,27 @@ import {
   validateRuntimeLimits,
 } from '../lib/runtime-verification.mjs';
 const hash = (b) => createHash('sha256').update(b).digest('hex');
+function revisionSuiteMetadata(base, value) {
+  const baseIds = new Set(base.plan.checks.map((check) => check.id));
+  const addedCheckIds = value.checks
+    .filter((check) => !baseIds.has(check.id))
+    .map((check) => check.id);
+  const current = new Set(base.questionCheckIds || []);
+  for (const check of value.checks)
+    if (!baseIds.has(check.id) && check.kind !== 'setup') current.add(check.id);
+  return {
+    version: runtimeSuiteVersion,
+    basePath: base.manifestPath,
+    baseSha256: base.manifestSha256,
+    reusedCheckIds: base.plan.checks.map((check) => check.id),
+    changedChecks: [],
+    addedCheckIds,
+    currentCheckIds: [...current],
+    inheritedCheckIds: value.checks
+      .filter((check) => check.kind !== 'setup' && !current.has(check.id))
+      .map((check) => check.id),
+  };
+}
 const runtimeImplementationDigest = hash(
   readFileSync(fileURLToPath(import.meta.url)),
 );
@@ -1244,8 +1268,15 @@ export async function verifyRuntime({
                       : {}),
               },
             ).then((result) => {
-              if (revision && prior?.plan?.value?.suite && !result.value.suite)
-                result.value.suite = structuredClone(prior.plan.value.suite);
+              if (revision && !result.value.suite) {
+                const previousSuite = prior?.plan?.value?.suite;
+                result.value.suite = previousSuite
+                  ? structuredClone(previousSuite)
+                  : suiteBase
+                    ? revisionSuiteMetadata(suiteBase, result.value)
+                    : undefined;
+                if (!result.value.suite) delete result.value.suite;
+              }
               return result;
             });
           },

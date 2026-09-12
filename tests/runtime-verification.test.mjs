@@ -232,6 +232,101 @@ test('Runtime planning receives measured capabilities and Bash contract after is
     (error) => error === stopAfterPlan,
   );
 });
+test('a full preflight revision restores suite metadata after an invalid incremental draft', async (t) => {
+  const dir = fixture(t),
+    workDir = path.join(dir, 'source'),
+    manifestPath = path.join(dir, 'project-suite.json'),
+    tracePath = path.join(dir, 'planner-events.jsonl');
+  mkdirSync(workDir);
+  writeFileSync(path.join(workDir, 'app.js'), 'export const old = 1;\nexport const current = 2;\n');
+  writeFileSync(manifestPath, '{}\n');
+  writeFileSync(tracePath, '{}\n');
+  const oldCheck = {
+      id: 'old_acceptance',
+      kind: 'acceptance',
+      command: 'check-old',
+      expected: 'old=1',
+      requirement: '保留旧行为',
+      codeEvidence: 'app.js:1',
+      timeoutSeconds: 10,
+    },
+    revised = {
+      summary: '修订后保留旧检查并新增当前检查',
+      checks: [
+        oldCheck,
+        {
+          id: 'current_acceptance',
+          kind: 'acceptance',
+          command: 'check-current',
+          expected: 'current=2',
+          requirement: '验证当前行为',
+          codeEvidence: 'app.js:2',
+          timeoutSeconds: 10,
+        },
+      ],
+    },
+    suiteBase = {
+      version: '2026-09-12.project-suite1',
+      manifestPath,
+      manifestSha256: createHash('sha256').update(readFileSync(manifestPath)).digest('hex'),
+      plan: { checks: [oldCheck] },
+      scripts: {},
+      questionCheckIds: [],
+      limits: { totalTimeoutSeconds: 900, stepTimeoutSeconds: 300, maxChecks: 8 },
+    },
+    stopAfterPlan = new Error('planned'),
+    plans = [];
+  let calls = 0;
+  await assert.rejects(
+    verifyRuntime({
+      browserCache: null,
+      dir,
+      workDir,
+      turnId: 'turn',
+      imageId: 'sha256:' + 'a'.repeat(64),
+      prompt: '验证当前行为',
+      acceptance: ['current=2'],
+      suiteBase,
+      docker: async (args, options = {}) =>
+        dockerResult(
+          args.includes('annotation.verification-probe=true')
+            ? JSON.stringify(probeCapabilities)
+            : args.includes('annotation.verification-preflight=true')
+              ? JSON.stringify({ version: 1, issues: [] })
+              : 'removed',
+          options,
+        ),
+      step: async () => {
+        calls++;
+        if (calls === 1) {
+          const error = new Error('incremental draft is incomplete');
+          error.runtimePlanCandidate = {
+            value: { summary: 'incomplete', reuse: [], replace: [], add: [] },
+          };
+          throw error;
+        }
+        return { value: structuredClone(revised), tracePath };
+      },
+      onPlanCheckpoint: async (plan) => {
+        plans.push(plan);
+        throw stopAfterPlan;
+      },
+    }),
+    (error) => error === stopAfterPlan,
+  );
+  assert.equal(calls, 2);
+  assert.equal(plans.length, 1);
+  assert.deepEqual(JSON.parse(readFileSync(plans[0].path)).plan.value.suite, {
+    version: '2026-09-12.project-suite1',
+    basePath: manifestPath,
+    baseSha256: suiteBase.manifestSha256,
+    reusedCheckIds: ['old_acceptance'],
+    changedChecks: [],
+    addedCheckIds: ['current_acceptance'],
+    currentCheckIds: ['current_acceptance'],
+    inheritedCheckIds: ['old_acceptance'],
+  });
+});
 test('Environment probe is bounded, has no mounts or network, and removes its exact container', async (t) => {
   const root = fixture(t),
     calls = [],
