@@ -1239,4 +1239,51 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     'stopped',
     'reading an already stopped container needs no new business container',
   );
+  const oldRuntime = runtimeRecoveryCandidate({
+    turnId: 'validation',
+    stage: 'runtime-diagnose',
+    error: 'old verifier timeout',
+    plan: { path: '/fixture-plan', sha256: 'a'.repeat(64) },
+    now: 1000,
+  });
+  task.turns = [
+    {
+      id: 'validation',
+      status: 'failed',
+      stage: 'delivery',
+      executionOutcome: 'complete',
+      promptId: 'native',
+      sessionId: 'session',
+      traceExport: { verified: true },
+      permissionAudit: { passed: true },
+      automation: { runtimeRecovery: oldRuntime },
+    },
+  ];
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(task),
+    task.id,
+  );
+  const validationRetry = await routes.PATCH(
+    new Request('http://localhost/api/tasks/project', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        action: 'retry-validation',
+        turnId: 'validation',
+        revision: db
+          .prepare('SELECT revision FROM tasks WHERE id=?')
+          .get(task.id).revision,
+      }),
+    }),
+    { params: Promise.resolve({ id: task.id }) },
+  );
+  assert.equal(validationRetry.status, 200);
+  const validationClaim = await (
+    await post({ action: 'claim', allowNewContainer: false })
+  ).json();
+  assert.equal(
+    validationClaim.job?.turn.id,
+    'validation',
+    'explicit validation retry must not be blocked by its later delivery stage',
+  );
+  assert.equal(validationClaim.job.turn.stage, 'delivery');
 });
