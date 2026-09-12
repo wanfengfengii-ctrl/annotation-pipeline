@@ -454,7 +454,9 @@ export async function POST(req: Request) {
         config = await schedulerConfig();
       // A graceful shutdown stops new claims, including queued old drafts,
       // while existing job tokens can still report stages and finish.
-      if (config.acceptingJobs === false) return Response.json({ job: null });
+      const drainingTurns = new Set(config.drainingTurns || []);
+      if (config.acceptingJobs === false && !drainingTurns.size)
+        return Response.json({ job: null });
       const capacity = Math.min(
         config.concurrency,
         Number.isInteger(b.capacity) ? Math.max(0, Math.min(4, b.capacity)) : 1,
@@ -574,6 +576,8 @@ export async function POST(req: Request) {
           (projectContinuation(item) ? item.turns.at(-1) : undefined) ||
           (recoverProject || retryStage ? item.turns.at(-1) : undefined);
         if (!r) continue;
+        if (config.acceptingJobs === false && !drainingTurns.has(item.id + ':' + r.id))
+          continue;
         if (retryStage)
           r.stageRecovery = {
             ...r.stageRecovery,
@@ -610,8 +614,9 @@ export async function POST(req: Request) {
         const claimed = await db()
           .prepare(`UPDATE tasks SET data=?,revision=revision+1 WHERE id=? AND revision=?
           AND (SELECT count(*) FROM tasks,json_each(tasks.data,'$.turns') r WHERE json_extract(r.value,'$.status')='running') < ?
-          AND COALESCE((SELECT json_extract(data,'$.acceptingJobs') FROM runners WHERE id='scheduler'),1)=1`)
-          .bind(serializeTask(task), task.id, revision, capacity)
+          AND (COALESCE((SELECT json_extract(data,'$.acceptingJobs') FROM runners WHERE id='scheduler'),1)=1
+            OR EXISTS (SELECT 1 FROM runners,json_each(runners.data,'$.drainingTurns') a WHERE runners.id='scheduler' AND a.value=?))`)
+          .bind(serializeTask(task), task.id, revision, capacity, task.id + ':' + r.id)
           .run();
         if (claimed.meta.changes)
           return Response.json({ job: { task, turn: r } });

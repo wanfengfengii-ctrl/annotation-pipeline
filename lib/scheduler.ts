@@ -1,6 +1,7 @@
 export type SchedulerConfig = {
   enabled: boolean;
   acceptingJobs?: boolean;
+  drainingTurns?: string[];
   autoContinue: boolean;
   useHistory: boolean;
   repos: string[];
@@ -11,6 +12,7 @@ export type SchedulerConfig = {
 export const defaultScheduler: SchedulerConfig = {
   enabled: true,
   acceptingJobs: true,
+  drainingTurns: [],
   autoContinue: true,
   useHistory: true,
   repos: [],
@@ -45,9 +47,12 @@ export function normalizeConfig(b: any): SchedulerConfig {
     throw Error('自动续跑开关无效');
   if (b.acceptingJobs !== undefined && typeof b.acceptingJobs !== 'boolean')
     throw Error('任务领取开关无效');
+  if (b.drainingTurns !== undefined && (!Array.isArray(b.drainingTurns) || b.drainingTurns.length > 4 || b.drainingTurns.some((id: unknown) => typeof id !== 'string' || !/^[\w-]+:[\w-]+$/.test(id))))
+    throw Error('收尾轮次清单无效');
   return {
     enabled: b.enabled,
     acceptingJobs: b.acceptingJobs ?? true,
+    drainingTurns: b.drainingTurns ?? [],
     autoContinue: b.autoContinue ?? true,
     useHistory: b.useHistory,
     repos: [

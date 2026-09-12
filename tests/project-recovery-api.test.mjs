@@ -123,6 +123,7 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     '2026-09-10',
   );
   config.acceptingJobs = false;
+  config.drainingTurns = ['other:failed'];
   assert.equal((await (await post({ action: 'claim', capacity: 3 })).json()).job, null);
   assert.equal(current().turns[0].status, 'failed');
   config.acceptingJobs = true;
@@ -130,6 +131,10 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     .run(JSON.stringify({ acceptingJobs: false }), 'now');
   assert.equal((await (await post({ action: 'claim', capacity: 3 })).json()).job, null);
   db.prepare("DELETE FROM runners WHERE id='scheduler'").run();
+  config.acceptingJobs = false;
+  config.drainingTurns = ['project:failed'];
+  db.prepare("INSERT INTO runners(id,data,heartbeat) VALUES('scheduler',?,?)")
+    .run(JSON.stringify({ acceptingJobs: false, drainingTurns: ['project:failed'] }), 'now');
   const claims = await Promise.all(
     Array.from({ length: 5 }, () =>
       post({ action: 'claim', capacity: 3, allowNewContainer: false }),
@@ -140,6 +145,9 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     .filter(Boolean);
   assert.equal(jobs.length, 1);
   const job = jobs[0];
+  config.acceptingJobs = true;
+  config.drainingTurns = [];
+  db.prepare("DELETE FROM runners WHERE id='scheduler'").run();
   assert.equal(job.turn.projectRetry.originalStatus, 'failed');
   assert.equal(current().turns.length, 1);
   const c = {
