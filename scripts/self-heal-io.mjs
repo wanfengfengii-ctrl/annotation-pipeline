@@ -4,6 +4,8 @@ import { spawn, execFileSync } from 'node:child_process';
 import { collectPatrolProgress } from './patrol-progress.mjs';
 import { patrolHealth } from '../lib/patrol-health.mjs';
 import { identity } from './recovery.mjs';
+import { verifyJobRelease } from './job-release.mjs';
+import { createHash } from 'node:crypto';
 
 export const readJSON = (file, fallback = null) => {
   try {
@@ -173,6 +175,36 @@ export function exactProcess(pid, expectedRoot, script) {
   } catch {
     return false;
   }
+}
+
+// The job pointer selects future jobs; it is not the running scheduler's cwd.
+export function ownedRunnerRoot(root, pid) {
+  const before = identity(pid);
+  if (!Number.isInteger(pid) || !before) throw Error('执行器进程已变化');
+  const cwd = command(
+    'lsof',
+    ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'],
+    root,
+  )
+    .split('\n')
+    .find((line) => line.startsWith('n'))
+    ?.slice(1);
+  if (!cwd || !exactProcess(pid, cwd, 'scripts/runner.mjs'))
+    throw Error('执行器归属不一致');
+  if (cwd !== root) {
+    if (path.dirname(cwd) !== path.join(root, '.runner/releases'))
+      throw Error('执行器不属于本项目');
+    const manifest = fs.readFileSync(path.join(cwd, 'job-release.json'));
+    verifyJobRelease(
+      {
+        root: cwd,
+        manifestSha256: createHash('sha256').update(manifest).digest('hex'),
+      },
+      path.join(root, '.runner'),
+    );
+  }
+  if (identity(pid) !== before) throw Error('执行器进程已变化');
+  return cwd;
 }
 
 // Restart only absent owned services; a live but slow runner is diagnosed, not killed.

@@ -9,6 +9,7 @@ import {
   command,
   launch,
   exactProcess,
+  ownedRunnerRoot,
   localAPI,
 } from './self-heal-io.mjs';
 import { runCheck } from './self-heal-repair.mjs';
@@ -45,10 +46,10 @@ export async function adoptIdleRunner(root) {
   if (pending.signaledIdentity === identity(pid)) return;
   const data = await localAPI('/api/tasks');
   if (runnerHasWork(data) || data.runner?.scheduler?.draining) return;
-  if (!exactProcess(pid, pending.oldRoot, 'scripts/runner.mjs'))
-    throw Error('待更新执行器归属不一致');
+  const oldRoot = ownedRunnerRoot(root, pid);
   saveJSON(file, {
     ...pending,
+    oldRoot,
     signaledIdentity: identity(pid),
     signaledAt: new Date().toISOString(),
   });
@@ -218,7 +219,7 @@ export async function advanceRelease(root, job, jobFile) {
           // admissions behind one stuck old observer just to refresh the scheduler.
           saveJSON(path.join(work, 'self-heal/runner-adoption.json'), {
             jobId: job.id,
-            oldRoot: state.oldPointer.root,
+            oldRoot: ownedRunnerRoot(root, pid),
             requestedAt: new Date().toISOString(),
           });
           job.runnerAdoption = 'waiting-idle';
@@ -227,12 +228,7 @@ export async function advanceRelease(root, job, jobFile) {
         } else {
           save({ oldRunnerPid: pid, oldRunnerIdentity: identity(pid) });
           if (!runner?.scheduler?.draining) {
-            const oldRoot = state.oldPointer.root;
-            if (
-              !exactProcess(pid, oldRoot, 'scripts/runner.mjs') &&
-              !exactProcess(pid, root, 'scripts/runner.mjs')
-            )
-              throw Error('执行器归属不一致，保留现场');
+            ownedRunnerRoot(root, pid);
             // Persist identity before the signal so a restarted controller won't
             // mistake a reused PID for the old runner.
             save({ oldRunnerPid: pid, oldRunnerIdentity: identity(pid) });

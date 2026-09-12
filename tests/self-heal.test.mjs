@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import {
   reconcileSelfHeal,
   nextSelfHealAction,
@@ -12,7 +14,12 @@ import {
 } from '../lib/self-heal.mjs';
 import { repairPathAllowed, validateRepair } from '../lib/self-heal-patch.mjs';
 import { repairJob, runCheck } from '../scripts/self-heal-repair.mjs';
-import { command, saveJSON } from '../scripts/self-heal-io.mjs';
+import {
+  command,
+  saveJSON,
+  ownedRunnerRoot,
+} from '../scripts/self-heal-io.mjs';
+import { jobReleaseProtocol } from '../scripts/job-release.mjs';
 import {
   advanceRelease,
   prepareBuildDependencies,
@@ -26,6 +33,56 @@ import {
 import { selfHealConditions } from '../lib/recovery-conditions.mjs';
 
 const at = Date.parse('2026-09-12T02:00:00Z');
+test(
+  'scheduler adoption finds the real older owned release after multiple job publications',
+  { skip: process.env.SELF_HEAL_TEST === '1' },
+  async (t) => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'runner-owner-')),
+    );
+    const old = path.join(root, '.runner/releases/old');
+    fs.mkdirSync(path.join(old, 'scripts'), { recursive: true });
+    const entries = {
+      'scripts/runner.mjs': 'console.log("ready");setInterval(()=>{},1000);',
+      'scripts/job-executor.mjs': 'export const fixture = true;',
+      'scripts/docker-runtime.mjs': 'export const fixture = true;',
+      'package.json': '{"type":"module"}',
+    };
+    for (const [file, text] of Object.entries(entries))
+      fs.writeFileSync(path.join(old, file), text);
+    saveJSON(path.join(old, 'job-release.json'), {
+      protocol: jobReleaseProtocol,
+      commit: 'a'.repeat(40),
+      files: Object.entries(entries).map(([file, text]) => ({
+        path: file,
+        sha256: digest(text),
+      })),
+    });
+    saveJSON(path.join(root, '.runner/job-release-current.json'), {
+      root: path.join(root, '.runner/releases/new'),
+      manifestSha256: 'b'.repeat(64),
+    });
+    const child = spawn(process.execPath, ['scripts/runner.mjs'], {
+      cwd: old,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    t.after(async () => {
+      if (child.exitCode === null) {
+        child.kill();
+        await once(child, 'exit');
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    await once(child.stdout, 'data');
+    assert.equal(ownedRunnerRoot(root, child.pid), old);
+    assert.throws(
+      () => ownedRunnerRoot(path.join(root, 'unrelated'), child.pid),
+      /归属|不属于|ENOENT/,
+    );
+    fs.writeFileSync(path.join(old, 'scripts/docker-runtime.mjs'), 'changed');
+    assert.throws(() => ownedRunnerRoot(root, child.pid), /代码已变化/);
+  },
+);
 test('native diagnosis binds the sent preparation hash rather than the API draft', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sent-prompt-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -322,6 +379,40 @@ test('daily and per-fault budgets persist across controller restart', () => {
     state: 'failed',
   }));
   assert.equal(nextSelfHealAction(b, s, at + 61000), null);
+});
+
+test('exhausted model budget does not hide a later protected transport retry', () => {
+  const snap = snapshot();
+  snap.tasks.push({
+    id: 'network',
+    turns: [
+      {
+        id: 'failed',
+        status: 'failed',
+        stage: 'context',
+        projectRecovery: { state: 'blocked' },
+      },
+    ],
+  });
+  snap.health.incidents.push({
+    id: 'network:failed',
+    taskId: 'network',
+    turnId: 'failed',
+    stage: 'context',
+    state: 'open',
+    reason: 'fetch failed',
+  });
+  const state = ready(snap);
+  state.jobs = Array.from({ length: 6 }, (_, n) => ({
+    id: 'spent' + n,
+    startedAt: new Date(at).toISOString(),
+    state: 'failed',
+  }));
+  const next = nextSelfHealAction(state, snap, at + 61000);
+  assert.equal(next?.kind, 'retry');
+  assert.equal(state.incidents[next.incidentId].taskId, 'network');
+  state.incidents[next.incidentId].directRetryAt = new Date(at).toISOString();
+  assert.equal(nextSelfHealAction(state, snap, at + 120000), null);
 });
 test('patch admission blocks source drift, traversal, raw data and self policy edits', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'repair-gate-'));

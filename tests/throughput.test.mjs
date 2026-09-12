@@ -586,6 +586,36 @@ test('stale finalization plan cannot close a different current question', async 
   assert.equal(calls, 0);
   assert.match(q.failures[item.id].reason, /身份不一致/);
 });
+
+test('lost completion acknowledgement is retried once and never marked completed early', async () => {
+  const item = task();
+  item.finalization = sessionFinalization(item);
+  let now = 0,
+    receipts = 0;
+  const q = new FinalizationQueue({
+    now: () => now,
+    refresh: async () => [item],
+    runtime: {
+      load: () => ({
+        ...item.container,
+        terminal: { terminalProtocolVersion },
+      }),
+      close: async () => {},
+    },
+    onComplete: async () => {
+      receipts++;
+      if (receipts === 1) throw Error('fetch failed');
+    },
+  });
+  q.enqueue([item], new Set());
+  await Promise.all(q.active.values());
+  assert.equal(q.completed.has(item.id), false);
+  now = 61000;
+  q.enqueue([item], new Set());
+  await Promise.all(q.active.values());
+  assert.equal(receipts, 2);
+  assert.equal(q.completed.has(item.id), true);
+});
 test('two qualified candidates buffer is bounded; generation can use an idle phase without a fourth project', () => {
   const c = {
     config: { enabled: true, dailyLimit: 20 },
