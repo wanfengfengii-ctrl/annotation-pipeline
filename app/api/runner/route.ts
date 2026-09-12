@@ -1,4 +1,8 @@
 import { recordDeliveryHistory } from '@/lib/production-history.mjs';
+import {
+  queueObserverHandoff,
+  supersededObserver,
+} from '@/lib/observer-handoff.mjs';
 import { validateOperations } from '@/lib/operations-status.mjs';
 import {
   retryBudgets,
@@ -22,6 +26,7 @@ import {
   wasSent,
   sentProjectCounts,
   postprocessRetryDue,
+  queuedProjectRecovery,
 } from '@/lib/project-recovery.mjs';
 import { canAddTurn } from '@/lib/project-series.mjs';
 import { serializeTask } from '@/lib/task-storage.mjs';
@@ -521,6 +526,7 @@ export async function POST(req: Request) {
           b.allowNewContainer === false &&
           !residents.includes(item.id) &&
           !recoverProject &&
+          !queuedProjectRecovery(item) &&
           !retryStage &&
           !validationRecovery(item)
         )
@@ -533,6 +539,7 @@ export async function POST(req: Request) {
         )
           continue;
         const r =
+          (queuedProjectRecovery(item) ? item.turns.at(-1) : undefined) ||
           item.turns.find(
             (r: any) =>
               r.status === 'queued' &&
@@ -679,10 +686,20 @@ export async function POST(req: Request) {
       await save(item.task, item.revision);
       return Response.json({ ok: true });
     }
+    if (b.action === 'handoff-observer') {
+      const item = await get(text(b.taskId, '任务 ID'));
+      if (!item) throw Error('任务不存在');
+      const r = item.task.turns.find((r) => r.id === b.turnId);
+      if (queueObserverHandoff(item.task, r, b))
+        await save(item.task, item.revision);
+      return Response.json({ ok: true });
+    }
     if (b.action === 'recover') {
       const item = await get(text(b.taskId, '任务 ID'));
       const r = item?.task.turns.find((r) => r.id === b.turnId);
       if (!item || !r) return Response.json({ done: true });
+      if (supersededObserver(r, b.jobToken))
+        return Response.json({ done: true });
       if (r.completedJobToken === b.jobToken)
         return Response.json({ done: true });
       if (
@@ -724,6 +741,7 @@ export async function POST(req: Request) {
       const r = item.task.turns.find((r) => r.id === b.turnId);
       if (typeof b.jobToken === 'string' && r?.completedJobToken === b.jobToken)
         return Response.json({ ok: true });
+      if (supersededObserver(r, b.jobToken)) return Response.json({ ok: true });
       if (!r || r.status !== 'running' || r.jobToken !== b.jobToken)
         throw new Error('任务状态或执行凭据不匹配');
       const historical =

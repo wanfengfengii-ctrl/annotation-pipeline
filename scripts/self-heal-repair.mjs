@@ -5,7 +5,10 @@ import { spawn } from 'node:child_process';
 import { runCodexProcess } from './codex-process.mjs';
 import { acquireLock, identity } from './recovery.mjs';
 import { readJSON, saveJSON, command } from './self-heal-io.mjs';
-import { validateRepair, writeRepairFiles } from '../lib/self-heal-patch.mjs';
+import {
+  materializeRepair,
+  writeRepairFiles,
+} from '../lib/self-heal-patch.mjs';
 import { wakeSelfHeal } from './self-heal-wakeup.mjs';
 
 const str = { type: 'string' };
@@ -23,7 +26,8 @@ const contract = schema({
     items: schema({
       path: str,
       beforeSha256: { type: ['string', 'null'] },
-      content: str,
+      content: { type: ['string', 'null'] },
+      edits: { type: 'array', items: schema({ old: str, new: str }) },
     }),
   },
   tests: { type: 'array', items: str },
@@ -121,7 +125,7 @@ export async function repairJob(jobFile) {
           (job.mode === 'escalation'
             ? '\n这是故障发生后的立即升级诊断。先读 previousDiagnoses 中的 proposal、review、测试失败和最新现场，明确上一修复为何没有完成。先核对故障现在是否仍成立及现有恢复入口，再检查跨模块的输入绑定、状态转换和回执；不要只改提示词、复述上一建议或重交被否决的补丁。针对证据支持的新原因给出最小补丁和真实回归。没有新修复依据或缺外部条件时，具体说明需要谁补充什么，不能假称完成或无限原样重试。\n'
             : '') +
-          `\n当前隔离源码是提交 ${base}。下面是本次故障摘要与只读证据路径；仅展开本次故障涉及的日志。\n${JSON.stringify(context)}\n返回 action=patch 时提供每个文件的完整新内容和原内容 SHA-256（新文件为 null），至少补充一个在原代码失败、修复后通过的单元回归测试，可以修改已有测试文件或新建测试文件，tests 只填 tests/*.test.mjs 路径。测试使用临时目录/模拟接口，不能访问正在运行的生产 API、真实账号、项目目录或 Docker。只有 availableRecoveryAction 非空且现有源码已能正确处理该故障时才可返回 retry。该字段为空时不能猜测重试、接管或重新导出入口；若读轨迹的逻辑没有匹配已完成轮次，应定位并修复读取逻辑，不能仅因原生轮次已完成就返回 retry。无法据实修复时返回 needs_input。`,
+          `\n当前隔离源码是提交 ${base}。下面是本次故障摘要与只读证据路径；仅展开本次故障涉及的日志。\n${JSON.stringify(context)}\n只读指不直接写入磁盘，不妨碍在 JSON 中生成补丁。你不需要亲自应用补丁或运行回归，这由程序在隔离副本执行。返回 action=patch 时每个文件提供原内容 SHA-256（新文件为 null）；现有大文件优先用 content=null 和 edits=[{old:唯一匹配的原文,new:替换正文}]，新文件用完整 content 和 edits=[]。禁止因只读或文件较大而宣称无法提供补丁。至少补充一个在原代码失败、修复后通过的单元回归测试，可以修改已有测试文件或新建测试文件，tests 只填 tests/*.test.mjs 路径。测试使用临时目录/模拟接口，不能访问正在运行的生产 API、真实账号、项目目录或 Docker。只有 availableRecoveryAction 非空且现有源码已能正确处理该故障时才可返回 retry。该字段为空时不能猜测重试、接管或重新导出入口；若读轨迹的逻辑没有匹配已完成轮次，应定位并修复读取逻辑，不能仅因原生轮次已完成就返回 retry。无法据实修复时返回 needs_input。`,
         contract,
         tree,
         dir,
@@ -130,7 +134,8 @@ export async function repairJob(jobFile) {
       saveJSON(path.join(dir, 'proposal.json'), proposal);
     }
     if (job.phase === 'published' || job.commit) return job;
-    validateRepair(tree, proposal);
+    proposal = materializeRepair(tree, proposal);
+    saveJSON(path.join(dir, 'resolved-proposal.json'), proposal);
     save({ reason: proposal.reason });
     if (proposal.action === 'needs_input') {
       save({ state: 'needs_input', phase: 'diagnosed' });
@@ -188,6 +193,9 @@ export async function repairJob(jobFile) {
       'tests/recovery-files.test.mjs',
       'tests/solo-schedule.test.mjs',
       'tests/closed-loop.test.mjs',
+      'tests/observer-handoff.test.mjs',
+      'tests/native-user-message.test.mjs',
+      'tests/runtime-retry-context.test.mjs',
       'tests/project-recovery-api.test.mjs',
       'tests/job-api-release.test.mjs',
       'tests/throughput.test.mjs',

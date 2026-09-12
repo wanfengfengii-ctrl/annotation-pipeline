@@ -12,7 +12,11 @@ import {
   recoveryAction,
   digest,
 } from '../lib/self-heal.mjs';
-import { repairPathAllowed, validateRepair } from '../lib/self-heal-patch.mjs';
+import {
+  repairPathAllowed,
+  validateRepair,
+  materializeRepair,
+} from '../lib/self-heal-patch.mjs';
 import { repairJob, runCheck } from '../scripts/self-heal-repair.mjs';
 import {
   command,
@@ -339,6 +343,15 @@ test(
   async (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-wait-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      Response.json({
+        tasks: [],
+        runner: { scheduler: { draining: true, active: 1 } },
+      });
+    t.after(() => {
+      globalThis.fetch = originalFetch;
+    });
     saveJSON(path.join(root, '.runner/self-heal/deploy.json'), {
       active: true,
       jobId: 'j',
@@ -664,6 +677,12 @@ for (const mode of ['repair', 'escalation'])
         ],
         tests: ['tests/value.test.mjs'],
       };
+      if (mode === 'escalation') {
+        proposal.files[0].content = null;
+        proposal.files[0].edits = [
+          { old: before, new: 'export const value = 1;\n' },
+        ];
+      }
       saveJSON(jobFile, { id, root, mode, state: 'running' });
       saveJSON(path.join(jobDir, 'context.json'), {
         reason: 'value incorrect',
@@ -727,3 +746,53 @@ for (const mode of ['repair', 'escalation'])
       );
     },
   );
+
+test('compact patches require unique original text and an unchanged baseline', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'compact-patch-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'lib'));
+  const before = 'export const value = 0;\n// repeat repeat\n';
+  fs.writeFileSync(path.join(root, 'lib/value.mjs'), before);
+  const proposal = {
+    action: 'patch',
+    reason: 'fixture',
+    files: [
+      {
+        path: 'lib/value.mjs',
+        beforeSha256: digest(before),
+        content: null,
+        edits: [{ old: 'value = 0', new: 'value = 1' }],
+      },
+      {
+        path: 'tests/value.test.mjs',
+        beforeSha256: null,
+        content: 'test content',
+        edits: [],
+      },
+    ],
+    tests: ['tests/value.test.mjs'],
+  };
+  assert.equal(
+    materializeRepair(root, proposal).files[0].content,
+    before.replace('value = 0', 'value = 1'),
+  );
+  assert.equal(
+    fs.readFileSync(path.join(root, 'lib/value.mjs'), 'utf8'),
+    before,
+  );
+  for (const edits of [
+    [{ old: 'repeat', new: 'once' }],
+    [{ old: 'missing', new: 'once' }],
+    [{ old: '', new: 'once' }],
+  ])
+    assert.throws(
+      () =>
+        materializeRepair(root, {
+          ...proposal,
+          files: [{ ...proposal.files[0], edits }, proposal.files[1]],
+        }),
+      /唯一匹配/,
+    );
+  fs.writeFileSync(path.join(root, 'lib/value.mjs'), before + '// changed');
+  assert.throws(() => materializeRepair(root, proposal), /基线不一致/);
+});

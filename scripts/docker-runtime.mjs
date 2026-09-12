@@ -41,7 +41,10 @@ import {
 import { questionRoot, priorQuestionTurn } from '../lib/question-session.mjs';
 import { terminalConfirmation } from '../lib/terminal-confirmation.mjs';
 import { NativeProgressWatch } from './native-progress.mjs';
-import { isNativeUserMessage } from '../lib/native-user-message.mjs';
+import {
+  isNativeUserMessage,
+  nativePromptMatches,
+} from '../lib/native-user-message.mjs';
 import {
   containerImage,
   containerPolicyVersion,
@@ -245,7 +248,7 @@ export function readNativeTurn(files, prompt, previousIds = []) {
       (e) =>
         isNativeUserMessage(e) &&
         !previousIds.includes(e.uuid) &&
-        e.message?.content === prompt,
+        nativePromptMatches(e.message?.content, prompt),
     );
     if (start < 0) continue;
     const user = events[start];
@@ -561,6 +564,18 @@ export class DockerRuntime {
     const questionId = questionRoot(task, turn);
     let rotating = false;
     let s = this.load(task.id);
+    if (
+      turn.observerHandoff &&
+      (s?.containerId !== turn.observerHandoff.containerId ||
+        (turn.observerHandoff.sessionId &&
+          s.sessionId !== turn.observerHandoff.sessionId) ||
+        s.terminal?.runId !== turn.observerHandoff.terminalRunId ||
+        (!s.results?.[turn.id] &&
+          (s.pending?.turnId !== turn.id ||
+            s.pending.phase !== 'sent' ||
+            s.pending.promptHash !== turn.observerHandoff.promptHash)))
+    )
+      throw Error('观察交接与原终端发送回执不符，禁止重发');
     if (s && (s.questionId || task.turns?.[0]?.id) !== questionId) {
       if (turn.repairOf || turn.continuationOf)
         throw Error('不能将原题继续关联到其他容器');
@@ -1113,58 +1128,7 @@ export class DockerRuntime {
       if (!native?.complete)
         await this.confirmLocalCommand(s, task, turn, native);
       if (native?.complete) {
-        if (s.sessionId && s.sessionId !== native.sessionId)
-          throw Error('同一容器的会话 ID 发生变化');
-        s.sessionId = native.sessionId;
-        s.harnessVersion = native.harnessVersion || s.harnessVersion;
-        const traceExport = await this.export(s, turn.id);
-        const permissionAudit = this.permissionAudit(traceExport);
-        const dir = path.dirname(this.file(task.id)),
-          tracePath = path.join(dir, turn.id + '.jsonl');
-        writeFileSync(tracePath, native.content, { mode: 0o600 });
-        writeFileSync(
-          path.join(dir, turn.id + '.native.jsonl'),
-          native.nativeContent,
-          { mode: 0o600 },
-        );
-        const result = {
-          success: !native.error && permissionAudit.passed,
-          output: native.output,
-          error: !permissionAudit.passed
-            ? '完整会话存在权限拒绝或未确认免审批模式；原始轨迹保留，需新建任务重新采集'
-            : native.error
-              ? 'Claude 原始轨迹报告调用错误'
-              : '',
-          sessionId: native.sessionId,
-          promptId: native.promptId,
-          model: native.model,
-          harness: 'Claude Code',
-          harnessVersion: s.harnessVersion,
-          os: s.os,
-          workDir: s.workDir,
-          snapshot: s.snapshot,
-          tracePath,
-          traceExport,
-          permissionAudit,
-          claudeCallCount: p.count,
-          executionOutcome:
-            native.error || !permissionAudit.passed ? 'error' : 'complete',
-          finishedAt: new Date().toISOString(),
-        };
-        if (native.gatewayError && permissionAudit.passed)
-          result.gatewayFailure = {
-            version: gatewayContinuationVersion,
-            ...native.gatewayError,
-            promptId: native.promptId,
-            sessionId: native.sessionId,
-            traceSha256: traceExport.sha256,
-          };
-        s.results[turn.id] = result;
-        delete s.pending;
-        s.traceExport = traceExport;
-        s.permissionAudit = permissionAudit;
-        await this.publish(s);
-        return { ...result, container: this.public(s) };
+        return this.saveNativeResult(s, turn, p, native);
       }
       // Silence is not completion: Claude's own gateway retries can outlast
       // the progress threshold. Keep the original sent receipt and observe at
@@ -1173,6 +1137,90 @@ export class DockerRuntime {
       // model reservation or terminal restart is performed by this wait.
       await nap(diagnostic.pollIntervalMs);
     }
+  }
+  async saveNativeResult(s, turn, p, native, existingExport) {
+    if (s.sessionId && s.sessionId !== native.sessionId)
+      throw Error('同一容器的会话 ID 发生变化');
+    s.sessionId = native.sessionId;
+    s.harnessVersion = native.harnessVersion || s.harnessVersion;
+    const traceExport = existingExport || (await this.export(s, turn.id));
+    const permissionAudit = this.permissionAudit(traceExport);
+    const dir = path.dirname(this.file(s.taskId)),
+      tracePath = path.join(dir, turn.id + '.jsonl');
+    writeFileSync(tracePath, native.content, { mode: 0o600 });
+    writeFileSync(
+      path.join(dir, turn.id + '.native.jsonl'),
+      native.nativeContent,
+      { mode: 0o600 },
+    );
+    const result = {
+      success: !native.error && permissionAudit.passed,
+      output: native.output,
+      error: !permissionAudit.passed
+        ? '完整会话存在权限拒绝或未确认免审批模式；原始轨迹保留，需新建任务重新采集'
+        : native.error
+          ? 'Claude 原始轨迹报告调用错误'
+          : '',
+      sessionId: native.sessionId,
+      promptId: native.promptId,
+      model: native.model,
+      harness: 'Claude Code',
+      harnessVersion: s.harnessVersion,
+      os: s.os,
+      workDir: s.workDir,
+      snapshot: s.snapshot,
+      tracePath,
+      traceExport,
+      permissionAudit,
+      claudeCallCount: p.count,
+      executionOutcome:
+        native.error || !permissionAudit.passed ? 'error' : 'complete',
+      finishedAt: new Date().toISOString(),
+      ...(existingExport ? { stoppedCompletion: true } : {}),
+    };
+    if (native.gatewayError && permissionAudit.passed)
+      result.gatewayFailure = {
+        version: gatewayContinuationVersion,
+        ...native.gatewayError,
+        promptId: native.promptId,
+        sessionId: native.sessionId,
+        traceSha256: traceExport.sha256,
+      };
+    s.results[turn.id] = result;
+    delete s.pending;
+    s.traceExport = traceExport;
+    s.permissionAudit = permissionAudit;
+    await this.publish(s);
+    return { ...result, container: this.public(s) };
+  }
+  async captureStoppedTurn(task, turn, prompt) {
+    const s = this.load(task.id),
+      p = s?.pending;
+    if (
+      !s ||
+      s.status === 'removed' ||
+      s.taskId !== task.id ||
+      s.questionId !== (turn.questionRootId || turn.id) ||
+      p?.turnId !== turn.id ||
+      p.phase !== 'sent' ||
+      !p.count ||
+      p.promptHash !== hash(prompt) ||
+      this.owned(s).State.Running
+    )
+      throw Error('停止容器缺少本轮已发送回执，不能恢复完成结果');
+    const exported = await this.export(s, turn.id + '.stopped-recovery');
+    const files = readdirSync(exported.path, { recursive: true })
+      .filter((name) => name.endsWith('.jsonl'))
+      .map((name) => ({
+        name,
+        content: readFileSync(path.join(exported.path, name), 'utf8'),
+      }));
+    const native = readNativeTurn(files, prompt, p.previousIds);
+    if (!native?.complete || (s.sessionId && native.sessionId !== s.sessionId))
+      throw Error('停止容器没有本轮完整原生结束证据，保留原件');
+    s.status = 'stopped';
+    const result = await this.saveNativeResult(s, turn, p, native, exported);
+    return { ...result, stoppedCompletion: true };
   }
   async confirmLocalCommand(s, task, turn, native) {
     const live = this.live.get(s.taskId);

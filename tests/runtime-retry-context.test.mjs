@@ -268,6 +268,33 @@ test('completed archived recovery binds the exact native turn, export and unchan
     runtimeVerification: f.report,
   };
   const input = { task: { id: 'task' }, turn, cached, state, dir };
+  const stoppedInput = {
+    ...input,
+    stopped: true,
+    state: { ...state, status: 'stopped' },
+    turn: { id: turn.id, questionRootId: turn.questionRootId },
+    cached: {
+      ...cached,
+      claude: { ...cached.claude, stoppedCompletion: true },
+      runtimeVerification: null,
+    },
+  };
+  assert.equal(completedValidationEvidence(stoppedInput).historical, true);
+  assert.throws(() =>
+    completedValidationEvidence({
+      ...stoppedInput,
+      state: { ...stoppedInput.state, pending: {} },
+    }),
+  );
+  assert.throws(() =>
+    completedValidationEvidence({
+      ...stoppedInput,
+      cached: {
+        ...stoppedInput.cached,
+        claude: { ...cached.claude, stoppedCompletion: false },
+      },
+    }),
+  );
   const before = structuredClone(input);
   const result = completedValidationEvidence(input);
   assert.equal(result.historical, true);

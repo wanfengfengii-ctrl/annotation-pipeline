@@ -13,6 +13,7 @@ import {
   localAPI,
 } from './self-heal-io.mjs';
 import { runCheck } from './self-heal-repair.mjs';
+import { handoffTerminalObservers } from './observer-handoff.mjs';
 
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 export function runnerHasWork(data) {
@@ -43,12 +44,20 @@ export async function adoptIdleRunner(root) {
     saveJSON(file, { ...pending, completedAt: new Date().toISOString() });
     return;
   }
-  if (pending.signaledIdentity === identity(pid)) return;
   const data = await localAPI('/api/operations/source').catch((error) => {
     if (!error.message.startsWith('本地接口 404:')) throw error;
     return localAPI('/api/tasks');
   });
   const boundary = readJSON(path.join(work, 'boundary-release.json'));
+  if (
+    data.runner?.scheduler?.draining &&
+    runnerHasWork(data) &&
+    fs.existsSync(path.join(current.root, 'lib/observer-handoff.mjs'))
+  ) {
+    await handoffTerminalObservers(root, pid, await localAPI('/api/tasks'));
+    return;
+  }
+  if (pending.signaledIdentity === identity(pid)) return;
   if (
     boundary?.protocol === '2026-09-12.boundaries1' &&
     boundary.pid === pid &&
@@ -253,6 +262,8 @@ export async function advanceRelease(root, job, jobFile) {
             process.kill(pid, 'SIGUSR2');
           }
           save({ phase: 'waiting-runner' });
+          if (runner?.scheduler?.draining && runnerHasWork(data))
+            await handoffTerminalObservers(root, pid, data);
           return { waiting: true };
         }
       } else save({ phase: 'start-runner' });
@@ -261,8 +272,11 @@ export async function advanceRelease(root, job, jobFile) {
       if (
         state.oldRunnerPid &&
         identity(state.oldRunnerPid) === state.oldRunnerIdentity
-      )
+      ) {
+        const data = await localAPI('/api/tasks');
+        await handoffTerminalObservers(root, state.oldRunnerPid, data);
         return { waiting: true };
+      }
       const pid = readJSON(path.join(work, 'runner.lock'));
       if (pid && identity(pid)) {
         if (!exactProcess(pid, state.release.root, 'scripts/runner.mjs'))

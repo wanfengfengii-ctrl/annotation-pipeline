@@ -101,10 +101,11 @@ acquireLock(lock);
 let stopping = false;
 const budget = new StageBudget({ stopped: () => stopping });
 let draining = false;
+let upgradeRequested = false;
 const loadAdmission = createLoadAdmission();
-// Graceful upgrades stop admissions, but finish existing stages and Terminal work.
+// Upgrade at a natural idle boundary; slow Terminal work must not starve admissions.
 process.on('SIGUSR2', () => {
-  draining = true;
+  upgradeRequested = true;
 });
 const children = new Set();
 function track(p) {
@@ -455,6 +456,14 @@ try {
         heavyAllowed: heavyMemoryPoolBytes > 0,
         heavyMemoryPoolBytes,
       });
+      // Component releases are adopted between operations. A main-process
+      // upgrade must never stop filling free slots while a slow task is alive.
+      draining =
+        upgradeRequested &&
+        active.size === 0 &&
+        orphans.length === 0 &&
+        !generating &&
+        !finalizations.active.size;
       schedulerStatus = {
         ...resource,
         stages: budget.snapshot(),
@@ -463,6 +472,7 @@ try {
         providerHealth: providerHealth.snapshot(),
         pilot: pilot.read(),
         draining,
+        upgradeRequested,
         checkpointVersion,
         resourceProfile: profile,
         active: active.size,

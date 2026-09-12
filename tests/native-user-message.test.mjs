@@ -147,3 +147,119 @@ test('a sent interaction with image companions resumes into a saved result witho
     /image-note/,
   );
 });
+
+for (const actual of [' ' + user.message.content, user.message.content + '\n'])
+  test(
+    'transport padding identifies the sent prompt while preserving original bytes: ' +
+      JSON.stringify(actual),
+    () => {
+      const input = files([
+        { ...user, message: { content: actual } },
+        duration,
+      ]);
+      const result = readNativeTurn(input, user.message.content);
+      assert.equal(result.complete, true);
+      assert.equal(result.nativeContent, input[0].content);
+      assert.equal(
+        JSON.parse(result.content.split('\n')[0]).message.content,
+        actual,
+      );
+      assert.equal(
+        readNativeTurn(input, user.message.content, [user.uuid]),
+        null,
+      );
+      assert.equal(
+        readNativeTurn(
+          files([
+            { ...user, isMeta: true, message: { content: actual } },
+            duration,
+          ]),
+          user.message.content,
+        ),
+        null,
+      );
+    },
+  );
+
+test('prompt matching does not trim arbitrary whitespace or merge different business text', () => {
+  for (const actual of ['  ', '\t', '\n']
+    .map((p) => p + user.message.content)
+    .concat([
+      user.message.content + '\n\n',
+      user.message.content.replace('the', 'a'),
+    ]))
+    assert.equal(
+      readNativeTurn(
+        files([{ ...user, message: { content: actual } }, duration]),
+        user.message.content,
+      ),
+      null,
+    );
+});
+
+test('a stopped completed session is captured without starting Docker or sending input', async (t) => {
+  const fs = await import('node:fs');
+  const dir = mkdtempSync(path.join(tmpdir(), 'native-stopped-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const trace = files([
+    { ...user, message: { content: ' ' + user.message.content } },
+    duration,
+  ])[0].content;
+  fs.mkdirSync(path.join(dir, 'export'));
+  fs.writeFileSync(path.join(dir, 'export/session.jsonl'), trace);
+  const state = {
+    taskId: 'task',
+    questionId: 'turn',
+    status: 'stopped',
+    results: {},
+    pending: {
+      turnId: 'turn',
+      phase: 'sent',
+      count: 1,
+      previousIds: [],
+      promptHash: (await import('node:crypto'))
+        .createHash('sha256')
+        .update(user.message.content)
+        .digest('hex'),
+    },
+  };
+  const runtime = Object.create(DockerRuntime.prototype);
+  runtime.load = () => state;
+  runtime.owned = () => ({ State: { Running: false } });
+  runtime.export = async () => ({
+    verified: true,
+    path: path.join(dir, 'export'),
+  });
+  runtime.permissionAudit = () => ({ passed: true });
+  runtime.file = () => path.join(dir, 'container.json');
+  runtime.publish = async () => {};
+  const result = await runtime.captureStoppedTurn(
+    { id: 'task' },
+    { id: 'turn' },
+    user.message.content,
+  );
+  assert.equal(result.success, true);
+  assert.equal(result.stoppedCompletion, true);
+  assert.equal(state.results.turn.stoppedCompletion, true);
+  assert.equal(result.claudeCallCount, 1);
+  assert.equal(state.status, 'stopped');
+  assert.equal(state.pending, undefined);
+  assert.equal(
+    readFileSync(path.join(dir, 'turn.native.jsonl'), 'utf8'),
+    trace,
+  );
+  state.pending = {
+    turnId: 'turn',
+    phase: 'sent',
+    count: 1,
+    promptHash: 'wrong',
+  };
+  await assert.rejects(
+    runtime.captureStoppedTurn(
+      { id: 'task' },
+      { id: 'turn' },
+      user.message.content,
+    ),
+    /已发送回执/,
+  );
+});

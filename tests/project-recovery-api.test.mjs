@@ -338,6 +338,70 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
   assert.deepEqual(current().turns[0].projectRecovery, blocked.projectRecovery);
   assert.deepEqual(current().turns[0].stageRecovery, blocked.stageRecovery);
   assert.equal(current().turns[0].error, blocked.error);
+  const plannerClaim = await (
+    await post({
+      action: 'claim',
+      runnerId: 'fixture',
+      allowNewContainer: false,
+    })
+  ).json();
+  assert.equal(plannerClaim.job.turn.id, blocked.id);
+  assert.equal(plannerClaim.job.turn.projectRetry.originalStatus, 'failed');
+  const reviewed = {
+    ...blocked,
+    status: 'review',
+    stage: 'delivery',
+    excluded: false,
+    receipt: undefined,
+    executionOutcome: 'complete',
+    traceExport: { verified: true },
+    permissionAudit: { passed: true },
+    automation: {
+      ...blocked.automation,
+      archive: { verified: true },
+      runtimeRecovery: { paused: true, retryAt: '2999-01-01T00:00:00Z' },
+    },
+  };
+  task.turns = [reviewed];
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(task),
+    task.id,
+  );
+  const reviewRetry = await routes.PATCH(
+    new Request('http://localhost/api/tasks/project', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        action: 'retry',
+        turnId: reviewed.id,
+        revision: db
+          .prepare('SELECT revision FROM tasks WHERE id=?')
+          .get(task.id).revision,
+      }),
+    }),
+    { params: Promise.resolve({ id: task.id }) },
+  );
+  assert.equal(reviewRetry.status, 200, await reviewRetry.text());
+  const reviewClaim = await (
+    await post({
+      action: 'claim',
+      runnerId: 'fixture',
+      allowNewContainer: false,
+    })
+  ).json();
+  assert.equal(reviewClaim.job.turn.projectRetry.originalStatus, 'review');
+  assert.equal(reviewClaim.job.turn.id, reviewed.id);
+  // Restore the original queued planner fixture for the remaining route checks.
+  task.turns = [
+    {
+      ...blocked,
+      status: 'queued',
+      projectRetry: { originalStatus: 'failed', originalStage: blocked.stage },
+    },
+  ];
+  db.prepare('UPDATE tasks SET data=?,revision=revision+1 WHERE id=?').run(
+    serializeTask(task),
+    task.id,
+  );
   const beforeRepairDraftTask = current();
   const repairDraft = {
     id: 'unsent-repair',
@@ -1055,4 +1119,65 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
       t.turns.every((r) => r.jobToken === undefined && r.prompt === undefined),
     ),
   );
+  task.closed = false;
+  task.container = {
+    status: 'running',
+    containerId: 'container',
+    questionId: 'observed',
+    terminal: { runId: 'terminal' },
+  };
+  task.turns = [
+    {
+      id: 'observed',
+      questionRootId: 'observed',
+      status: 'running',
+      stage: 'claude',
+      jobToken: 'old-token',
+      category: '0-1 代码生成',
+      claudeAttempts: ['sent-once'],
+      prompt: '原题保持不变',
+    },
+  ];
+  db.prepare(
+    'INSERT OR REPLACE INTO tasks(id,data,created_at) VALUES(?,?,?)',
+  ).run(task.id, serializeTask(task), '2026-09-12');
+  const handoff = {
+    action: 'handoff-observer',
+    taskId: task.id,
+    turnId: 'observed',
+    jobToken: 'old-token',
+    containerId: 'container',
+    sessionId: null,
+    terminalRunId: 'terminal',
+    promptHash: 'a'.repeat(64),
+  };
+  assert.equal((await post({ ...handoff, containerId: 'other' })).status, 400);
+  const handed = await post(handoff);
+  assert.equal(handed.status, 200, await handed.text());
+  const queued = current();
+  assert.equal(queued.turns[0].status, 'queued');
+  assert.deepEqual(queued.turns[0].claudeAttempts, ['sent-once']);
+  assert.equal(queued.turns[0].prompt, '原题保持不变');
+  assert.equal(JSON.stringify(queued).includes('old-token'), false);
+  assert.equal((await post(handoff)).status, 200);
+  assert.equal(
+    (
+      await post({
+        ...handoff,
+        action: 'finish',
+        result: { success: false, error: 'old observer stopped' },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(current().turns[0].status, 'queued');
+  assert.equal((await post({ ...handoff, action: 'recover' })).status, 200);
+  const resumed = await (
+    await post({ action: 'claim', runnerId: 'fixture' })
+  ).json();
+  assert.equal(resumed.job.turn.id, 'observed');
+  assert.notEqual(resumed.job.turn.jobToken, 'old-token');
+  assert.equal(resumed.job.turn.observerHandoff.promptHash, handoff.promptHash);
+  await post({ ...handoff, action: 'finish', result: { success: false } });
+  assert.equal(current().turns[0].jobToken, resumed.job.turn.jobToken);
 });

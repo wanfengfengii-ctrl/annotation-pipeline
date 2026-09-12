@@ -14,13 +14,14 @@ export function completedValidationEvidence({
   cached,
   state,
   dir,
+  stopped = false,
 }) {
   const c = cached.claude,
     snapshot = cached.snapshot,
     initial = snapshot?.environmentEvidence;
   if (
-    !turn.stageRecovery?.validationOnly ||
-    state?.status !== 'removed' ||
+    (stopped ? !c?.stoppedCompletion : !turn.stageRecovery?.validationOnly) ||
+    state?.status !== (stopped ? 'stopped' : 'removed') ||
     state.pending ||
     !c?.success ||
     c.executionOutcome !== 'complete' ||
@@ -28,8 +29,8 @@ export function completedValidationEvidence({
     state.taskId !== task.id ||
     state.questionId !== turn.questionRootId ||
     state.containerId !== c.container?.containerId ||
-    c.promptId !== turn.promptId ||
-    c.sessionId !== turn.sessionId ||
+    (!stopped &&
+      (c.promptId !== turn.promptId || c.sessionId !== turn.sessionId)) ||
     !initial ||
     snapshot.value?.ready !== true ||
     snapshot.engine !== 'codex-cli'
@@ -80,6 +81,14 @@ export function completedValidationEvidence({
     native.sessionId !== c.sessionId
   )
     throw Error('原生完成记录不匹配');
+  if (stopped)
+    return {
+      source: '已停止容器的原生完成记录；保留原环境快照，在独立验收容器验证',
+      historical: true,
+      running: false,
+      initialEnvironmentEvidence: initial,
+      nativeExportSha256: c.traceExport.sha256,
+    };
   const report = cached.runtimeVerification;
   const feedback = runtimeRetryContext(
     report,

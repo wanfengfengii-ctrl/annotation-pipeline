@@ -158,6 +158,15 @@ export type Turn = {
   jobToken?: string;
   completedJobToken?: string;
   recoveryToken?: string;
+  observerHandoff?: {
+    version: string;
+    previousJobTokenHash: string;
+    containerId: string;
+    sessionId: string | null;
+    terminalRunId: string;
+    promptHash: string;
+    queuedAt: string;
+  };
   recoveryBlocked?: boolean;
   stack?: string;
   harnessVersion?: string;

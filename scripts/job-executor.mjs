@@ -592,6 +592,35 @@ export function createJobExecutor({
         automation.questionRuleVersion = questionRules.version;
         await safePlan();
       } else {
+        // A missed completion is collected from the stopped original container;
+        // it never starts the container or sends a replacement interaction.
+        const stoppedState = containers.load(task.id);
+        if (
+          !cached.claude?.success &&
+          stoppedState?.status === 'stopped' &&
+          stoppedState.results?.[turn.id]?.stoppedCompletion &&
+          stoppedState.results[turn.id].success
+        ) {
+          cached.claude = {
+            ...stoppedState.results[turn.id],
+            container: containers.public(stoppedState),
+          };
+          persist();
+        }
+        if (
+          !cached.claude?.success &&
+          stoppedState?.pending?.turnId === turn.id &&
+          stoppedState.status !== 'removed' &&
+          cached.prepare?.value?.prompt &&
+          !containers.owned(stoppedState).State.Running
+        ) {
+          cached.claude = await containers.captureStoppedTurn(
+            task,
+            turn,
+            cached.prepare.value.prompt,
+          );
+          persist();
+        }
         if (!cached.claude?.success) {
           stage = 'context';
           await api({
@@ -920,14 +949,17 @@ export function createJobExecutor({
           throw Error('缺少经过核验的容器初始环境');
         const savedContainerState = containers.load(task.id);
         const historicalEnvironment =
-          turn.stageRecovery?.validationOnly &&
-          savedContainerState?.status === 'removed'
+          (turn.stageRecovery?.validationOnly &&
+            savedContainerState?.status === 'removed') ||
+          (cached.claude?.stoppedCompletion &&
+            savedContainerState?.status === 'stopped')
             ? completedValidationEvidence({
                 task,
                 turn,
                 cached,
                 state: savedContainerState,
                 dir,
+                stopped: cached.claude?.stoppedCompletion === true,
               })
             : null;
         const environmentEvidence =

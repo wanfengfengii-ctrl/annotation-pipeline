@@ -10,6 +10,7 @@ import {
   unsentFailure,
   frozenPreparationFailure,
   closedRepairDraft,
+  blockedProjectRetryAllowed,
 } from '@/lib/project-recovery.mjs';
 import { submissionIssues } from '@/lib/submission-policy.mjs';
 import {
@@ -97,7 +98,7 @@ export async function PATCH(
       if (
         !r ||
         r.recoveryBlocked ||
-        r.status !== 'failed' ||
+        (r.status !== 'failed' && !blockedProjectRetryAllowed(t, r)) ||
         pending(t) ||
         t.closed
       )
