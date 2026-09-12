@@ -10,6 +10,7 @@ import { loadJobRelease } from './job-release.mjs';
 import { ProviderHealth } from './provider-health.mjs';
 import { StageBudget } from './stage-budget.mjs';
 import { FinalizationQueue } from './finalization-queue.mjs';
+import { wakeSelfHeal } from './self-heal-wakeup.mjs';
 import { checkpointVersion } from './stage-checkpoint.mjs';
 
 import { createRunnerApi } from './runner-api.mjs';
@@ -215,6 +216,7 @@ const finalizations = new FinalizationQueue({
 });
 async function deliver(result, receipt) {
   await api(result);
+  if (result.success === false) wakeSelfHeal(workRoot);
   writeFileSync(
     receipt + '.delivered',
     createHash('sha256').update(readFileSync(receipt)).digest('hex'),

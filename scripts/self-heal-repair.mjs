@@ -6,6 +6,7 @@ import { runCodexProcess } from './codex-process.mjs';
 import { acquireLock, identity } from './recovery.mjs';
 import { readJSON, saveJSON, command } from './self-heal-io.mjs';
 import { validateRepair, writeRepairFiles } from '../lib/self-heal-patch.mjs';
+import { wakeSelfHeal } from './self-heal-wakeup.mjs';
 
 const str = { type: 'string' };
 const schema = (props) => ({
@@ -113,8 +114,13 @@ export async function repairJob(jobFile) {
     let proposal = readJSON(path.join(dir, 'proposal.json'));
     if (!proposal) {
       proposal = await model(
-        'maintenance-fix',
+        job.mode === 'escalation'
+          ? 'maintenance-escalation'
+          : 'maintenance-fix',
         boundaries +
+          (job.mode === 'escalation'
+            ? '\n这是故障发生后的立即升级诊断。先读 previousDiagnoses 中的 proposal、review、测试失败和最新现场，明确上一修复为何没有完成。先核对故障现在是否仍成立及现有恢复入口，再检查跨模块的输入绑定、状态转换和回执；不要只改提示词、复述上一建议或重交被否决的补丁。针对证据支持的新原因给出最小补丁和真实回归。没有新修复依据或缺外部条件时，具体说明需要谁补充什么，不能假称完成或无限原样重试。\n'
+            : '') +
           `\n当前隔离源码是提交 ${base}。下面是本次故障摘要与只读证据路径；仅展开本次故障涉及的日志。\n${JSON.stringify(context)}\n返回 action=patch 时提供每个文件的完整新内容和原内容 SHA-256（新文件为 null），至少补充一个在原代码失败、修复后通过的单元回归测试，可以修改已有测试文件或新建测试文件，tests 只填 tests/*.test.mjs 路径。测试使用临时目录/模拟接口，不能访问正在运行的生产 API、真实账号、项目目录或 Docker。只有 availableRecoveryAction 非空且现有源码已能正确处理该故障时才可返回 retry。该字段为空时不能猜测重试、接管或重新导出入口；若读轨迹的逻辑没有匹配已完成轮次，应定位并修复读取逻辑，不能仅因原生轮次已完成就返回 retry。无法据实修复时返回 needs_input。`,
         contract,
         tree,
@@ -254,6 +260,7 @@ export async function repairJob(jobFile) {
       fs.readFileSync(lock, 'utf8').trim() === String(process.pid)
     )
       fs.unlinkSync(lock);
+    wakeSelfHeal(path.join(root, '.runner'));
   }
 }
 if (

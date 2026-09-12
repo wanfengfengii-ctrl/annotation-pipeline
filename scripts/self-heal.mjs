@@ -9,7 +9,12 @@ import {
   reconcileSelfHeal,
   nextSelfHealAction,
   recoveryAction,
+  hasRepairLimit,
+  attemptLimitReached,
+  recoveryReviewMode,
+  isExternalBlock,
 } from '../lib/self-heal.mjs';
+import { createWakeSignal, wakeProtocol } from './self-heal-wakeup.mjs';
 import {
   readJSON,
   saveJSON,
@@ -38,9 +43,12 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
   if (config.enabled !== true) return { enabled: false };
   if (act) {
     try {
-      await adoptIdleRunner(root).catch((e) => {
+      try {
+        await adoptIdleRunner(root);
+        delete state.adoptionError;
+      } catch (e) {
         state.adoptionError = e.message;
-      });
+      }
       const services = await ensureServices(root, {
         enabled: state.productionEnabled === true,
       });
@@ -79,7 +87,7 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
       i.state === 'needs_input' &&
       i.stage === 'claude' &&
       i.attempts > 0 &&
-      i.attempts < config.maxAttempts &&
+      !attemptLimitReached(i, config) &&
       !i.nativeEvidenceVersion &&
       snapshot.health.incidents.some(
         (x) =>
@@ -197,11 +205,16 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
             }
           }
         }
-      } else
+      } else {
+        const task = snapshot.tasks.find((t) => t.id === i.taskId),
+          turn = task?.turns.find((r) => r.id === i.turnId);
         i.state =
-          after.state === 'failed' && i.attempts < config.maxAttempts
-            ? 'retry_wait'
+          !isExternalBlock(task, turn, after.reason) &&
+          recoveryReviewMode(state, i, snapshot)
+            ? 'escalation_ready'
             : 'needs_input';
+        i.nextAt = new Date().toISOString();
+      }
       state.activeJob = null;
     }
   }
@@ -238,6 +251,7 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
         if (turn?.stage === 'claude')
           i.nativeEvidenceVersion = nativeDiagnosisVersion;
         const context = {
+          mode: next.mode,
           previousDiagnoses: state.jobs
             .filter((j) => j.signature === i.signature && j.state !== 'running')
             .slice(-2)
@@ -301,6 +315,7 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
           root,
           incidentId: i.id,
           signature: i.signature,
+          mode: next.mode,
           conditionsKey: i.conditionsKey,
           state: 'running',
           phase: 'starting',
@@ -329,10 +344,14 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
   const recentJobs = state.jobs.filter(
     (j) => Date.now() - Date.parse(j.startedAt) < 24 * 60 * 60000,
   );
-  state.repairBudgetRemaining = Math.max(
-    0,
-    config.maxRepairsPerDay - recentJobs.length,
-  );
+  state.repairBudgetRemaining = hasRepairLimit(config.maxRepairsPerDay)
+    ? Math.max(0, config.maxRepairsPerDay - recentJobs.length)
+    : null;
+  state.repairBudgetUnlimited = !hasRepairLimit(config.maxRepairsPerDay);
+  state.checkIntervalMs = config.intervalMs;
+  state.wakeProtocol = process.argv.includes('--daemon')
+    ? wakeProtocol
+    : undefined;
   const budgetKey = 'budget:' + recentJobs[0]?.id;
   if (
     act &&
@@ -369,7 +388,7 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
   }
   for (const i of Object.values(state.incidents)) {
     if (!act || !['resolved', 'needs_input'].includes(i.state)) continue;
-    const key = i.id + ':' + i.state;
+    const key = i.id + ':' + i.state + ':' + (i.conditionsKey || 'legacy');
     if (state.notifications[key]) continue;
     const message =
       i.state === 'resolved'
@@ -430,6 +449,10 @@ export async function main() {
           pid: s.pid,
           alive: s.pidIdentity && identity(s.pid) === s.pidIdentity,
           activeJob: s.activeJob,
+          repairBudgetUnlimited: s.repairBudgetUnlimited,
+          repairBudgetRemaining: s.repairBudgetRemaining,
+          checkIntervalMs: s.checkIntervalMs,
+          wakeProtocol: s.wakeProtocol,
           health: s.health
             ? { active: s.health.active, status: s.health.status }
             : null,
@@ -449,9 +472,22 @@ export async function main() {
   const lock = path.join(dir, 'controller.lock');
   acquireLock(lock);
   let stopped = false;
+  const wake = createWakeSignal();
+  const onWake = () => wake.wake();
+  process.on('SIGUSR2', onWake);
+  const watchers = [
+    fs.watch(dir, (_event, file) => {
+      if (['external-events.json', 'config.json'].includes(String(file)))
+        wake.wake();
+    }),
+    fs.watch(path.join(root, '.runner'), (_event, file) => {
+      if (String(file) === 'finalization-queue.json') wake.wake();
+    }),
+  ];
   for (const sig of ['SIGTERM', 'SIGINT'])
     process.on(sig, () => {
       stopped = true;
+      wake.wake();
     });
   try {
     do {
@@ -479,10 +515,21 @@ export async function main() {
           );
       }
       if (!process.argv.includes('--daemon')) break;
-      for (let n = 0; n < 60 && !stopped; n++)
-        await new Promise((r) => setTimeout(r, 1000));
+      if (!stopped) {
+        const ms =
+          readJSON(path.join(dir, 'config.json'), {}).intervalMs ??
+          selfHealDefaults.intervalMs;
+        await wake.wait(
+          Math.max(
+            1000,
+            Number.isFinite(ms) ? ms : selfHealDefaults.intervalMs,
+          ),
+        );
+      }
     } while (!stopped);
   } finally {
+    process.off('SIGUSR2', onWake);
+    for (const watcher of watchers) watcher.close();
     if (
       fs.existsSync(lock) &&
       fs.readFileSync(lock, 'utf8').trim() === String(process.pid)

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readJSON, saveJSON } from './self-heal-io.mjs';
+import { wakeSelfHeal } from './self-heal-wakeup.mjs';
 
 export function recordExternalFault(root, input) {
   if (
@@ -23,6 +24,7 @@ export function recordExternalFault(root, input) {
     reportedAt: events[id]?.reportedAt || new Date().toISOString(),
   };
   saveJSON(file, events);
+  wakeSelfHeal(path.join(root, '.runner'));
   return { recorded: true, id };
 }
 if (

@@ -21,6 +21,11 @@ import {
 } from '../scripts/self-heal-io.mjs';
 import { jobReleaseProtocol } from '../scripts/job-release.mjs';
 import {
+  createWakeSignal,
+  wakeSelfHeal,
+  wakeProtocol,
+} from '../scripts/self-heal-wakeup.mjs';
+import {
   advanceRelease,
   prepareBuildDependencies,
   runnerHasWork,
@@ -119,7 +124,7 @@ test('native diagnosis binds the sent preparation hash rather than the API draft
   assert.throws(() => sentPromptEvidence(dir, 'turn', pending), /找不到/);
 });
 
-test('failed self-heal waits for real conditions, retaining history across ticks', () => {
+test('failed repair immediately escalates once, retaining evidence and avoiding identical loops', () => {
   const snap = snapshot();
   snap.recoveryRevision = 'release-a';
   let s = reconcileSelfHeal(null, snap, at);
@@ -135,16 +140,49 @@ test('failed self-heal waits for real conditions, retaining history across ticks
     conditionsKey: selfHealConditions(i, snap),
   });
   s = reconcileSelfHeal(s, snap, at + 120000);
-  assert.equal(s.incidents[i.id].state, 'waiting_conditions');
-  assert.equal(nextSelfHealAction(s, snap, at + 30 * 60000), null);
+  assert.equal(s.incidents[i.id].state, 'escalation_ready');
+  assert.equal(nextSelfHealAction(s, snap, at + 120000)?.mode, 'escalation');
+  s.jobs.push({
+    id: 'escalated',
+    mode: 'escalation',
+    reason: '独立复核发现补丁没有覆盖原故障',
+    incidentId: i.id,
+    signature: i.signature,
+    state: 'failed',
+    conditionsKey: selfHealConditions(i, snap),
+    startedAt: new Date(at).toISOString(),
+  });
   snap.tasks[0].revision = 999; // API heartbeat does not count as new evidence.
   s = reconcileSelfHeal(s, snap, at + 31 * 60000);
-  assert.equal(s.incidents[i.id].state, 'waiting_conditions');
+  assert.equal(s.incidents[i.id].state, 'needs_input');
+  assert.match(s.incidents[i.id].result, /补丁没有覆盖原故障/);
+  assert.equal(nextSelfHealAction(s, snap, at + 31 * 60000), null);
   snap.recoveryRevision = 'release-b';
   s = reconcileSelfHeal(s, snap, at + 32 * 60000);
   assert.equal(nextSelfHealAction(s, snap, at + 32 * 60000)?.kind, 'repair');
   assert.equal(s.incidents[i.id].attempts, 1);
-  assert.equal(s.jobs.length, 1);
+  assert.equal(s.jobs.length, 2);
+});
+test('a diagnostic external block notifies immediately and changed evidence can reopen diagnosis', () => {
+  const snap = snapshot();
+  snap.recoveryRevision = 'release-a';
+  let s = ready(snap);
+  const i = Object.values(s.incidents)[0];
+  s.jobs.push({
+    id: 'missing-evidence',
+    incidentId: i.id,
+    state: 'needs_input',
+    reason: '原件缺失，需要恢复本轮原始文件',
+    conditionsKey: selfHealConditions(i, snap),
+    startedAt: new Date(at).toISOString(),
+  });
+  s = reconcileSelfHeal(s, snap, at + 61001);
+  assert.equal(s.incidents[i.id].state, 'needs_input');
+  assert.match(s.incidents[i.id].result, /恢复本轮原始文件/);
+  assert.equal(nextSelfHealAction(s, snap, at + 61001), null);
+  snap.recoveryRevision = 'evidence-reader-fixed';
+  s = reconcileSelfHeal(s, snap, at + 61002);
+  assert.equal(nextSelfHealAction(s, snap, at + 61002)?.mode, 'repair');
 });
 test('a busy or unknown scheduler keeps admissions while future jobs adopt repairs', () => {
   const data = {
@@ -352,7 +390,10 @@ test('progress enters verification, stalled old progress does not keep extending
     lastProgressAt: new Date(at + 60000).toISOString(),
   };
   assert.equal(
-    reconcileSelfHeal(b, s, at + 21 * 60000).incidents[i.id].state,
+    reconcileSelfHeal(b, s, at + 21 * 60000, {
+      ...selfHealDefaults,
+      maxAttempts: 2,
+    }).incidents[i.id].state,
     'needs_input',
   );
 });
@@ -364,13 +405,14 @@ test('active Claude cannot be retried and excluded records remain held', () => {
   assert.equal(Object.values(b.incidents)[0].state, 'needs_input');
   assert.equal(nextSelfHealAction(b, s, at + 61000), null);
 });
-test('daily and per-fault budgets persist across controller restart', () => {
+test('optional finite budgets persist, default unlimited configuration never treats null as zero', () => {
   const s = snapshot(),
     b = ready(s),
     i = Object.values(b.incidents)[0];
-  i.attempts = selfHealDefaults.maxAttempts;
+  const limits = { ...selfHealDefaults, maxAttempts: 2, maxRepairsPerDay: 6 };
+  i.attempts = 2;
   assert.equal(
-    nextSelfHealAction(JSON.parse(JSON.stringify(b)), s, at + 61000),
+    nextSelfHealAction(JSON.parse(JSON.stringify(b)), s, at + 61000, limits),
     null,
   );
   i.attempts = 0;
@@ -378,7 +420,9 @@ test('daily and per-fault budgets persist across controller restart', () => {
     startedAt: new Date(at).toISOString(),
     state: 'failed',
   }));
-  assert.equal(nextSelfHealAction(b, s, at + 61000), null);
+  assert.equal(nextSelfHealAction(b, s, at + 61000, limits), null);
+  i.attempts = 100;
+  assert.equal(nextSelfHealAction(b, s, at + 61000)?.kind, 'repair');
 });
 
 test('exhausted model budget does not hide a later protected transport retry', () => {
@@ -408,12 +452,84 @@ test('exhausted model budget does not hide a later protected transport retry', (
     startedAt: new Date(at).toISOString(),
     state: 'failed',
   }));
-  const next = nextSelfHealAction(state, snap, at + 61000);
+  const limits = { ...selfHealDefaults, maxRepairsPerDay: 6 };
+  const next = nextSelfHealAction(state, snap, at + 61000, limits);
   assert.equal(next?.kind, 'retry');
   assert.equal(state.incidents[next.incidentId].taskId, 'network');
   state.incidents[next.incidentId].directRetryAt = new Date(at).toISOString();
-  assert.equal(nextSelfHealAction(state, snap, at + 120000), null);
+  assert.equal(nextSelfHealAction(state, snap, at + 120000, limits), null);
 });
+
+test('an obsolete incident cannot spend another repair call after the turn moved on', () => {
+  const snap = snapshot(),
+    s = ready(snap);
+  snap.health.incidents = [];
+  snap.tasks[0].turns[0].status = 'review';
+  assert.equal(nextSelfHealAction(s, snap, at + 61000), null);
+});
+
+test('explicit failed stages are ready on observation, running stalls need confirmation', () => {
+  const snap = snapshot();
+  assert.equal(
+    Object.values(reconcileSelfHeal(null, snap, at).incidents)[0].state,
+    'observing',
+  );
+  snap.health.incidents[0].state = 'open';
+  snap.tasks[0].turns[0].status = 'failed';
+  assert.equal(
+    Object.values(reconcileSelfHeal(null, snap, at).incidents)[0].state,
+    'ready',
+  );
+});
+
+test('event wake interrupts the wait and retains events received during a tick', async () => {
+  const signal = createWakeSignal();
+  const waiting = signal.wait(10000);
+  signal.wake();
+  await waiting;
+  signal.wake();
+  signal.wake();
+  await signal.wait(10000);
+});
+
+test(
+  'event notification signals only a registered owned guardian',
+  { skip: process.env.SELF_HEAL_TEST === '1' },
+  async (t) => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'self-heal-wake-')),
+    );
+    fs.mkdirSync(path.join(root, 'scripts'));
+    fs.writeFileSync(
+      path.join(root, 'scripts/self-heal.mjs'),
+      'process.on("SIGUSR2",()=>console.log("wake"));console.log("ready");setInterval(()=>{},1000);',
+    );
+    const child = spawn(process.execPath, ['scripts/self-heal.mjs'], {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    t.after(async () => {
+      if (child.exitCode === null) {
+        child.kill();
+        await once(child, 'exit');
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    await once(child.stdout, 'data');
+    const file = path.join(root, '.runner/self-heal/state.json');
+    const state = {
+      pid: child.pid,
+      pidIdentity: identity(child.pid),
+      wakeProtocol,
+    };
+    saveJSON(file, { ...state, wakeProtocol: 'legacy' });
+    assert.equal(wakeSelfHeal(path.join(root, '.runner')), false);
+    saveJSON(file, state);
+    const received = once(child.stdout, 'data');
+    assert.equal(wakeSelfHeal(path.join(root, '.runner')), true);
+    assert.equal(String((await received)[0]).trim(), 'wake');
+  },
+);
 test('patch admission blocks source drift, traversal, raw data and self policy edits', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'repair-gate-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -449,88 +565,109 @@ test('patch admission blocks source drift, traversal, raw data and self policy e
   assert.throws(() => validateRepair(dir, proposal), /回归测试/);
 });
 // Patch verification runs the state tests, not a recursive repair worker/sandbox.
-test(
-  'real worker consumes structured Codex output, proves red/green and commits only the isolated tree',
-  { skip: process.env.SELF_HEAL_TEST === '1' },
-  async (t) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'self-heal-worker-'));
-    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-    const root = path.join(dir, 'repo');
-    fs.mkdirSync(path.join(root, 'lib'), { recursive: true });
-    fs.mkdirSync(path.join(root, 'node_modules'));
-    fs.writeFileSync(path.join(root, '.gitignore'), '.runner/\nnode_modules\n');
-    const before = 'export const value = 0;\n';
-    fs.writeFileSync(path.join(root, 'lib/value.mjs'), before);
-    command('git', ['init', '-b', 'main'], root);
-    command('git', ['config', 'user.email', 'fixture@example.test'], root);
-    command('git', ['config', 'user.name', 'Fixture'], root);
-    command('git', ['add', '.'], root);
-    command('git', ['commit', '-m', 'fixture'], root);
-    const base = command('git', ['rev-parse', 'HEAD'], root),
-      id = 'test-repair',
-      jobDir = path.join(root, '.runner/self-heal/jobs', id),
-      jobFile = path.join(jobDir, 'job.json');
-    const proposal = {
-      action: 'patch',
-      reason: 'value incorrect',
-      files: [
-        {
-          path: 'lib/value.mjs',
-          beforeSha256: digest(before),
-          content: 'export const value = 1;\n',
-        },
-        {
-          path: 'tests/value.test.mjs',
-          beforeSha256: null,
-          content:
-            "import test from 'node:test';import assert from 'node:assert/strict';import {value} from '../lib/value.mjs';test('value',()=>assert.equal(value,1));\n",
-        },
-      ],
-      tests: ['tests/value.test.mjs'],
-    };
-    saveJSON(jobFile, { id, root, state: 'running' });
-    saveJSON(path.join(jobDir, 'context.json'), { reason: 'value incorrect' });
-    const bin = path.join(dir, 'bin');
-    fs.mkdirSync(bin);
-    const fake = `#!${process.execPath}\nconst fs=require('node:fs');const a=process.argv.slice(2);const last=a[a.indexOf('--output-last-message')+1];fs.appendFileSync(${JSON.stringify(path.join(dir, 'calls.jsonl'))},JSON.stringify(a)+'\\n');let input='';process.stdin.on('data',b=>input+=b);process.stdin.on('end',()=>{fs.writeFileSync(last,JSON.stringify(last.includes('maintenance-review')?{approved:true,reason:'fixture'}:${JSON.stringify(proposal)}));process.stdout.write(JSON.stringify({type:'thread.started',thread_id:'fixture-session'})+'\\n');process.stdout.write(JSON.stringify({type:'turn.completed'})+'\\n');});`;
-    fs.writeFileSync(path.join(bin, 'codex'), fake, { mode: 0o700 });
-    const old = process.env.PATH;
-    process.env.PATH = bin + path.delimiter + old;
-    t.after(() => {
-      process.env.PATH = old;
-    });
-    const result = await repairJob(jobFile);
-    assert.equal(result.state, 'ready', result.reason);
-    assert.equal(result.action, 'publish');
-    assert.equal(command('git', ['rev-parse', 'HEAD'], root), base);
-    assert.equal(
-      fs.readFileSync(path.join(root, 'lib/value.mjs'), 'utf8'),
-      before,
-    );
-    assert.match(
-      fs.readFileSync(path.join(jobDir, 'test-before.log'), 'utf8'),
-      /not ok/,
-    );
-    assert.match(
-      fs.readFileSync(path.join(jobDir, 'test-after.log'), 'utf8'),
-      /ok 1/,
-    );
-    const calls = fs
-      .readFileSync(path.join(dir, 'calls.jsonl'), 'utf8')
-      .trim()
-      .split('\n')
-      .map(JSON.parse);
-    assert.equal(calls.length, 2);
-    for (const args of calls) {
-      assert.ok(args.includes('read-only'));
-      assert.ok(args.includes('--output-schema'));
-      assert.ok(!args.includes('--model'));
-    }
-    assert.equal((await repairJob(jobFile)).commit, result.commit);
-    assert.equal(
-      fs.readFileSync(path.join(dir, 'calls.jsonl'), 'utf8').trim().split('\n')
-        .length,
-      2,
-    );
-  },
-);
+for (const mode of ['repair', 'escalation'])
+  test(
+    `${mode} worker consumes structured Codex output, proves red/green and commits only the isolated tree`,
+    { skip: process.env.SELF_HEAL_TEST === '1' },
+    async (t) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'self-heal-worker-'));
+      t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+      const root = path.join(dir, 'repo');
+      fs.mkdirSync(path.join(root, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'node_modules'));
+      fs.writeFileSync(
+        path.join(root, '.gitignore'),
+        '.runner/\nnode_modules\n',
+      );
+      const before = 'export const value = 0;\n';
+      fs.writeFileSync(path.join(root, 'lib/value.mjs'), before);
+      command('git', ['init', '-b', 'main'], root);
+      command('git', ['config', 'user.email', 'fixture@example.test'], root);
+      command('git', ['config', 'user.name', 'Fixture'], root);
+      command('git', ['add', '.'], root);
+      command('git', ['commit', '-m', 'fixture'], root);
+      const base = command('git', ['rev-parse', 'HEAD'], root),
+        id = 'test-repair',
+        jobDir = path.join(root, '.runner/self-heal/jobs', id),
+        jobFile = path.join(jobDir, 'job.json');
+      const proposal = {
+        action: 'patch',
+        reason: 'value incorrect',
+        files: [
+          {
+            path: 'lib/value.mjs',
+            beforeSha256: digest(before),
+            content: 'export const value = 1;\n',
+          },
+          {
+            path: 'tests/value.test.mjs',
+            beforeSha256: null,
+            content:
+              "import test from 'node:test';import assert from 'node:assert/strict';import {value} from '../lib/value.mjs';test('value',()=>assert.equal(value,1));\n",
+          },
+        ],
+        tests: ['tests/value.test.mjs'],
+      };
+      saveJSON(jobFile, { id, root, mode, state: 'running' });
+      saveJSON(path.join(jobDir, 'context.json'), {
+        reason: 'value incorrect',
+        previousDiagnoses: [
+          { id: 'previous-rejected', reason: 'missed root cause' },
+        ],
+      });
+      const bin = path.join(dir, 'bin');
+      fs.mkdirSync(bin);
+      const fake = `#!${process.execPath}\nconst fs=require('node:fs');const a=process.argv.slice(2);const last=a[a.indexOf('--output-last-message')+1];fs.appendFileSync(${JSON.stringify(path.join(dir, 'calls.jsonl'))},JSON.stringify(a)+'\\n');let input='';process.stdin.on('data',b=>input+=b);process.stdin.on('end',()=>{fs.writeFileSync(last,JSON.stringify(last.includes('maintenance-review')?{approved:true,reason:'fixture'}:${JSON.stringify(proposal)}));process.stdout.write(JSON.stringify({type:'thread.started',thread_id:'fixture-session'})+'\\n');process.stdout.write(JSON.stringify({type:'turn.completed'})+'\\n');});`;
+      fs.writeFileSync(path.join(bin, 'codex'), fake, { mode: 0o700 });
+      const old = process.env.PATH;
+      process.env.PATH = bin + path.delimiter + old;
+      t.after(() => {
+        process.env.PATH = old;
+      });
+      const result = await repairJob(jobFile);
+      assert.equal(result.state, 'ready', result.reason);
+      assert.equal(result.action, 'publish');
+      assert.equal(command('git', ['rev-parse', 'HEAD'], root), base);
+      assert.equal(
+        fs.readFileSync(path.join(root, 'lib/value.mjs'), 'utf8'),
+        before,
+      );
+      assert.match(
+        fs.readFileSync(path.join(jobDir, 'test-before.log'), 'utf8'),
+        /not ok/,
+      );
+      assert.match(
+        fs.readFileSync(path.join(jobDir, 'test-after.log'), 'utf8'),
+        /ok 1/,
+      );
+      const calls = fs
+        .readFileSync(path.join(dir, 'calls.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .map(JSON.parse);
+      assert.equal(calls.length, 2);
+      assert.ok(
+        calls[0].some((arg) =>
+          arg.includes(
+            mode === 'escalation'
+              ? 'maintenance-escalation'
+              : 'maintenance-fix',
+          ),
+        ),
+      );
+      assert.ok(calls[1].some((arg) => arg.includes('maintenance-review')));
+      for (const args of calls) {
+        assert.ok(args.includes('read-only'));
+        assert.ok(args.includes('--output-schema'));
+        assert.ok(!args.includes('--model'));
+      }
+      assert.equal((await repairJob(jobFile)).commit, result.commit);
+      assert.equal(
+        fs
+          .readFileSync(path.join(dir, 'calls.jsonl'), 'utf8')
+          .trim()
+          .split('\n').length,
+        2,
+      );
+    },
+  );
