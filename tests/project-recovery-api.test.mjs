@@ -122,6 +122,14 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
     serializeTask(task),
     '2026-09-10',
   );
+  config.acceptingJobs = false;
+  assert.equal((await (await post({ action: 'claim', capacity: 3 })).json()).job, null);
+  assert.equal(current().turns[0].status, 'failed');
+  config.acceptingJobs = true;
+  db.prepare("INSERT INTO runners(id,data,heartbeat) VALUES('scheduler',?,?)")
+    .run(JSON.stringify({ acceptingJobs: false }), 'now');
+  assert.equal((await (await post({ action: 'claim', capacity: 3 })).json()).job, null);
+  db.prepare("DELETE FROM runners WHERE id='scheduler'").run();
   const claims = await Promise.all(
     Array.from({ length: 5 }, () =>
       post({ action: 'claim', capacity: 3, allowNewContainer: false }),
@@ -183,7 +191,9 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
       audit,
     },
   };
+  config.acceptingJobs = false;
   const saved = await post(finish);
+  config.acceptingJobs = true;
   assert.equal(saved.status, 200, await saved.clone().text());
   assert.equal(current().closed, false);
   assert.equal(current().turns.length, 2);

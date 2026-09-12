@@ -452,6 +452,9 @@ export async function POST(req: Request) {
     if (b.action === 'claim') {
       const tasks = await all(),
         config = await schedulerConfig();
+      // A graceful shutdown stops new claims, including queued old drafts,
+      // while existing job tokens can still report stages and finish.
+      if (config.acceptingJobs === false) return Response.json({ job: null });
       const capacity = Math.min(
         config.concurrency,
         Number.isInteger(b.capacity) ? Math.max(0, Math.min(4, b.capacity)) : 1,
@@ -606,7 +609,8 @@ export async function POST(req: Request) {
         // Revision CAS and global running count are checked atomically, including simultaneous claims.
         const claimed = await db()
           .prepare(`UPDATE tasks SET data=?,revision=revision+1 WHERE id=? AND revision=?
-          AND (SELECT count(*) FROM tasks,json_each(tasks.data,'$.turns') r WHERE json_extract(r.value,'$.status')='running') < ?`)
+          AND (SELECT count(*) FROM tasks,json_each(tasks.data,'$.turns') r WHERE json_extract(r.value,'$.status')='running') < ?
+          AND COALESCE((SELECT json_extract(data,'$.acceptingJobs') FROM runners WHERE id='scheduler'),1)=1`)
           .bind(serializeTask(task), task.id, revision, capacity)
           .run();
         if (claimed.meta.changes)

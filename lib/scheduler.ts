@@ -1,5 +1,6 @@
 export type SchedulerConfig = {
   enabled: boolean;
+  acceptingJobs?: boolean;
   autoContinue: boolean;
   useHistory: boolean;
   repos: string[];
@@ -9,6 +10,7 @@ export type SchedulerConfig = {
 };
 export const defaultScheduler: SchedulerConfig = {
   enabled: true,
+  acceptingJobs: true,
   autoContinue: true,
   useHistory: true,
   repos: [],
@@ -41,8 +43,11 @@ export function normalizeConfig(b: any): SchedulerConfig {
     throw Error('出题范围不能为空或超过 4000 字');
   if (b.autoContinue !== undefined && typeof b.autoContinue !== 'boolean')
     throw Error('自动续跑开关无效');
+  if (b.acceptingJobs !== undefined && typeof b.acceptingJobs !== 'boolean')
+    throw Error('任务领取开关无效');
   return {
     enabled: b.enabled,
+    acceptingJobs: b.acceptingJobs ?? true,
     autoContinue: b.autoContinue ?? true,
     useHistory: b.useHistory,
     repos: [
