@@ -1231,4 +1231,12 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
   );
   assert.equal(current().turns[0].projectRetry, undefined);
   assert.deepEqual(current().turns[0].claudeAttempts, ['sent']);
+  const stoppedClaim = await (
+    await post({ action: 'claim', allowNewContainer: false })
+  ).json();
+  assert.equal(
+    stoppedClaim.job?.turn.id,
+    'stopped',
+    'reading an already stopped container needs no new business container',
+  );
 });

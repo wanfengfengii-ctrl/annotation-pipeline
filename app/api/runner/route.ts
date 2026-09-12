@@ -466,6 +466,19 @@ export async function POST(req: Request) {
           ? b.recoveryRevision
           : retryPolicyVersion;
       const established = (t: Task) => !!t.container || t.turns.some(wasSent);
+      const completionRecovery = (t: Task) => {
+        const r = t.turns.at(-1),
+          h = r?.stoppedCompletionRecovery;
+        return !!(
+          r?.status === 'queued' &&
+          h &&
+          !r.excluded &&
+          !r.receipt &&
+          t.container?.containerId === h.containerId &&
+          t.container?.questionId === h.questionId &&
+          (r.questionRootId || r.id) === h.questionId
+        );
+      };
       const validationRecovery = (t: Task) =>
         t.turns.some(
           (r) =>
@@ -503,7 +516,8 @@ export async function POST(req: Request) {
         .reverse()
         .sort(
           (a, b) =>
-            Number(validationRecovery(b)) - Number(validationRecovery(a)) ||
+            Number(validationRecovery(b) || completionRecovery(b)) -
+              Number(validationRecovery(a) || completionRecovery(a)) ||
             Number(projectContinuation(b)) - Number(projectContinuation(a)) ||
             Number(residents.includes(b.id)) - Number(residents.includes(a.id)),
         );
@@ -526,6 +540,7 @@ export async function POST(req: Request) {
           b.allowNewContainer === false &&
           !residents.includes(item.id) &&
           !recoverProject &&
+          !completionRecovery(item) &&
           !queuedProjectRecovery(item) &&
           !retryStage &&
           !validationRecovery(item)
@@ -539,7 +554,9 @@ export async function POST(req: Request) {
         )
           continue;
         const r =
-          (queuedProjectRecovery(item) ? item.turns.at(-1) : undefined) ||
+          (completionRecovery(item) || queuedProjectRecovery(item)
+            ? item.turns.at(-1)
+            : undefined) ||
           item.turns.find(
             (r: any) =>
               r.status === 'queued' &&
