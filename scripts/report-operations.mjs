@@ -3,6 +3,7 @@ import path from 'node:path';
 import { operationsSnapshot } from '../lib/operations-status.mjs';
 import { readJSON, localAPI, saveJSON } from './self-heal-io.mjs';
 import { repairMetrics } from './repair-metrics.mjs';
+import { throughputReport } from './throughput-report.mjs';
 export async function reportOperations(root, state, snapshot, config) {
   const folder = path.join(root, '.runner');
   const boundary = readJSON(path.join(folder, 'boundary-release.json'));
@@ -17,7 +18,14 @@ export async function reportOperations(root, state, snapshot, config) {
     boundary,
     currentRevision: manifest?.commit,
     metrics: repairMetrics(root, state),
-    throughput: readJSON(path.join(folder, 'throughput/summary.json')),
+    // Older coordinators still write the legacy summary while they drain.
+    // Derive the page's metrics from the same current observation so that
+    // mixed-version operation cannot erase new-versus-revalidation counts.
+    throughput: throughputReport({
+      tasks: snapshot.tasks,
+      workRoot: folder,
+      ledger: readJSON(path.join(folder, 'solo-upload/ui-state.json'), {}),
+    }),
   });
   if (state.health?.observationFailed) {
     const previous = readJSON(path.join(folder, 'operations.json'));
