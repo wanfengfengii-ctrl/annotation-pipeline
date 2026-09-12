@@ -1177,6 +1177,18 @@ export function failure(e,status=400){return Response.json({error:e.message},{st
   ).json();
   assert.equal(resumed.job.turn.id, 'observed');
   assert.notEqual(resumed.job.turn.jobToken, 'old-token');
+  assert.equal(
+    (
+      await post({
+        action: 'reserve-claude',
+        taskId: task.id,
+        turnId: 'observed',
+        jobToken: resumed.job.turn.jobToken,
+      })
+    ).status,
+    400,
+  );
+  assert.deepEqual(current().turns[0].claudeAttempts, ['sent-once']);
   assert.equal(resumed.job.turn.observerHandoff.promptHash, handoff.promptHash);
   await post({ ...handoff, action: 'finish', result: { success: false } });
   assert.equal(current().turns[0].jobToken, resumed.job.turn.jobToken);

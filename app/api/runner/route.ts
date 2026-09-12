@@ -602,6 +602,8 @@ export async function POST(req: Request) {
       const r = item?.task.turns.find((r) => r.id === b.turnId);
       if (!item || !r || r.status !== 'running' || r.jobToken !== b.jobToken)
         throw Error('执行额度凭据无效');
+      if (r.observerHandoff || r.stoppedCompletionRecovery)
+        throw Error('原生结果恢复或观察交接不能再次发送题目');
       if (r.projectRetry) throw Error('项目续题规划不能调用 Claude');
       if (r.stageRecovery?.validationOnly)
         throw Error('仅重做验收不能调用 Claude');
