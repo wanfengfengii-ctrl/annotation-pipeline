@@ -14,6 +14,19 @@ import {
 import { runCheck } from './self-heal-repair.mjs';
 
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+export function prepareBuildDependencies(releaseRoot, sourceRoot) {
+  if (path.dirname(releaseRoot) !== path.join(sourceRoot, '.runner/releases'))
+    throw Error('只允许准备独立候选版本');
+  const target = path.join(releaseRoot, 'node_modules'),
+    source = path.join(sourceRoot, 'node_modules');
+  if (fs.lstatSync(target).isSymbolicLink()) fs.unlinkSync(target);
+  fs.mkdirSync(target, { recursive: true });
+  for (const name of fs.readdirSync(source)) {
+    if (name.startsWith('.vite')) continue;
+    const link = path.join(target, name);
+    if (!fs.existsSync(link)) fs.symlinkSync(path.join(source, name), link);
+  }
+}
 async function stopApi(root, state) {
   if (!identity(state.supervisorPid)) return;
   if (
@@ -82,6 +95,7 @@ export async function advanceRelease(root, job, jobFile) {
     }
     if (state.phase === 'build') {
       const release = state.release.root;
+      prepareBuildDependencies(release, root);
       // Build runs against a frozen candidate before changing live pointers.
       const cli = path.join(root, 'node_modules/vinext/dist/cli.js');
       if (!fs.existsSync(cli)) throw Error('无法定位已安装的构建入口');
@@ -220,7 +234,17 @@ export async function advanceRelease(root, job, jobFile) {
       save({ phase: 'push' });
     }
     if (state.phase === 'push') {
-      command('git', ['push', 'origin', 'HEAD:main'], root);
+      if (state.pushRetryAt && Date.now() < Date.parse(state.pushRetryAt))
+        return { waiting: true };
+      try {
+        command('git', ['push', 'origin', 'HEAD:main'], root);
+      } catch (e) {
+        save({
+          pushError: e.message,
+          pushRetryAt: new Date(Date.now() + 5 * 60000).toISOString(),
+        });
+        return { waiting: true };
+      }
       save({
         active: false,
         phase: 'complete',

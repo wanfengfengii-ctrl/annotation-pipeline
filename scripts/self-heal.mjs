@@ -283,7 +283,7 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
   }
   state.notifications ||= {};
   for (const i of Object.values(state.incidents)) {
-    if (!['resolved', 'needs_input'].includes(i.state)) continue;
+    if (!act || !['resolved', 'needs_input'].includes(i.state)) continue;
     const key = i.id + ':' + i.state;
     if (state.notifications[key]) continue;
     const message =
