@@ -282,6 +282,47 @@ export async function selfHealTick(root, { act = false, notify = true } = {}) {
     }
   }
   state.notifications ||= {};
+  const recentJobs = state.jobs.filter(
+    (j) => Date.now() - Date.parse(j.startedAt) < 24 * 60 * 60000,
+  );
+  state.repairBudgetRemaining = Math.max(
+    0,
+    config.maxRepairsPerDay - recentJobs.length,
+  );
+  const budgetKey = 'budget:' + recentJobs[0]?.id;
+  if (
+    act &&
+    state.repairBudgetRemaining === 0 &&
+    !state.activeJob &&
+    Object.values(state.incidents).some((i) =>
+      ['ready', 'retry_wait'].includes(i.state),
+    ) &&
+    !state.notifications[budgetKey]
+  ) {
+    const reason =
+      '自动修复已达到本机 24 小时调用预算，未解决问题和进度保留，其他作业继续运行。';
+    fs.appendFileSync(
+      path.join(dir, 'notifications.jsonl'),
+      JSON.stringify({
+        at: new Date().toISOString(),
+        state: 'budget_wait',
+        reason,
+      }) + '\n',
+      { mode: 0o600 },
+    );
+    if (notify && process.platform === 'darwin')
+      execFile(
+        'osascript',
+        [
+          '-e',
+          'display notification ' +
+            JSON.stringify(reason) +
+            ' with title "流水线自愈"',
+        ],
+        () => {},
+      );
+    state.notifications[budgetKey] = new Date().toISOString();
+  }
   for (const i of Object.values(state.incidents)) {
     if (!act || !['resolved', 'needs_input'].includes(i.state)) continue;
     const key = i.id + ':' + i.state;
