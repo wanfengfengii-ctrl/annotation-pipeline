@@ -1,6 +1,9 @@
 import { fileURLToPath } from 'node:url';
 import { runRuntimeProcess } from './runtime-process.mjs';
-import { executeRuntimeCases } from './runtime-case-execution.mjs';
+import {
+  executeRuntimeCases,
+  blockedRuntimeAttempts,
+} from './runtime-case-execution.mjs';
 import {
   readRuntimePlan,
   saveRuntimePlan,
@@ -1120,9 +1123,17 @@ export async function verifyRuntime({
   };
   const savedPlan = readRuntimePlan(planCheckpoint, dir, planIdentity);
   if (!savedPlan) await onExecutionProgress(null);
-  const repairIds = (retryContext?.checks || [])
-    .filter((c) => c.outcome === 'blocked' && !c.timedOut)
-    .map((c) => c.id);
+  const incompleteAttempts = savedPlan
+    ? blockedRuntimeAttempts(dir, planIdentity, savedPlan.value)
+    : [];
+  const repairIds = [
+    ...new Set([
+      ...(retryContext?.checks || [])
+        .filter((c) => c.outcome === 'blocked')
+        .map((c) => c.id),
+      ...incompleteAttempts.flatMap((a) => [a.id, ...a.failedSetupIds]),
+    ]),
+  ];
   const repairBase =
     savedPlan && repairIds.length ? { plan: savedPlan, ids: repairIds } : null;
   const instructions =
@@ -1152,7 +1163,9 @@ export async function verifyRuntime({
         '系统仅在同一道题、源码和命令未变且日志摘要核对通过时恢复已完成步骤的实际执行证据，由本次诊断继续核对；修订步骤和未执行部分仍须运行',
       ) +
     runtimeSuiteInstructions(savedPlan ? null : suiteBase) +
-    '\n超时只是暂停信号，不是产品失败。执行器保留逐步日志，有输出时可在配置硬预算内延长；预算耗尽保存进度待续跑。';
+    '\n尚无完整诊断的未完成步骤原件（须读取日志，说明阻塞原因后修订该步骤）：' +
+    JSON.stringify(incompleteAttempts) +
+    '\n运行预算用于安排步骤及检查进展，正在产生有效进展的步骤不会因固定总时长被中断。长时间无新进展才暂停并保留原日志，预算用完后保存已完成步骤，剩余步骤留待续跑。超时步骤必须先读取真实日志，区分依赖、定位、清理及等待条件的问题，再对相应步骤作有依据的修订；不要原样重新创建环境盲跑或只反复增大时限。正常长操作确需等待时说明已核验的进展及理由。其他业务义务、完整原测试和未通过部分保持不变。';
   const plan =
     savedPlan && !repairBase
       ? savedPlan
@@ -1291,7 +1304,7 @@ export async function verifyRuntime({
             '/bin/sh',
             imageId,
             '-c',
-            `sleep ${limits.totalTimeoutSeconds + 120}`,
+            'while :; do sleep 3600; done',
           ],
           { onChild, logPath: path.join(folder, 'container-start.log') },
         );

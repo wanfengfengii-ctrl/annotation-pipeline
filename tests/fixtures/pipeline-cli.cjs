@@ -460,13 +460,29 @@ process.stdin.on('end', async () => {
       fs.writeFileSync(rejected, '1');
     }
   }
+  if (
+    process.env.FIXTURE_SUPPLY_WORDING_REJECT_ONCE &&
+    stage === 'policy' &&
+    input.includes('独立审核候选题')
+  ) {
+    const marker = path.join(
+      process.env.FIXTURE_BIN,
+      'supply-wording-rejected',
+    );
+    if (!fs.existsSync(marker)) {
+      fs.writeFileSync(marker, '1');
+      values.policy.allowed = false;
+      values.policy.questionCompliant = false;
+      values.policy.reason = '题目表达格式需要修订';
+    }
+  }
   const promptOnly =
-    stage === 'prepare' &&
+    ['prepare', 'generate'].includes(stage) &&
     JSON.stringify(
       Object.keys(JSON.parse(fs.readFileSync(schema)).properties),
     ) === '["prompt"]';
   const response = promptOnly
-    ? { prompt: values.prepare.prompt }
+    ? { prompt: values[stage].prompt }
     : values[stage];
   fs.writeFileSync(out, JSON.stringify(response));
   console.log(

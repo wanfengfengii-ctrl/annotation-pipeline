@@ -1,3 +1,4 @@
+import { retryBudgets, retryCount } from '../lib/retry-policy.mjs';
 import {
   readFileSync,
   writeFileSync,
@@ -211,6 +212,11 @@ export async function planFailedProject({
     version: projectRecoveryVersion,
     turnId: turn.id,
     attempts: (turn.projectRecovery?.attempts || 0) + 1,
+    retryBudgets: retryBudgets(turn.projectRecovery, {
+      stage: 'project-next',
+      error: turn.projectRecovery?.reason || turn.error,
+      revision: turn.projectRetry.recoveryRevision,
+    }),
     state: 'blocked',
     previousRejections: [
       ...(turn.projectRecovery?.previousRejections || []),
@@ -377,7 +383,17 @@ export async function planFailedProject({
   } catch (e) {
     recovery.reason = e.message;
     recovery.retryAt = new Date(
-      Date.now() + 5 * 60 * 1000 * recovery.attempts,
+      Date.now() +
+        60000 *
+          Math.min(
+            5,
+            1 +
+              retryCount(recovery, {
+                stage: 'project-next',
+                error: e.message,
+                revision: turn.projectRetry.recoveryRevision,
+              }),
+          ),
     ).toISOString();
   }
   const receipt = path.join(dir, turn.id + '.result.json');

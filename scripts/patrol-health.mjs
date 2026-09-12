@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { collectPatrolProgress } from './patrol-progress.mjs';
 import { patrolHealth } from '../lib/patrol-health.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -20,7 +21,18 @@ try {
   const previous = fs.existsSync(file)
     ? JSON.parse(fs.readFileSync(file, 'utf8'))
     : {};
-  const health = patrolHealth({ ...data, config: scheduler.config, previous });
+  const progress = collectPatrolProgress(
+    data.tasks,
+    data.runner,
+    dir,
+    previous.progress,
+  );
+  const health = patrolHealth({
+    ...data,
+    config: scheduler.config,
+    previous,
+    progress,
+  });
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const temporary = file + '.' + process.pid + '.tmp';
   fs.writeFileSync(temporary, JSON.stringify(health, null, 2), { mode: 0o600 });

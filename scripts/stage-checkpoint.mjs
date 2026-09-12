@@ -57,7 +57,13 @@ export function sealStage(stage, saved, key, dir, extraFiles = []) {
   const reviewFiles = (
     saved.consistencyRevision?.originalTracePaths || []
   ).flatMap((file) => [file, file.slice(0, -'.events.jsonl'.length) + '.json']);
-  const references = [...new Set([...extraFiles, ...reviewFiles])]
+  const references = [
+    ...new Set([
+      ...extraFiles,
+      ...reviewFiles,
+      ...(saved.resumeReceipt?.originalTracePaths || []),
+    ]),
+  ]
     .sort()
     .map((file) => ({ path: file, sha256: hash(readEvidence(file, dir)) }));
   return {

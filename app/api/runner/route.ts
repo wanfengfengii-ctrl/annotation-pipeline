@@ -1,4 +1,8 @@
 import {
+  retryBudgets,
+  retryPolicyVersion,
+} from '../../../lib/retry-policy.mjs';
+import {
   runtimeRecoveryEligible,
   runtimeRecoveryDue,
 } from '@/lib/runtime-recovery.mjs';
@@ -438,12 +442,17 @@ export async function POST(req: Request) {
       const residents = Array.isArray(b.residentTaskIds)
         ? b.residentTaskIds
         : [];
+      const recoveryRevision =
+        typeof b.recoveryRevision === 'string' &&
+        /^[\w.-]{1,160}$/.test(b.recoveryRevision)
+          ? b.recoveryRevision
+          : retryPolicyVersion;
       const established = (t: Task) => !!t.container || t.turns.some(wasSent);
       const validationRecovery = (t: Task) =>
         t.turns.some(
           (r) =>
             r.status === 'queued' &&
-            runtimeRecoveryDue(r) &&
+            runtimeRecoveryDue(r, Date.now(), recoveryRevision) &&
             r.stageRecovery?.validationOnly &&
             r.stageRecovery.retrying &&
             r.executionOutcome === 'complete' &&
@@ -476,8 +485,9 @@ export async function POST(req: Request) {
           b.excludeTaskIds.includes(item.id)
         )
           continue;
-        const recoverProject = projectRecoveryDue(item, config);
-        const retryStage = postprocessRetryDue(item, config);
+        const recoveryConfig = { ...config, recoveryRevision };
+        const recoverProject = projectRecoveryDue(item, recoveryConfig);
+        const retryStage = postprocessRetryDue(item, recoveryConfig);
         if (
           b.allowNewContainer === false &&
           !residents.includes(item.id) &&
@@ -497,16 +507,24 @@ export async function POST(req: Request) {
           item.turns.find(
             (r: any) =>
               r.status === 'queued' &&
-              runtimeRecoveryDue(r) &&
+              runtimeRecoveryDue(r, Date.now(), recoveryRevision) &&
               r.stageRecovery?.validationOnly,
           ) ||
           item.turns.find(
-            (r: any) => r.status === 'queued' && runtimeRecoveryDue(r),
+            (r: any) =>
+              r.status === 'queued' &&
+              runtimeRecoveryDue(r, Date.now(), recoveryRevision),
           ) ||
           (recoverProject || retryStage ? item.turns.at(-1) : undefined);
         if (!r) continue;
         if (retryStage)
           r.stageRecovery = {
+            ...r.stageRecovery,
+            retryBudgets: retryBudgets(r.stageRecovery, {
+              stage: r.stage,
+              error: r.error,
+              revision: recoveryRevision,
+            }),
             attempts: (r.stageRecovery?.attempts || 0) + 1,
             retrying: true,
             originalStage: r.stageRecovery?.originalStage || r.stage,
@@ -515,9 +533,11 @@ export async function POST(req: Request) {
           };
         if (recoverProject && r.status !== 'queued')
           r.projectRetry = {
+            recoveryRevision,
             originalStatus: r.status,
             originalStage: r.stage,
           };
+        if (r.projectRetry) r.projectRetry.recoveryRevision = recoveryRevision;
         r.questionRootId ||= questionRoot(item, r);
         r.roundNumber = item.turns
           .slice(0, item.turns.indexOf(r) + 1)
@@ -954,10 +974,10 @@ export async function POST(req: Request) {
           originalStage: r.stage,
           originalError: r.error,
           queuedAt: new Date().toISOString(),
-          retryAt: r.automation!.runtimeRecovery.retryAt,
+          retryAt: r.automation!.runtimeRecovery!.retryAt,
         };
         item.task.automationNotice =
-          r.automation!.runtimeRecovery.state === 'paused'
+          r.automation!.runtimeRecovery!.state === 'paused'
             ? '验收产物和断点已保留，连续恢复未取得新进展，等待处理失败步骤'
             : '验收产物和断点已保留，稍后自动继续未完成步骤';
       }

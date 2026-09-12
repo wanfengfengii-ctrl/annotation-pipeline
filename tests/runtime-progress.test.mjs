@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runRuntimeProcess } from '../scripts/runtime-process.mjs';
-import { executeRuntimeCases } from '../scripts/runtime-case-execution.mjs';
+import {
+  executeRuntimeCases,
+  blockedRuntimeAttempts,
+} from '../scripts/runtime-case-execution.mjs';
 import {
   saveRuntimePlan,
   readRuntimePlan,
@@ -190,7 +193,19 @@ test('setup and command changes invalidate dependent execution; timeout cannot b
   });
   assert.equal(execution, 2);
   const timeoutCheck = { ...check, command: "console.log('partial')" };
+  execution = 0;
   const timed = await run({ checks: [setup, timeoutCheck] }, true);
+  assert.equal(
+    execution,
+    2,
+    'a timeout must not run the same setup and command again',
+  );
+  const blocked = blockedRuntimeAttempts(dir, context, {
+    checks: [setup, timeoutCheck],
+  });
+  assert.equal(blocked.length, 1);
+  assert.equal(blocked[0].id, 'business');
+  assert.ok(blocked[0].logRefs.length > 0);
   assert.equal(timed.progress.completedIds.length, 0);
   execution = 0;
   await run({ checks: [setup, timeoutCheck] });

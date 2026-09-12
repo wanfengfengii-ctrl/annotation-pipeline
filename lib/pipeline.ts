@@ -175,10 +175,15 @@ export type Turn = {
     traceSha256: string;
   };
   gatewayRecovery?: { version: string; nextTurnId: string };
-  projectRetry?: { originalStatus: string; originalStage?: string };
+  projectRetry?: {
+    originalStatus: string;
+    originalStage?: string;
+    recoveryRevision?: string;
+  };
   projectRecovery?: Record<string, any>;
   projectSource?: Record<string, any>;
   stageRecovery?: {
+    retryBudgets?: { scope: string; attempts: number; updatedAt: string }[];
     validationOnly?: boolean;
     historical?: boolean;
     originalStage?: string;
@@ -198,6 +203,8 @@ export type Turn = {
     projectContinuation?: Record<string, unknown>;
     runtimeRecovery?: {
       version: string;
+      revision?: string;
+      retryBudgets?: { scope: string; attempts: number; updatedAt: string }[];
       turnId: string;
       state: 'waiting' | 'paused' | 'complete';
       plan?: { path: string; sha256: string };

@@ -1,3 +1,4 @@
+import { retryBudgets } from '../lib/retry-policy.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -187,6 +188,12 @@ test('replanning respects backoff, pause, earlier running work and terminal 504 
   const turn = draft(),
     task = taskOf(turn);
   turn.projectRecovery = { attempts: 3 };
+  assert.equal(projectRecoveryDue(task, config), true); // Legacy totals are historical, not a lifetime cap.
+  for (let i = 0; i < 3; i++)
+    turn.projectRecovery.retryBudgets = retryBudgets(turn.projectRecovery, {
+      stage: 'project-next',
+      error: turn.error,
+    });
   assert.equal(projectRecoveryDue(task, config), false);
   turn.projectRecovery = { attempts: 1, retryAt: '2099-01-01T00:00:00Z' };
   assert.equal(projectRecoveryDue(task, config), false);

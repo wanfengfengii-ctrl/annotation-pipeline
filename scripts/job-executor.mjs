@@ -1400,6 +1400,7 @@ export function createJobExecutor({
       result.error = e.message;
       if (cached.claude?.success) {
         const recovery = runtimeRecoveryCandidate({
+          revision: release,
           previous: turn.automation?.runtimeRecovery,
           plan: cached.runtimePlanCheckpoint,
           product:

@@ -70,6 +70,57 @@ function saveProgress(dir, key, identity, run) {
   fs.renameSync(temp, pointer);
 }
 
+// Failed attempts also need a durable pointer: diagnosis itself may fail before
+// a report is written. Never silently forget a timeout and replay the old plan.
+function saveBlocked(dir, key, identity, attempt, attemptPath) {
+  const folder = path.join(dir, 'runtime-blocked');
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  const value = {
+    identity,
+    attemptPath,
+    sha256: hash(fs.readFileSync(attemptPath)),
+    logRefs: [attempt.run, ...attempt.setupRuns]
+      .filter(Boolean)
+      .map((r) => ({ path: r.logPath, sha256: r.logSha256 })),
+  };
+  const target = path.join(folder, key + '.json'),
+    tmp = target + '.' + randomUUID();
+  fs.writeFileSync(tmp, JSON.stringify(value), { flag: 'wx', mode: 0o600 });
+  fs.renameSync(tmp, target);
+}
+export function blockedRuntimeAttempts(dir, context, plan) {
+  const setup = plan.checks.filter((c) => c.kind === 'setup'),
+    result = [];
+  for (const check of plan.checks.filter((c) => c.kind !== 'setup')) {
+    const identity = cacheIdentity(context, setup, check),
+      key = jsonHash(identity);
+    const file = path.join(dir, 'runtime-blocked', key + '.json');
+    if (!fs.existsSync(file) || readProgress(dir, key, identity)) continue;
+    const record = JSON.parse(fs.readFileSync(evidencePath(file, dir)));
+    if (
+      JSON.stringify(record.identity) !== JSON.stringify(identity) ||
+      hash(fs.readFileSync(evidencePath(record.attemptPath, dir))) !==
+        record.sha256 ||
+      record.logRefs.some(
+        (r) => hash(fs.readFileSync(evidencePath(r.path, dir))) !== r.sha256,
+      )
+    )
+      throw Error('未完成验收步骤的原始日志摘要不符');
+    const attempt = JSON.parse(fs.readFileSync(record.attemptPath));
+    result.push({
+      id: check.id,
+      attemptPath: record.attemptPath,
+      logRefs: record.logRefs,
+      failedSetupIds: attempt.setupRuns
+        .filter(
+          (r) => r.exitCode !== 0 || r.timedOut || r.limited || r.sourceChanged,
+        )
+        .map((r) => r.id),
+    });
+  }
+  return result;
+}
+
 // Each business case gets a fresh source copy/container and runs its setup.
 // No case can depend on files or service state left by a preceding case.
 // Only this same logical question can recover its verified execution evidence.
@@ -159,9 +210,9 @@ export async function executeRuntimeCases({
       continue;
     }
     if (!remaining()) break;
-    // One bounded timeout retry, in a fresh case environment. The first
-    // attempt's real log remains in attempts; it is never overwritten.
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // A timeout requires diagnosis of this step. Never repeat the same command
+    // in a new environment before reviewing its actual output and dependencies.
+    for (let attempt = 0; attempt < 1; attempt++) {
       const folder = path.join(root, 'cases', check.id + '-' + attempt);
       fs.mkdirSync(folder, { recursive: true });
       let handle,
@@ -180,9 +231,8 @@ export async function executeRuntimeCases({
             timeoutSeconds: Math.min(
               prerequisite.timeoutSeconds,
               limits.stepTimeoutSeconds,
-              remaining(),
             ),
-            maxTimeoutSeconds: Math.min(limits.stepTimeoutSeconds, remaining()),
+            maxTimeoutSeconds: limits.stepTimeoutSeconds,
             logPath: path.join(folder, prerequisite.id + '.setup.log'),
           });
           const { output: _setupOutput, ...savedSetup } = result;
@@ -208,9 +258,8 @@ export async function executeRuntimeCases({
             timeoutSeconds: Math.min(
               check.timeoutSeconds * 2 ** attempt,
               limits.stepTimeoutSeconds,
-              remaining(),
             ),
-            maxTimeoutSeconds: Math.min(limits.stepTimeoutSeconds, remaining()),
+            maxTimeoutSeconds: limits.stepTimeoutSeconds,
             logPath: path.join(folder, check.id + '.log'),
           });
           run = {
@@ -241,6 +290,14 @@ export async function executeRuntimeCases({
         JSON.stringify(attempts.at(-1), null, 2),
         { flag: 'wx', mode: 0o600 },
       );
+      if (cleanupError || !run || !completed(run))
+        saveBlocked(
+          dir,
+          key,
+          identity,
+          attempts.at(-1),
+          path.join(folder, 'attempt.json'),
+        );
       if (run) {
         const { output: _output, ...saved } = run;
         runs.set(check.id, saved);
@@ -249,7 +306,6 @@ export async function executeRuntimeCases({
       }
       await progress();
       if (cleanupError) throw cleanupError;
-      if (!(run?.timedOut && attempt === 0 && remaining() > 0)) break;
     }
     if (!remaining()) break;
   }

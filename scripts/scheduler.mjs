@@ -182,6 +182,8 @@ export function fingerprint(repo, prompt) {
 }
 export function supplyDecision(context, state, now = Date.now()) {
   if (!context.config.enabled) return '自动补充已暂停';
+  if (state.authPause)
+    return '补充暂停，等待认证配置更新：' + state.authPause.reason;
   if (
     (context.unfinishedProjects || 0) >=
     Math.min(3, context.config.concurrency || 3)
